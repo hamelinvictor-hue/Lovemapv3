@@ -234,21 +234,12 @@ export default function App() {
   const [ratingTriggerSource, setRatingTriggerSource] = useState<'first_spot' | 'app_launch' | 'manual'>('app_launch');
   const [isLegalPrivacyOpen, setIsLegalPrivacyOpen] = useState(false);
 
-  // App launch counter & ATT prompt on startup (Triggers real native OS dialogs on iPhone/Android)
+  // App launch counter & ATT prompt on startup
   useEffect(() => {
     const launchCount = incrementAppLaunchCount();
 
-    // If on native iOS / Android, trigger system permissions directly without web simulation
-    const isNative = isNativePlatform();
-
     if (!getAttConsent()) {
-      if (isNative) {
-        // Native OS handles ATT / privacy; save consent
-        saveAttConsent('authorized');
-        setIsAttModalOpen(false);
-      } else {
-        setIsAttModalOpen(true);
-      }
+      setIsAttModalOpen(true);
     } else {
       // Trigger App Rating on 2nd launch, then every 4 launches thereafter (2, 6, 10, 14...)
       if (!getHasRatedApp()) {
@@ -263,18 +254,13 @@ export default function App() {
     }
   }, []);
 
-  // Trigger location permission prompt: call real native OS prompt directly on iPhone
+  // Trigger location permission prompt
   useEffect(() => {
     if (activeTab === 'map' && !isOnboardingOpen && !isAttModalOpen && !getHasSeenLocationPrompt()) {
-      if (isNativePlatform()) {
-        saveHasSeenLocationPrompt(true);
-        requestNativeGeolocation();
-      } else {
-        const locTimer = setTimeout(() => {
-          setIsLocationModalOpen(true);
-        }, 1000);
-        return () => clearTimeout(locTimer);
-      }
+      const locTimer = setTimeout(() => {
+        setIsLocationModalOpen(true);
+      }, 800);
+      return () => clearTimeout(locTimer);
     }
   }, [activeTab, isOnboardingOpen, isAttModalOpen]);
 
