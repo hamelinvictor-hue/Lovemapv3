@@ -83,6 +83,7 @@ import { LocationPermissionModal } from './components/LocationPermissionModal';
 import { NotificationPermissionModal } from './components/NotificationPermissionModal';
 import { StoreRatingModal } from './components/StoreRatingModal';
 import { LegalPrivacyModal } from './components/LegalPrivacyModal';
+import { isNativePlatform, requestNativeGeolocation } from './lib/nativePermissions';
 import { Heart, Sparkles, CheckCircle2, Bell, Smartphone, KeyRound, HeartOff, AlertTriangle } from 'lucide-react';
 
 export default function App() {
@@ -233,13 +234,21 @@ export default function App() {
   const [ratingTriggerSource, setRatingTriggerSource] = useState<'first_spot' | 'app_launch' | 'manual'>('app_launch');
   const [isLegalPrivacyOpen, setIsLegalPrivacyOpen] = useState(false);
 
-  // App launch counter & ATT prompt on startup
+  // App launch counter & ATT prompt on startup (Triggers real native OS dialogs on iPhone/Android)
   useEffect(() => {
     const launchCount = incrementAppLaunchCount();
 
-    // If ATT is not yet decided, ensure modal is open immediately
+    // If on native iOS / Android, trigger system permissions directly without web simulation
+    const isNative = isNativePlatform();
+
     if (!getAttConsent()) {
-      setIsAttModalOpen(true);
+      if (isNative) {
+        // Native OS handles ATT / privacy; save consent
+        saveAttConsent('authorized');
+        setIsAttModalOpen(false);
+      } else {
+        setIsAttModalOpen(true);
+      }
     } else {
       // Trigger App Rating on 2nd launch, then every 4 launches thereafter (2, 6, 10, 14...)
       if (!getHasRatedApp()) {
@@ -254,13 +263,18 @@ export default function App() {
     }
   }, []);
 
-  // Trigger location permission prompt the first time user lands on map
+  // Trigger location permission prompt: call real native OS prompt directly on iPhone
   useEffect(() => {
     if (activeTab === 'map' && !isOnboardingOpen && !isAttModalOpen && !getHasSeenLocationPrompt()) {
-      const locTimer = setTimeout(() => {
-        setIsLocationModalOpen(true);
-      }, 1000);
-      return () => clearTimeout(locTimer);
+      if (isNativePlatform()) {
+        saveHasSeenLocationPrompt(true);
+        requestNativeGeolocation();
+      } else {
+        const locTimer = setTimeout(() => {
+          setIsLocationModalOpen(true);
+        }, 1000);
+        return () => clearTimeout(locTimer);
+      }
     }
   }, [activeTab, isOnboardingOpen, isAttModalOpen]);
 

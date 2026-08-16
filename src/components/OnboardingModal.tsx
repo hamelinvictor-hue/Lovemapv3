@@ -967,17 +967,42 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
                   </div>
                 </div>
 
-                {/* Avatar list */}
-                <div className="space-y-1">
+                {/* Avatar list with Live Upload Preview */}
+                <div className="space-y-2">
                   <label className="text-[11px] font-extrabold text-slate-900 dark:text-white uppercase tracking-wider block">
                     Photo ou Avatar
                   </label>
-                  <div className="flex items-center gap-2 overflow-x-auto pb-1">
+                  
+                  {/* Selected Preview Highlight */}
+                  <div className="flex items-center gap-3 p-2.5 rounded-2xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700">
+                    <div className="relative w-14 h-14 rounded-full overflow-hidden border-2 border-rose-500 shadow-md shrink-0 bg-slate-900">
+                      <img
+                        src={activeAvatar}
+                        alt="Aperçu du profil"
+                        className="w-full h-full object-cover"
+                      />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-1.5">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                        <span>Aperçu de votre photo</span>
+                      </div>
+                      <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+                        {customAvatarInput ? 'Photo personnalisée prête 📸' : 'Avatar sélectionné'}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 overflow-x-auto pb-1 pt-1">
                     <label
-                      className="w-10 h-10 rounded-full border-2 border-dashed border-slate-300 dark:border-slate-600 hover:border-rose-500 bg-slate-50 dark:bg-slate-800 flex items-center justify-center text-slate-500 cursor-pointer shrink-0 transition-colors"
+                      className={`w-11 h-11 rounded-full border-2 border-dashed flex items-center justify-center cursor-pointer shrink-0 transition-all ${
+                        customAvatarInput
+                          ? 'border-rose-500 bg-rose-50 dark:bg-rose-950/40 text-rose-500 ring-2 ring-rose-500/30'
+                          : 'border-slate-300 dark:border-slate-600 hover:border-rose-500 bg-slate-50 dark:bg-slate-800 text-slate-500'
+                      }`}
                       title="Uploader une photo"
                     >
-                      <Camera className="w-4 h-4 text-rose-500" />
+                      <Camera className="w-5 h-5" />
                       <input
                         type="file"
                         accept="image/*"
@@ -1006,7 +1031,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
                           setCustomAvatarInput('');
                         }}
                         className={`w-10 h-10 rounded-full overflow-hidden border-2 transition-all cursor-pointer shrink-0 ${
-                          activeAvatar === img
+                          activeAvatar === img && !customAvatarInput
                             ? 'border-rose-500 ring-3 ring-rose-500/30 scale-105'
                             : 'border-slate-200 dark:border-slate-700 opacity-70 hover:opacity-100'
                         }`}

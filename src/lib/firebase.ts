@@ -13,6 +13,7 @@ import {
   User,
 } from 'firebase/auth';
 import {
+  initializeFirestore,
   getFirestore,
   doc,
   collection,
@@ -27,7 +28,7 @@ import {
   orderBy,
   serverTimestamp,
   deleteDoc,
-  enableIndexedDbPersistence,
+  memoryLocalCache,
 } from 'firebase/firestore';
 import { Spot, CouplePair, NotificationItem, PartnerId, UserProfile } from '../types';
 import { INITIAL_SPOTS } from '../data/initialData';
@@ -37,18 +38,24 @@ import firebaseConfig from '../../firebase-applet-config.json';
 const app = initializeApp(firebaseConfig);
 
 export const auth = getAuth(app);
-export const db = firebaseConfig.firestoreDatabaseId
-  ? getFirestore(app, firebaseConfig.firestoreDatabaseId)
-  : getFirestore(app);
 
-// Safe persistence init (non-blocking for WebViews / iOS Simulator)
+// Initialize Firestore with clean in-memory cache to prevent container clock drift / simulated timestamp warnings
+let firestoreInstance;
 try {
-  enableIndexedDbPersistence(db).catch(() => {
-    // Ignore persistence locks in restricted environments
-  });
+  firestoreInstance = initializeFirestore(
+    app,
+    {
+      localCache: memoryLocalCache(),
+    },
+    firebaseConfig.firestoreDatabaseId || undefined
+  );
 } catch {
-  // Ignore
+  firestoreInstance = firebaseConfig.firestoreDatabaseId
+    ? getFirestore(app, firebaseConfig.firestoreDatabaseId)
+    : getFirestore(app);
 }
+
+export const db = firestoreInstance;
 
 export const googleProvider = new GoogleAuthProvider();
 // Force Google to prompt account selection every single time

@@ -129,18 +129,29 @@ export const SpotDetailSheet: React.FC<SpotDetailSheetProps> = ({
     <div className="fixed inset-0 z-[9999] flex items-end sm:items-center justify-center p-0 sm:p-4 bg-slate-950/60 backdrop-blur-md animate-fade-in overflow-y-auto">
       <div className="w-full max-w-lg bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-t-3xl sm:rounded-3xl shadow-2xl overflow-hidden flex flex-col my-auto max-h-[92vh]">
         {/* Banner image or category background */}
-        <div className="relative h-40 sm:h-48 bg-slate-900 overflow-hidden group">
+        <div className="relative h-44 sm:h-52 bg-slate-900 overflow-hidden group">
           {spotPhotos.length > 0 ? (
             <div
+              role="button"
+              tabIndex={0}
               onClick={() => {
                 triggerHaptic('light');
                 setIsPhotoExpanded(true);
               }}
-              className="w-full h-full cursor-pointer relative"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  setIsPhotoExpanded(true);
+                }
+              }}
+              className="w-full h-full cursor-pointer relative block"
               title="Cliquer pour afficher les photos en grand"
             >
-              <img src={spotPhotos[activePhotoIndex] || spotPhotos[0]} alt={spot.title} className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105" />
-              <div className="absolute inset-0 bg-slate-950/20 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+              <img
+                src={spotPhotos[activePhotoIndex] || spotPhotos[0]}
+                alt={spot.title}
+                className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+              />
+              <div className="absolute inset-0 bg-slate-950/20 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
                 <span className="px-3 py-1.5 rounded-full bg-slate-950/80 text-white text-xs font-bold flex items-center gap-1.5 backdrop-blur-md shadow-lg border border-white/20">
                   <Maximize2 className="w-3.5 h-3.5 text-rose-400" /> Galerie photos ({spotPhotos.length})
                 </span>
@@ -153,9 +164,9 @@ export const SpotDetailSheet: React.FC<SpotDetailSheetProps> = ({
                   triggerHaptic('light');
                   setIsPhotoExpanded(true);
                 }}
-                className="absolute bottom-3 right-3 p-2 rounded-xl bg-slate-950/70 hover:bg-slate-950 text-white backdrop-blur-md border border-white/20 shadow-md transition-all active:scale-95 cursor-pointer flex items-center gap-1.5 text-[11px] font-bold"
+                className="absolute top-3 left-3 z-10 p-2 rounded-xl bg-slate-950/80 hover:bg-slate-950 text-white backdrop-blur-md border border-white/20 shadow-md transition-all active:scale-95 cursor-pointer flex items-center gap-1.5 text-[11px] font-bold"
               >
-                <Camera className="w-3.5 h-3.5 text-rose-400" />
+                <Maximize2 className="w-3.5 h-3.5 text-rose-400" />
                 <span>{spotPhotos.length > 1 ? `Galerie (${spotPhotos.length})` : 'Agrandir'}</span>
               </button>
             </div>
@@ -163,10 +174,10 @@ export const SpotDetailSheet: React.FC<SpotDetailSheetProps> = ({
             <div className="w-full h-full bg-gradient-to-tr from-rose-600 via-pink-500 to-amber-500" />
           )}
 
-          <div className="absolute inset-0 bg-gradient-to-t from-slate-950/80 via-slate-950/30 to-transparent" />
+          <div className="absolute inset-0 bg-gradient-to-t from-slate-950/80 via-slate-950/20 to-transparent pointer-events-none" />
 
           {/* Top Controls */}
-          <div className="absolute top-3 right-3 flex items-center gap-2">
+          <div className="absolute top-3 right-3 z-20 flex items-center gap-2">
             <button
               onClick={handleEditClick}
               className="p-2 rounded-full bg-white/90 text-slate-800 border border-white/40 hover:bg-white backdrop-blur-md shadow-xs transition-all active:scale-95 cursor-pointer flex items-center gap-1"
