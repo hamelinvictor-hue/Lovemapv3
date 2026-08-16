@@ -1,0 +1,6 @@
+{
+  "name": "LoveMap - Moments & Lieux de Couple",
+  "description": "Application mobile de cartographie d'intimité pour couples. Marquez vos spots, validez ensemble à deux, répondez au questionnaire à critères et découvrez vos statistiques globales.",
+  "requestFramePermissions": ["geolocation", "camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

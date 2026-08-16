@@ -1,0 +1,44 @@
+{
+  "entities": {
+    "couples": {
+      "title": "Couples",
+      "description": "Shared room doc per couple for pair connection and sync",
+      "properties": {
+        "code": { "type": "string", "description": "Unique couple invitation code" },
+        "partnerA": { "type": "object", "description": "Partner A user profile" },
+        "partnerB": { "type": "object", "description": "Partner B user profile" },
+        "anniversaryDate": { "type": "string", "description": "Anniversary date" },
+        "secretPin": { "type": "string", "description": "Privacy PIN lock" },
+        "isPinLocked": { "type": "boolean", "description": "Is PIN lock enabled" },
+        "ownerUid": { "type": "string", "description": "Creator UID" }
+      },
+      "required": ["code", "partnerA"]
+    },
+    "spots": {
+      "title": "Spots",
+      "description": "Subcollection under couples/{code}/spots for intimate spots logged by partners",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "lat": { "type": "number" },
+        "lng": { "type": "number" },
+        "creatorId": { "type": "string" },
+        "status": { "type": "string" },
+        "ratings": { "type": "object" }
+      },
+      "required": ["id", "title", "lat", "lng", "creatorId", "status"]
+    },
+    "notifications": {
+      "title": "Notifications",
+      "description": "Subcollection under couples/{code}/notifications for partner updates",
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "isRead": { "type": "boolean" }
+      },
+      "required": ["id", "type", "title"]
+    }
+  }
+}
