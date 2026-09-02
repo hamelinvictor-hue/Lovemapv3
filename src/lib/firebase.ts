@@ -1,6 +1,7 @@
 import { initializeApp } from 'firebase/app';
 import {
-  getAuth,
+  initializeAuth,
+  browserLocalPersistence,
   GoogleAuthProvider,
   OAuthProvider,
   signInWithPopup,
@@ -41,7 +42,15 @@ import firebaseConfig from '../../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
 
-export const auth = getAuth(app);
+let authInstance;
+try {
+  authInstance = initializeAuth(app, {
+    persistence: browserLocalPersistence
+  });
+} catch (e) {
+  authInstance = initializeAuth(app);
+}
+export const auth = authInstance;
 
 // Initialize Firestore with clean in-memory cache to prevent container clock drift / simulated timestamp warnings
 let firestoreInstance;
