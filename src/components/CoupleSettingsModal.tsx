@@ -5,6 +5,7 @@ import { triggerHaptic, triggerHeartBurst } from '../lib/feedback';
 import { compressImageFile } from '../lib/imageCompressor';
 import { getDuoPremiumState } from '../lib/subscription';
 import { useTranslation } from '../i18n/LanguageContext';
+import { isMobileDevice, showNativeConfirm } from '../lib/nativePermissions';
 import {
   X,
   Heart,
@@ -135,6 +136,64 @@ export const CoupleSettingsModal: React.FC<CoupleSettingsModalProps> = ({
         avatar: newBAvatar.trim() || couple.partnerB.avatar,
       },
     });
+  };
+
+  const handleTriggerLogout = async () => {
+    triggerHaptic('medium');
+    if (isMobileDevice()) {
+      const confirmed = await showNativeConfirm(
+        t.settings.logoutConfirmTitle,
+        t.settings.logoutConfirmMsg,
+        t.settings.logoutConfirmBtn,
+        t.common.cancel
+      );
+      if (confirmed) {
+        onLogout?.();
+        onClose();
+      }
+      return;
+    }
+    setShowLogoutConfirm(true);
+  };
+
+  const handleTriggerDeleteAccount = async () => {
+    triggerHaptic('heavy');
+    if (isMobileDevice()) {
+      const confirmed = await showNativeConfirm(
+        t.settings.deleteConfirmTitle,
+        t.settings.deleteConfirmMsg,
+        t.settings.deleteConfirmBtn,
+        t.common.cancel
+      );
+      if (confirmed) {
+        if (onDeleteAccount) {
+          onDeleteAccount();
+        } else if (onResetData) {
+          onResetData();
+        }
+        onClose();
+      }
+      return;
+    }
+    setShowDeleteConfirm(true);
+  };
+
+  const handleTriggerBreakCouple = async () => {
+    triggerHaptic('heavy');
+    if (isMobileDevice()) {
+      const confirmed = await showNativeConfirm(
+        t.settings.breakDuoConfirmTitle,
+        t.settings.breakDuoConfirmMsg,
+        t.settings.breakDuoConfirmBtn,
+        t.common.cancel
+      );
+      if (confirmed) {
+        onBreakCouple?.();
+        onClose();
+      }
+      return;
+    }
+    setShowBreakConfirm(true);
   };
 
   const handleCloseModal = () => {
@@ -568,10 +627,7 @@ export const CoupleSettingsModal: React.FC<CoupleSettingsModalProps> = ({
               {/* Déconnexion */}
               <button
                 type="button"
-                onClick={() => {
-                  triggerHaptic('medium');
-                  setShowLogoutConfirm(true);
-                }}
+                onClick={handleTriggerLogout}
                 className="p-3 rounded-2xl bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/50 text-amber-900 dark:text-amber-200 text-xs font-extrabold flex items-center justify-center gap-2 transition-all cursor-pointer shadow-2xs hover:scale-[1.01] active:scale-95"
               >
                 <LogOut className="w-4 h-4 text-amber-600 dark:text-amber-400" />
@@ -581,10 +637,7 @@ export const CoupleSettingsModal: React.FC<CoupleSettingsModalProps> = ({
               {/* Supprimer Compte */}
               <button
                 type="button"
-                onClick={() => {
-                  triggerHaptic('heavy');
-                  setShowDeleteConfirm(true);
-                }}
+                onClick={handleTriggerDeleteAccount}
                 className="p-3 rounded-2xl bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900/50 text-rose-700 dark:text-rose-300 text-xs font-extrabold flex items-center justify-center gap-2 transition-all cursor-pointer shadow-2xs hover:scale-[1.01] active:scale-95"
               >
                 <UserX className="w-4 h-4 text-rose-600 dark:text-rose-400" />

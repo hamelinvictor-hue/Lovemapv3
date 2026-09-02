@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { PhotoLightboxModal } from './PhotoLightboxModal';
 import { getSpotPhotos, getDuoPremiumState } from '../lib/subscription';
+import { showNativeConfirm } from '../lib/nativePermissions';
 
 interface SpotDetailSheetProps {
   spot: Spot | null;
@@ -504,8 +505,14 @@ export const SpotDetailSheet: React.FC<SpotDetailSheetProps> = ({
             </button>
 
             <button
-              onClick={() => {
-                if (confirm('Voulez-vous supprimer ce spot de votre journal ?')) {
+              onClick={async () => {
+                const confirmed = await showNativeConfirm(
+                  'Supprimer le lieu',
+                  'Voulez-vous supprimer ce spot de votre journal ?',
+                  'Supprimer',
+                  'Annuler'
+                );
+                if (confirmed) {
                   onDeleteSpot(spot.id);
                   onClose();
                 }

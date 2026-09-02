@@ -26,6 +26,47 @@ export const requestNativeGeolocation = triggerNativeGeolocation;
 export const requestNativeNotification = triggerNativeNotification;
 
 /**
+ * Native App Tracking Transparency (ATT) permission request on iOS
+ */
+export async function triggerNativeAppTracking(): Promise<boolean> {
+  const cap = (window as any).Capacitor;
+  if (isCapacitorNative() && cap?.Plugins?.AppTrackingTransparency) {
+    try {
+      const res = await cap.Plugins.AppTrackingTransparency.requestPermission();
+      return res.status === 'authorized';
+    } catch (e) {
+      console.warn('Native AppTrackingTransparency plugin call fallback:', e);
+    }
+  }
+  return true;
+}
+
+/**
+ * Native System Confirmation Dialog (replaces web modal popups on mobile iOS/Android)
+ */
+export async function showNativeConfirm(title: string, message: string, okButtonTitle = 'Confirmer', cancelButtonTitle = 'Annuler'): Promise<boolean> {
+  const cap = (window as any).Capacitor;
+  if (isCapacitorNative() && cap?.Plugins?.Dialog) {
+    try {
+      const res = await cap.Plugins.Dialog.confirm({
+        title,
+        message,
+        okButtonTitle,
+        cancelButtonTitle,
+      });
+      return !!res.value;
+    } catch (e) {
+      console.warn('Native Dialog plugin error:', e);
+    }
+  }
+  // Standard browser confirm fallback
+  if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
+    return window.confirm(`${title}\n\n${message}`);
+  }
+  return true;
+}
+
+/**
  * Native Geolocation permission request
  */
 export async function triggerNativeGeolocation(): Promise<boolean> {

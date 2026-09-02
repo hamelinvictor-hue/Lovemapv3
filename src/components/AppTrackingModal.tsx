@@ -2,6 +2,7 @@ import React from 'react';
 import { ShieldCheck, Lock, Eye, FileText, CheckCircle2 } from 'lucide-react';
 import { saveAttConsent } from '../lib/storage';
 import { useTranslation } from '../i18n/LanguageContext';
+import { triggerNativeAppTracking } from '../lib/nativePermissions';
 
 interface AppTrackingModalProps {
   isOpen: boolean;
@@ -18,8 +19,11 @@ export const AppTrackingModal: React.FC<AppTrackingModalProps> = ({
 
   if (!isOpen) return null;
 
-  const handleConsent = (status: 'authorized' | 'denied') => {
+  const handleConsent = async (status: 'authorized' | 'denied') => {
     saveAttConsent(status);
+    if (status === 'authorized') {
+      await triggerNativeAppTracking();
+    }
     onClose(status);
   };
 
