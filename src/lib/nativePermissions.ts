@@ -398,3 +398,20 @@ export async function triggerNativeAppleAuth(): Promise<{ identityToken: string;
   }
   return null;
 }
+
+/**
+ * Native Sign Out to clear cached sessions for Google and Apple
+ */
+export async function triggerNativeSignOut(): Promise<void> {
+  const cap = (window as any).Capacitor;
+  
+  // Google Sign Out
+  const googlePlugin = (window as any).GoogleAuth || cap?.Plugins?.GoogleAuth;
+  if (googlePlugin) {
+    try {
+      await googlePlugin.signOut();
+    } catch (e) {
+      console.warn('Native GoogleAuth signOut error:', e);
+    }
+  }
+}

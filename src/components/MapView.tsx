@@ -3,7 +3,7 @@ import { AnimatePresence, motion } from 'motion/react';
 import L, { createHeatLayer } from '../lib/heatmapPlugin';
 import { createCachedTileLayer, autoPreCacheViewport } from '../lib/cachedTileLayer';
 import { getNativeCurrentPosition, watchNativePosition, triggerNativeGeolocation, checkNativeLocationPermission } from '../lib/nativePermissions';
-import { getLocationPermissionStatus, saveLocationPermissionStatus } from '../lib/storage';
+import { getLocationPermissionStatus, saveLocationPermissionStatus, getHasSeenLocationPrompt, saveHasSeenLocationPrompt } from '../lib/storage';
 import { Spot, PartnerId, AppMode } from '../types';
 import { CATEGORIES } from '../data/initialData';
 import { triggerHaptic } from '../lib/feedback';
@@ -90,6 +90,12 @@ export const MapView: React.FC<MapViewProps> = ({
     let cleanupWatch: (() => void) | null = null;
 
     const startTrackingIfAllowed = async () => {
+      if (!getHasSeenLocationPrompt()) {
+        saveHasSeenLocationPrompt(true);
+        const newlyGranted = await triggerNativeGeolocation();
+        saveLocationPermissionStatus(newlyGranted ? 'granted' : 'denied');
+      }
+
       const storedStatus = getLocationPermissionStatus();
       if (storedStatus === 'denied') return;
 

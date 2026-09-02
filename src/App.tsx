@@ -255,25 +255,6 @@ export default function App() {
     }
   }, []);
 
-  // Trigger location permission prompt (native)
-  useEffect(() => {
-    if (
-      activeTab === 'map' &&
-      !isOnboardingOpen &&
-      !isAttModalOpen &&
-      !isAuthOpen &&
-      !showDuoCodeModal &&
-      !getHasSeenLocationPrompt()
-    ) {
-      const locTimer = setTimeout(async () => {
-        saveHasSeenLocationPrompt(true);
-        const granted = await triggerNativeGeolocation();
-        saveLocationPermissionStatus(granted ? 'granted' : 'denied');
-      }, 500);
-      return () => clearTimeout(locTimer);
-    }
-  }, [activeTab, isOnboardingOpen, isAttModalOpen, isAuthOpen, showDuoCodeModal]);
-
   // Monitor 48H countdown: when remaining time hits <= 1 hour (3600s), dispatch urgency system notification!
   useEffect(() => {
     const checkTrialUrgency = () => {

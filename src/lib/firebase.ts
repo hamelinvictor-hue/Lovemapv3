@@ -36,7 +36,7 @@ import {
 import { Spot, CouplePair, NotificationItem, PartnerId, UserProfile } from '../types';
 import { INITIAL_SPOTS } from '../data/initialData';
 import { getStoredAuthUser, saveStoredAuthUser, StoredAuthUser } from './storage';
-import { triggerNativeGoogleAuth, triggerNativeAppleAuth, isMobileDevice, isCapacitorNative } from './nativePermissions';
+import { triggerNativeGoogleAuth, triggerNativeAppleAuth, triggerNativeSignOut, isMobileDevice, isCapacitorNative } from './nativePermissions';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
@@ -387,6 +387,7 @@ export async function ensureGuestUser(displayName?: string): Promise<User> {
 export async function logoutUser() {
   saveStoredAuthUser(null);
   try {
+    await triggerNativeSignOut();
     await signOut(auth);
   } catch (e) {
     // Ignore
