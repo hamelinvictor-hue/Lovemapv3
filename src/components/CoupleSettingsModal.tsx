@@ -148,8 +148,14 @@ export const CoupleSettingsModal: React.FC<CoupleSettingsModalProps> = ({
         t.common.cancel
       );
       if (confirmed) {
-        onLogout?.();
         onClose();
+        setTimeout(() => {
+          try {
+            onLogout?.();
+          } catch (e) {
+            console.error('Error during logout:', e);
+          }
+        }, 50);
       }
       return;
     }
@@ -166,12 +172,18 @@ export const CoupleSettingsModal: React.FC<CoupleSettingsModalProps> = ({
         t.common.cancel
       );
       if (confirmed) {
-        if (onDeleteAccount) {
-          onDeleteAccount();
-        } else if (onResetData) {
-          onResetData();
-        }
         onClose();
+        setTimeout(() => {
+          try {
+            if (onDeleteAccount) {
+              onDeleteAccount();
+            } else if (onResetData) {
+              onResetData();
+            }
+          } catch (e) {
+            console.error('Error during account deletion:', e);
+          }
+        }, 50);
       }
       return;
     }
@@ -188,8 +200,14 @@ export const CoupleSettingsModal: React.FC<CoupleSettingsModalProps> = ({
         t.common.cancel
       );
       if (confirmed) {
-        onBreakCouple?.();
         onClose();
+        setTimeout(() => {
+          try {
+            onBreakCouple?.();
+          } catch (e) {
+            console.error('Error during breaking couple:', e);
+          }
+        }, 50);
       }
       return;
     }

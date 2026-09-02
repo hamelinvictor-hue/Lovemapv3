@@ -15,6 +15,7 @@ import {
   saveTheme,
   getHasCompletedOnboarding,
   saveHasCompletedOnboarding,
+  clearUserSessionStorage,
   ThemeMode,
   computeSpotScores,
   getAppLaunchCount,
@@ -811,14 +812,12 @@ export default function App() {
     } catch (e) {
       console.error(e);
     }
-    // Clear local storage & reset state completely for a clean session
-    localStorage.clear();
+    // Clear user data while safely preserving system and onboarding state
+    clearUserSessionStorage();
     setSpots([]);
     setNotifications([]);
     setCouple(INITIAL_COUPLE);
     setActivePartnerId('partner_a');
-    // Keep onboarding marked as completed so it never re-appears after installation
-    saveHasCompletedOnboarding(true);
     setIsOnboardingOpen(false);
     // Open clean Auth / Login view directly
     setIsAuthOpen(true);
@@ -909,13 +908,11 @@ export default function App() {
     } catch (e) {
       console.error(e);
     }
-    localStorage.clear();
+    clearUserSessionStorage();
     setSpots([]);
     setNotifications([]);
     setCouple(INITIAL_COUPLE);
     setActivePartnerId('partner_a');
-    // Keep onboarding marked as completed so it never re-appears after installation
-    saveHasCompletedOnboarding(true);
     setIsOnboardingOpen(false);
     // Open clean Auth / Login view directly
     setIsAuthOpen(true);

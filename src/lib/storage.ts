@@ -174,6 +174,23 @@ export function resetAppToFreshInstall(): void {
   }
 }
 
+/**
+ * Clear user data on logout or account deletion while preserving essential device preferences
+ */
+export function clearUserSessionStorage(): void {
+  try {
+    localStorage.removeItem(SPOTS_KEY);
+    localStorage.removeItem(COUPLE_KEY);
+    localStorage.removeItem(NOTIFS_KEY);
+    localStorage.removeItem(ACTIVE_PARTNER_KEY);
+    localStorage.removeItem(APP_MODE_KEY);
+    localStorage.removeItem(AUTH_USER_KEY);
+    sessionStorage.clear();
+  } catch (err) {
+    console.error('Failed to clear user session storage', err);
+  }
+}
+
 export function getHasCompletedOnboarding(): boolean {
   try {
     return localStorage.getItem(ONBOARDING_KEY) === 'true';

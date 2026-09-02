@@ -7,8 +7,11 @@
 export const isCapacitorNative = (): boolean => {
   if (typeof window === 'undefined') return false;
   const cap = (window as any).Capacitor;
-  const isCapNative = !!(cap && typeof cap.isNativePlatform === 'function' && cap.isNativePlatform());
-  return isCapNative;
+  if (!cap) return false;
+  if (typeof cap.isNativePlatform === 'function' && cap.isNativePlatform()) return true;
+  if (cap.platform === 'ios' || cap.platform === 'android') return true;
+  if (cap.isPluginAvailable && (cap.isPluginAvailable('Dialog') || cap.isPluginAvailable('AppTrackingTransparency') || cap.isPluginAvailable('Geolocation'))) return true;
+  return false;
 };
 
 export const isMobileDevice = (): boolean => {
@@ -42,9 +45,24 @@ export async function triggerNativeAppTracking(): Promise<boolean> {
 }
 
 /**
+ * Safely blur any active focused text input element to avoid iOS RTIInputSystemClient keyboard session crashes
+ */
+function dismissActiveKeyboard(): void {
+  if (typeof document !== 'undefined' && document.activeElement) {
+    const activeEl = document.activeElement as HTMLElement;
+    if (activeEl && typeof activeEl.blur === 'function') {
+      activeEl.blur();
+    }
+  }
+}
+
+/**
  * Native System Confirmation Dialog (replaces web modal popups on mobile iOS/Android)
  */
 export async function showNativeConfirm(title: string, message: string, okButtonTitle = 'Confirmer', cancelButtonTitle = 'Annuler'): Promise<boolean> {
+  // Dismiss keyboard/active inputs first to ensure iOS text session is not invalidated
+  dismissActiveKeyboard();
+  
   const cap = (window as any).Capacitor;
   if (isCapacitorNative() && cap?.Plugins?.Dialog) {
     try {

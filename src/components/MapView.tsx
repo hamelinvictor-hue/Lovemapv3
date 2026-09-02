@@ -307,11 +307,12 @@ export const MapView: React.FC<MapViewProps> = ({
     });
 
     const maptilerKey = (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_MAPTILER_KEY;
+    const hasValidMaptilerKey = Boolean(maptilerKey && maptilerKey.trim().length > 5 && maptilerKey !== '""' && maptilerKey !== "''");
 
     let tileUrl = 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png';
     let attribution = '&copy; CartoDB &copy; OpenStreetMap';
 
-    if (maptilerKey) {
+    if (hasValidMaptilerKey) {
       attribution = '&copy; <a href="https://www.maptiler.com/copyright/" target="_blank">&copy; MapTiler</a> &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a>';
       if (tileMode === 'satellite') {
         tileUrl = `https://api.maptiler.com/maps/hybrid/256/{z}/{x}/{y}.jpg?key=${maptilerKey}`;
@@ -322,7 +323,7 @@ export const MapView: React.FC<MapViewProps> = ({
         tileUrl = `https://api.maptiler.com/maps/streets-v2/256/{z}/{x}/{y}.png?key=${maptilerKey}`;
       }
     } else {
-      // High quality default fallback tiles (Fast, 100% CORS compliant, identical rendering across native & web)
+      // High quality default fallback tiles (Fast, 100% CORS compliant, no API key required, identical rendering across native & web)
       if (tileMode === 'satellite') {
         tileUrl = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
         attribution = '&copy; Esri World Imagery';
@@ -330,7 +331,7 @@ export const MapView: React.FC<MapViewProps> = ({
         tileUrl = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
         attribution = '&copy; CartoDB &copy; OpenStreetMap';
       } else {
-        // Crisp, elegant Voyager/Positron map tiles (identical on Web, iPhone and Android)
+        // Crisp, elegant Voyager map tiles (100% free, reliable, no API key needed)
         tileUrl = 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png';
         attribution = '&copy; CartoDB &copy; OpenStreetMap';
       }
