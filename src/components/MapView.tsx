@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import L, { createHeatLayer } from '../lib/heatmapPlugin';
 import { createCachedTileLayer, autoPreCacheViewport } from '../lib/cachedTileLayer';
+import { getNativeCurrentPosition, watchNativePosition, triggerNativeGeolocation } from '../lib/nativePermissions';
 import { Spot, PartnerId, AppMode } from '../types';
 import { CATEGORIES } from '../data/initialData';
 import { triggerHaptic } from '../lib/feedback';
@@ -83,27 +84,26 @@ export const MapView: React.FC<MapViewProps> = ({
     }
   }, [theme]);
 
-  // Continuous real-time GPS tracking (map stays zoomed on France on launch)
+  // Continuous real-time GPS tracking across Apple iOS native & Web
   useEffect(() => {
-    if (!('geolocation' in navigator)) return;
-
-    const handleSuccess = (pos: GeolocationPosition) => {
-      const { latitude, longitude, accuracy } = pos.coords;
-      setUserCoords({ lat: latitude, lng: longitude, accuracy });
-    };
-
-    const handleError = (err: GeolocationPositionError) => {
-      console.warn('Realtime geolocation watch warning (using simulated France location):', err);
-    };
-
-    const watchId = navigator.geolocation.watchPosition(handleSuccess, handleError, {
-      enableHighAccuracy: true,
-      timeout: 15000,
-      maximumAge: 3000,
+    // Initial fetch of exact position
+    getNativeCurrentPosition().then((pos) => {
+      if (pos) {
+        setUserCoords({ lat: pos.latitude, lng: pos.longitude, accuracy: pos.accuracy });
+      }
     });
 
+    const cleanupWatch = watchNativePosition(
+      (pos) => {
+        setUserCoords({ lat: pos.latitude, lng: pos.longitude, accuracy: pos.accuracy });
+      },
+      (err) => {
+        console.warn('Realtime geolocation watch notice:', err);
+      }
+    );
+
     return () => {
-      navigator.geolocation.clearWatch(watchId);
+      cleanupWatch();
     };
   }, []);
 
@@ -306,41 +306,42 @@ export const MapView: React.FC<MapViewProps> = ({
       }
     });
 
-    const maptilerKey = (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_MAPTILER_KEY;
+    // MapTiler / CartoDB / Esri Satellite layer configuration
+    const maptilerKey = 
+      (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_MAPTILER_KEY?.trim() ||
+      (window as any).__MAPTILER_KEY__?.trim() ||
+      '';
     const hasValidMaptilerKey = Boolean(
-      maptilerKey && 
-      maptilerKey.trim().length > 10 && 
-      maptilerKey !== '""' && 
+      maptilerKey &&
+      maptilerKey.length > 5 &&
+      maptilerKey !== '""' &&
       maptilerKey !== "''" &&
-      !maptilerKey.includes('your') &&
+      !maptilerKey.includes('your_') &&
       !maptilerKey.includes('undefined')
     );
 
     let tileUrl = 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png';
-    let attribution = '&copy; CartoDB &copy; OpenStreetMap';
+    let attribution = '&copy; <a href="https://carto.com/" target="_blank">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a>';
 
     if (hasValidMaptilerKey) {
-      attribution = '&copy; <a href="https://www.maptiler.com/copyright/" target="_blank">&copy; MapTiler</a> &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a>';
+      attribution = '&copy; <a href="https://www.maptiler.com/copyright/" target="_blank">MapTiler</a> &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a>';
       if (tileMode === 'satellite') {
         tileUrl = `https://api.maptiler.com/maps/hybrid/256/{z}/{x}/{y}.jpg?key=${maptilerKey}`;
       } else if (tileMode === 'dark') {
         tileUrl = `https://api.maptiler.com/maps/dataviz-dark/256/{z}/{x}/{y}.png?key=${maptilerKey}`;
       } else {
-        // French / Streets mode
         tileUrl = `https://api.maptiler.com/maps/streets-v2/256/{z}/{x}/{y}.png?key=${maptilerKey}`;
       }
     } else {
-      // High quality default fallback tiles (Fast, 100% CORS compliant, no API key required, identical rendering across native & web)
       if (tileMode === 'satellite') {
         tileUrl = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
-        attribution = '&copy; Esri World Imagery';
+        attribution = '&copy; <a href="https://www.esri.com/" target="_blank">Esri World Imagery</a>';
       } else if (tileMode === 'dark') {
         tileUrl = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
-        attribution = '&copy; CartoDB &copy; OpenStreetMap';
+        attribution = '&copy; <a href="https://carto.com/" target="_blank">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a>';
       } else {
-        // Crisp, elegant Voyager map tiles (100% free, reliable, no API key needed)
         tileUrl = 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png';
-        attribution = '&copy; CartoDB &copy; OpenStreetMap';
+        attribution = '&copy; <a href="https://carto.com/" target="_blank">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a>';
       }
     }
 
@@ -687,7 +688,7 @@ export const MapView: React.FC<MapViewProps> = ({
     }
   };
 
-  const handleGeolocate = () => {
+  const handleGeolocate = async () => {
     triggerHaptic('medium');
     setIsLocating(true);
 
@@ -695,24 +696,17 @@ export const MapView: React.FC<MapViewProps> = ({
       mapInstanceRef.current.flyTo([userCoords.lat, userCoords.lng], 16, { duration: 1 });
     }
 
-    if ('geolocation' in navigator) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          setIsLocating(false);
-          const { latitude, longitude, accuracy } = pos.coords;
-          setUserCoords({ lat: latitude, lng: longitude, accuracy });
-          mapInstanceRef.current?.flyTo([latitude, longitude], 16, { duration: 1 });
-        },
-        (err) => {
-          setIsLocating(false);
-          console.warn('Geolocation direct error:', err);
-          if (!userCoords) {
-            alert("Impossible d'accéder à votre position GPS exacte.");
-          }
-        },
-        { enableHighAccuracy: true, timeout: 15000, maximumAge: 3000 }
-      );
-    } else {
+    try {
+      const pos = await getNativeCurrentPosition();
+      if (pos) {
+        setUserCoords({ lat: pos.latitude, lng: pos.longitude, accuracy: pos.accuracy });
+        mapInstanceRef.current?.flyTo([pos.latitude, pos.longitude], 16, { duration: 1 });
+      } else {
+        await triggerNativeGeolocation();
+      }
+    } catch (err) {
+      console.warn('Geolocation trigger error:', err);
+    } finally {
       setIsLocating(false);
     }
   };

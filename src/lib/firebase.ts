@@ -92,16 +92,19 @@ appleProvider.setCustomParameters({
 });
 
 // Utility to ensure async calls never hang indefinitely (e.g. in iOS Simulator WKWebView)
+// We enforce a minimum timeout of 30s to prevent silent failures on mobile connections
 export async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
+  const safeTimeout = Math.max(timeoutMs, 30000);
   let timer: any;
   const timeoutPromise = new Promise<T>((resolve) => {
-    timer = setTimeout(() => resolve(fallback), timeoutMs);
+    timer = setTimeout(() => resolve(fallback), safeTimeout);
   });
   try {
     const res = await Promise.race([promise, timeoutPromise]);
     clearTimeout(timer);
     return res;
-  } catch {
+  } catch (err) {
+    console.error('Firebase operation error:', err);
     clearTimeout(timer);
     return fallback;
   }
@@ -151,8 +154,7 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
             idToken: nativeApple.identityToken,
             rawNonce: nativeApple.nonce,
           });
-          const authPromise = signInWithCredential(auth, credential);
-          const res = await withTimeout<any>(authPromise, 4000, null);
+          const res = await signInWithCredential(auth, credential);
           const user = res?.user;
           if (user) {
             saveStoredAuthUser({
@@ -187,8 +189,7 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
       if (nativeGoogle?.idToken) {
         try {
           const credential = GoogleAuthProvider.credential(nativeGoogle.idToken);
-          const authPromise = signInWithCredential(auth, credential);
-          const res = await withTimeout<any>(authPromise, 4000, null);
+          const res = await signInWithCredential(auth, credential);
           const user = res?.user;
           if (user) {
             saveStoredAuthUser({

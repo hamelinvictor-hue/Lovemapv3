@@ -140,77 +140,16 @@ export const CoupleSettingsModal: React.FC<CoupleSettingsModalProps> = ({
 
   const handleTriggerLogout = async () => {
     triggerHaptic('medium');
-    if (isMobileDevice()) {
-      const confirmed = await showNativeConfirm(
-        t.settings.logoutConfirmTitle,
-        t.settings.logoutConfirmMsg,
-        t.settings.logoutConfirmBtn,
-        t.common.cancel
-      );
-      if (confirmed) {
-        onClose();
-        setTimeout(() => {
-          try {
-            onLogout?.();
-          } catch (e) {
-            console.error('Error during logout:', e);
-          }
-        }, 50);
-      }
-      return;
-    }
     setShowLogoutConfirm(true);
   };
 
   const handleTriggerDeleteAccount = async () => {
     triggerHaptic('heavy');
-    if (isMobileDevice()) {
-      const confirmed = await showNativeConfirm(
-        t.settings.deleteConfirmTitle,
-        t.settings.deleteConfirmMsg,
-        t.settings.deleteConfirmBtn,
-        t.common.cancel
-      );
-      if (confirmed) {
-        onClose();
-        setTimeout(() => {
-          try {
-            if (onDeleteAccount) {
-              onDeleteAccount();
-            } else if (onResetData) {
-              onResetData();
-            }
-          } catch (e) {
-            console.error('Error during account deletion:', e);
-          }
-        }, 50);
-      }
-      return;
-    }
     setShowDeleteConfirm(true);
   };
 
   const handleTriggerBreakCouple = async () => {
     triggerHaptic('heavy');
-    if (isMobileDevice()) {
-      const confirmed = await showNativeConfirm(
-        t.settings.breakDuoConfirmTitle,
-        t.settings.breakDuoConfirmMsg,
-        t.settings.breakDuoConfirmBtn,
-        t.common.cancel
-      );
-      if (confirmed) {
-        onClose();
-        setTimeout(() => {
-          try {
-            onBreakCouple?.();
-          } catch (e) {
-            console.error('Error during breaking couple:', e);
-          }
-        }, 50);
-      }
-      return;
-    }
     setShowBreakConfirm(true);
   };
 

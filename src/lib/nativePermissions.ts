@@ -85,31 +85,171 @@ export async function showNativeConfirm(title: string, message: string, okButton
 }
 
 /**
- * Native Geolocation permission request
+ * Native Geolocation permission request and Apple iOS trigger
  */
 export async function triggerNativeGeolocation(): Promise<boolean> {
   const cap = (window as any).Capacitor;
-  if (isCapacitorNative() && cap?.Plugins?.Geolocation) {
+  if (cap?.Plugins?.Geolocation) {
     try {
-      const res = await cap.Plugins.Geolocation.requestPermissions();
-      return res.location === 'granted';
+      const res = await cap.Plugins.Geolocation.requestPermissions({
+        permissions: ['location', 'coarseLocation'],
+      });
+      if (res?.location === 'granted' || res?.coarseLocation === 'granted') {
+        return true;
+      }
     } catch (e) {
-      console.warn('Native Geolocation plugin call fallback:', e);
+      console.warn('Native Geolocation plugin requestPermissions error:', e);
     }
   }
 
-  // Fallback Web Geolocation
+  // Trigger Apple / WebKit native location prompt via getCurrentPosition
   return new Promise((resolve) => {
+    if (cap?.Plugins?.Geolocation) {
+      cap.Plugins.Geolocation.getCurrentPosition({
+        enableHighAccuracy: true,
+        timeout: 15000,
+        maximumAge: 0,
+      })
+        .then(() => resolve(true))
+        .catch(() => {
+          if (typeof navigator !== 'undefined' && 'geolocation' in navigator) {
+            navigator.geolocation.getCurrentPosition(
+              () => resolve(true),
+              () => resolve(false),
+              { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+            );
+          } else {
+            resolve(false);
+          }
+        });
+      return;
+    }
+
     if (typeof navigator !== 'undefined' && 'geolocation' in navigator) {
       navigator.geolocation.getCurrentPosition(
         () => resolve(true),
         () => resolve(false),
-        { enableHighAccuracy: true, timeout: 8000 }
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
       );
     } else {
       resolve(false);
     }
   });
+}
+
+/**
+ * Get accurate real-time GPS position from Apple iOS / Android native SDK or WebKit
+ */
+export async function getNativeCurrentPosition(): Promise<{ latitude: number; longitude: number; accuracy: number } | null> {
+  const cap = (window as any).Capacitor;
+  if (cap?.Plugins?.Geolocation) {
+    try {
+      const pos = await cap.Plugins.Geolocation.getCurrentPosition({
+        enableHighAccuracy: true,
+        timeout: 15000,
+        maximumAge: 3000,
+      });
+      if (pos?.coords) {
+        return {
+          latitude: pos.coords.latitude,
+          longitude: pos.coords.longitude,
+          accuracy: pos.coords.accuracy || 15,
+        };
+      }
+    } catch (e) {
+      console.warn('Capacitor Geolocation getCurrentPosition fallback:', e);
+    }
+  }
+
+  if (typeof navigator !== 'undefined' && 'geolocation' in navigator) {
+    return new Promise((resolve) => {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          resolve({
+            latitude: pos.coords.latitude,
+            longitude: pos.coords.longitude,
+            accuracy: pos.coords.accuracy || 15,
+          });
+        },
+        (err) => {
+          console.warn('Navigator Geolocation error:', err);
+          resolve(null);
+        },
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 3000 }
+      );
+    });
+  }
+
+  return null;
+}
+
+/**
+ * Watch continuous real-time GPS position across Apple native & web
+ */
+export function watchNativePosition(
+  onSuccess: (coords: { latitude: number; longitude: number; accuracy: number }) => void,
+  onError?: (error: any) => void
+): () => void {
+  const cap = (window as any).Capacitor;
+  let watchId: any = null;
+  let cancelled = false;
+
+  if (cap?.Plugins?.Geolocation) {
+    cap.Plugins.Geolocation.watchPosition(
+      { enableHighAccuracy: true, timeout: 20000, maximumAge: 3000 },
+      (pos: any, err: any) => {
+        if (cancelled) return;
+        if (pos?.coords) {
+          onSuccess({
+            latitude: pos.coords.latitude,
+            longitude: pos.coords.longitude,
+            accuracy: pos.coords.accuracy || 15,
+          });
+        } else if (err && onError) {
+          onError(err);
+        }
+      }
+    )
+      .then((id: any) => {
+        if (cancelled) {
+          cap.Plugins.Geolocation.clearWatch({ id });
+        } else {
+          watchId = id;
+        }
+      })
+      .catch((err: any) => {
+        if (onError) onError(err);
+      });
+
+    return () => {
+      cancelled = true;
+      if (watchId && cap?.Plugins?.Geolocation) {
+        cap.Plugins.Geolocation.clearWatch({ id: watchId });
+      }
+    };
+  }
+
+  if (typeof navigator !== 'undefined' && 'geolocation' in navigator) {
+    const navWatchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        onSuccess({
+          latitude: pos.coords.latitude,
+          longitude: pos.coords.longitude,
+          accuracy: pos.coords.accuracy || 15,
+        });
+      },
+      (err) => {
+        if (onError) onError(err);
+      },
+      { enableHighAccuracy: true, timeout: 20000, maximumAge: 3000 }
+    );
+
+    return () => {
+      navigator.geolocation.clearWatch(navWatchId);
+    };
+  }
+
+  return () => {};
 }
 
 /**
@@ -152,10 +292,7 @@ export async function triggerNativeGoogleAuth(): Promise<{ idToken: string; disp
           // Ignore if already initialized
         }
       }
-      const googleUser = await Promise.race([
-        googlePlugin.signIn(),
-        new Promise<null>((_, reject) => setTimeout(() => reject(new Error('Google sign-in plugin timeout')), 5000)),
-      ]);
+      const googleUser = await googlePlugin.signIn();
       const token = googleUser?.authentication?.idToken || googleUser?.idToken || googleUser?.authentication?.accessToken;
       if (token) {
         return {
@@ -179,14 +316,11 @@ export async function triggerNativeAppleAuth(): Promise<{ identityToken: string;
   const applePlugin = cap?.Plugins?.SignInWithApple || (window as any).SignInWithApple;
   if (applePlugin) {
     try {
-      const res = await Promise.race([
-        applePlugin.authorize({
-          clientId: 'com.lovemap.duo',
-          redirectURI: 'https://gen-lang-client-0158057859.firebaseapp.com/__/auth/handler',
-          scopes: 'email name',
-        }),
-        new Promise<null>((_, reject) => setTimeout(() => reject(new Error('Apple sign-in plugin timeout')), 10000)),
-      ]);
+      const res = await applePlugin.authorize({
+        clientId: 'com.lovemap.duo',
+        redirectURI: 'https://gen-lang-client-0158057859.firebaseapp.com/__/auth/handler',
+        scopes: 'email name',
+      });
       
       const token = res?.response?.identityToken || res?.identityToken;
       if (token) {
