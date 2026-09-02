@@ -59,6 +59,23 @@ try {
     : getFirestore(app);
 }
 
+// Check for redirect result on initialization for iOS PWA/Web
+getRedirectResult(auth).then((res) => {
+  if (res?.user) {
+    const user = res.user;
+    saveStoredAuthUser({
+      uid: user.uid,
+      displayName: user.displayName || 'Utilisateur',
+      email: user.email || null,
+      photoURL: user.photoURL || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150',
+      providerId: user.providerData[0]?.providerId || 'google.com',
+      isAnonymous: false,
+    });
+  }
+}).catch((err) => {
+  console.warn('Auth redirect result error:', err);
+});
+
 export const db = firestoreInstance;
 
 export const googleProvider = new GoogleAuthProvider();
@@ -205,13 +222,28 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
     console.warn(`Native ${providerName} plugin attempt failed, continuing to mobile fallback:`, nativeErr);
   }
 
-  // 2. Try Web Popup with short timeout to prevent deadlocks on WKWebView
+  // 2. Try Web Popup or Redirect
   try {
     const provider = isApple ? appleProvider : googleProvider;
-    const popupPromise = signInWithPopup(auth, provider);
-    const res = await withTimeout<any>(popupPromise, 3500, null);
-    if (res?.user) {
-      const user = res.user;
+    // On iOS Web / Safari, popup might be blocked or not supported.
+    // Try popup first
+    let user;
+    try {
+      const res = await signInWithPopup(auth, provider);
+      user = res.user;
+    } catch (popupErr: any) {
+      console.warn(`Popup error on mobile (${providerName}):`, popupErr?.code || popupErr?.message || popupErr);
+      if (popupErr?.code === 'auth/popup-blocked' || popupErr?.code === 'auth/operation-not-supported-in-this-environment') {
+        // Fallback to redirect
+        await signInWithRedirect(auth, provider);
+        // Execution will stop here and redirect the page
+        return null as any; 
+      } else {
+        throw popupErr;
+      }
+    }
+    
+    if (user) {
       saveStoredAuthUser({
         uid: user.uid,
         displayName: user.displayName || label,
@@ -222,8 +254,8 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
       });
       return user;
     }
-  } catch (popupErr: any) {
-    console.warn(`Popup error on mobile (${providerName}):`, popupErr?.code || popupErr?.message || popupErr);
+  } catch (err: any) {
+    console.warn(`Auth failed on mobile (${providerName}):`, err);
   }
 
   // 3. Resilient Mobile Session: ensure a fast, robust authenticated session in Firebase

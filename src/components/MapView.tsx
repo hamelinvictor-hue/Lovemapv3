@@ -307,7 +307,14 @@ export const MapView: React.FC<MapViewProps> = ({
     });
 
     const maptilerKey = (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_MAPTILER_KEY;
-    const hasValidMaptilerKey = Boolean(maptilerKey && maptilerKey.trim().length > 5 && maptilerKey !== '""' && maptilerKey !== "''");
+    const hasValidMaptilerKey = Boolean(
+      maptilerKey && 
+      maptilerKey.trim().length > 10 && 
+      maptilerKey !== '""' && 
+      maptilerKey !== "''" &&
+      !maptilerKey.includes('your') &&
+      !maptilerKey.includes('undefined')
+    );
 
     let tileUrl = 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png';
     let attribution = '&copy; CartoDB &copy; OpenStreetMap';
