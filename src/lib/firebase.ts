@@ -59,22 +59,24 @@ try {
     : getFirestore(app);
 }
 
-// Check for redirect result on initialization for iOS PWA/Web
-getRedirectResult(auth).then((res) => {
-  if (res?.user) {
-    const user = res.user;
-    saveStoredAuthUser({
-      uid: user.uid,
-      displayName: user.displayName || 'Utilisateur',
-      email: user.email || null,
-      photoURL: user.photoURL || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150',
-      providerId: user.providerData[0]?.providerId || 'google.com',
-      isAnonymous: false,
-    });
-  }
-}).catch((err) => {
-  console.warn('Auth redirect result error:', err);
-});
+// Check for redirect result on initialization for iOS PWA/Web (skip on Native to prevent auth hanging)
+if (!isCapacitorNative()) {
+  getRedirectResult(auth).then((res) => {
+    if (res?.user) {
+      const user = res.user;
+      saveStoredAuthUser({
+        uid: user.uid,
+        displayName: user.displayName || 'Utilisateur',
+        email: user.email || null,
+        photoURL: user.photoURL || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150',
+        providerId: user.providerData[0]?.providerId || 'google.com',
+        isAnonymous: false,
+      });
+    }
+  }).catch((err) => {
+    console.warn('Auth redirect result error:', err);
+  });
+}
 
 export const db = firestoreInstance;
 
@@ -155,7 +157,10 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
           }
           const credential = appleProvider.credential(credOptions);
           console.log('[Native Debug] Calling signInWithCredential for Apple...');
-          const res = await signInWithCredential(auth, credential);
+          const res = await Promise.race([
+            signInWithCredential(auth, credential),
+            new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Le serveur d\'authentification met trop de temps à répondre.')), 8000))
+          ]);
           console.log('[Native Debug] signInWithCredential Apple success:', res.user?.uid);
           const user = res?.user;
           if (user) {
@@ -182,7 +187,10 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
           console.log('[Native Debug] Creating Google credential...');
           const credential = GoogleAuthProvider.credential(nativeGoogle.idToken);
           console.log('[Native Debug] Calling signInWithCredential for Google...');
-          const res = await signInWithCredential(auth, credential);
+          const res = await Promise.race([
+            signInWithCredential(auth, credential),
+            new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Le serveur d\'authentification met trop de temps à répondre.')), 8000))
+          ]);
           console.log('[Native Debug] signInWithCredential Google success:', res.user?.uid);
           const user = res?.user;
           if (user) {
