@@ -814,11 +814,15 @@ export default function App() {
 
   // Logout handler
   const handleLogout = async () => {
+    console.log('[Native Debug] handleLogout triggered');
     try {
+      console.log('[Native Debug] Calling logoutFromFirebase...');
       await logoutFromFirebase();
+      console.log('[Native Debug] logoutFromFirebase completed');
     } catch (e) {
-      console.error(e);
+      console.error('[Native Debug] Error in logoutFromFirebase:', e);
     }
+    console.log('[Native Debug] Clearing session storage...');
     // Clear user data while safely preserving system and onboarding state
     clearUserSessionStorage();
     localStorage.clear();
@@ -831,6 +835,7 @@ export default function App() {
     // Open clean Auth / Login view directly
     setIsAuthOpen(true);
     showToast('Vous avez été déconnecté.');
+    console.log('[Native Debug] handleLogout finished');
   };
 
   // Break Duo handler
@@ -909,15 +914,21 @@ export default function App() {
 
   // Delete account handler
   const handleDeleteAccount = async () => {
+    console.log('[Native Debug] handleDeleteAccount triggered');
     const currentUser = auth.currentUser;
     const currentCode = couple.code;
     try {
+      console.log('[Native Debug] Calling deleteUserAccountInFirestore...');
       await deleteUserAccountInFirestore(currentUser, currentCode);
+      console.log('[Native Debug] Calling purgeAllFirestoreData...');
       await purgeAllFirestoreData();
+      console.log('[Native Debug] Calling logoutFromFirebase...');
       await logoutFromFirebase();
+      console.log('[Native Debug] Delete operations completed');
     } catch (e) {
-      console.error(e);
+      console.error('[Native Debug] Error deleting account:', e);
     }
+    console.log('[Native Debug] Clearing session storage...');
     clearUserSessionStorage();
     localStorage.clear();
     setSpots([]);
@@ -929,6 +940,7 @@ export default function App() {
     // Open clean Auth / Login view directly
     setIsAuthOpen(true);
     showToast('Votre compte a été définitivement supprimé.');
+    console.log('[Native Debug] handleDeleteAccount finished');
   };
 
   // Filter notifications meant for the active partner (creators do not receive notifications for their own actions)

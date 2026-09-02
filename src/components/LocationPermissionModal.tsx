@@ -15,13 +15,16 @@ export const LocationPermissionModal: React.FC<LocationPermissionModalProps> = (
   if (!isOpen) return null;
 
   const handleAllow = async () => {
+    console.log('[Native Debug] Location permission handleAllow clicked');
     saveHasSeenLocationPrompt(true);
     const granted = await triggerNativeGeolocation();
+    console.log('[Native Debug] Location permission result:', granted);
     saveLocationPermissionStatus(granted ? 'granted' : 'denied');
     onClose(granted);
   };
 
   const handleDeny = () => {
+    console.log('[Native Debug] Location permission handleDeny clicked');
     saveHasSeenLocationPrompt(true);
     saveLocationPermissionStatus('denied');
     onClose(false);

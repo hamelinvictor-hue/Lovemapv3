@@ -117,36 +117,57 @@ export async function checkNativeLocationPermission(): Promise<boolean> {
  */
 export async function triggerNativeGeolocation(): Promise<boolean> {
   const cap = (window as any).Capacitor;
+  console.log('[Native Debug] triggerNativeGeolocation called.');
   if (cap?.Plugins?.Geolocation) {
     try {
-      const res = await cap.Plugins.Geolocation.requestPermissions({
-        permissions: ['location', 'coarseLocation'],
-      });
-      if (res?.location === 'granted' || res?.coarseLocation === 'granted') {
+      console.log('[Native Debug] Calling Geolocation.requestPermissions()...');
+      const res = await cap.Plugins.Geolocation.requestPermissions();
+      console.log('[Native Debug] Geolocation.requestPermissions() result:', res);
+      if (res?.location === 'granted' || res?.coarseLocation === 'granted' || res?.results?.location === 'granted') {
         return true;
       }
     } catch (e) {
-      console.warn('Native Geolocation plugin requestPermissions error:', e);
+      console.warn('[Native Debug] Native Geolocation plugin requestPermissions error:', e);
     }
   }
 
   // Trigger Apple / WebKit native location prompt via getCurrentPosition
   return new Promise((resolve) => {
+    console.log('[Native Debug] Falling back to getCurrentPosition...');
+    const fallbackTimeout = setTimeout(() => {
+      console.warn('[Native Debug] Geolocation request timed out!');
+      resolve(false);
+    }, 12000);
+
     if (cap?.Plugins?.Geolocation) {
       cap.Plugins.Geolocation.getCurrentPosition({
         enableHighAccuracy: true,
-        timeout: 15000,
+        timeout: 10000,
         maximumAge: 0,
       })
-        .then(() => resolve(true))
-        .catch(() => {
+        .then((pos: any) => {
+          clearTimeout(fallbackTimeout);
+          console.log('[Native Debug] cap Geolocation.getCurrentPosition resolved:', pos);
+          resolve(true);
+        })
+        .catch((err: any) => {
+          console.warn('[Native Debug] cap Geolocation.getCurrentPosition error:', err);
           if (typeof navigator !== 'undefined' && 'geolocation' in navigator) {
             navigator.geolocation.getCurrentPosition(
-              () => resolve(true),
-              () => resolve(false),
-              { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+              (pos) => {
+                clearTimeout(fallbackTimeout);
+                console.log('[Native Debug] navigator.geolocation fallback resolved:', pos);
+                resolve(true);
+              },
+              (err2) => {
+                clearTimeout(fallbackTimeout);
+                console.warn('[Native Debug] navigator.geolocation fallback error:', err2);
+                resolve(false);
+              },
+              { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
             );
           } else {
+            clearTimeout(fallbackTimeout);
             resolve(false);
           }
         });
@@ -155,11 +176,21 @@ export async function triggerNativeGeolocation(): Promise<boolean> {
 
     if (typeof navigator !== 'undefined' && 'geolocation' in navigator) {
       navigator.geolocation.getCurrentPosition(
-        () => resolve(true),
-        () => resolve(false),
-        { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+        (pos) => {
+          clearTimeout(fallbackTimeout);
+          console.log('[Native Debug] navigator.geolocation resolved:', pos);
+          resolve(true);
+        },
+        (err) => {
+          clearTimeout(fallbackTimeout);
+          console.warn('[Native Debug] navigator.geolocation error:', err);
+          resolve(false);
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
       );
     } else {
+      clearTimeout(fallbackTimeout);
+      console.log('[Native Debug] Geolocation API not available.');
       resolve(false);
     }
   });
@@ -407,11 +438,19 @@ export async function triggerNativeSignOut(): Promise<void> {
   
   // Google Sign Out
   const googlePlugin = (window as any).GoogleAuth || cap?.Plugins?.GoogleAuth;
-  if (googlePlugin) {
+  if (googlePlugin && typeof googlePlugin.signOut === 'function') {
     try {
-      await googlePlugin.signOut();
+      console.log('[Native Debug] Calling native GoogleAuth.signOut()...');
+      // Wrap in a Promise.race to prevent it from hanging forever
+      await Promise.race([
+        googlePlugin.signOut(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout waiting for GoogleAuth.signOut')), 2000))
+      ]);
+      console.log('[Native Debug] Native GoogleAuth.signOut() completed.');
     } catch (e) {
-      console.warn('Native GoogleAuth signOut error:', e);
+      console.warn('[Native Debug] Native GoogleAuth signOut error (ignored):', e);
     }
+  } else {
+    console.log('[Native Debug] No native GoogleAuth plugin found for signout.');
   }
 }

@@ -148,11 +148,15 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
         }
 
         try {
-          const credential = appleProvider.credential({
-            idToken: nativeApple.identityToken,
-            rawNonce: nativeApple.nonce,
-          });
-          const res = await withTimeout(signInWithCredential(auth, credential), 5000, null);
+          console.log('[Native Debug] Creating Apple credential...');
+          const credOptions: any = { idToken: nativeApple.identityToken };
+          if (nativeApple.nonce) {
+            credOptions.rawNonce = nativeApple.nonce;
+          }
+          const credential = appleProvider.credential(credOptions);
+          console.log('[Native Debug] Calling signInWithCredential for Apple...');
+          const res = await signInWithCredential(auth, credential);
+          console.log('[Native Debug] signInWithCredential Apple success:', res.user?.uid);
           const user = res?.user;
           if (user) {
             saveStoredAuthUser({
@@ -165,29 +169,21 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
             });
             return user;
           }
-        } catch (credErr) {
-          console.warn('Firebase Apple credential error, utilizing native Apple ID session:', credErr);
+        } catch (credErr: any) {
+          console.warn('[Native Debug] Firebase Apple credential error:', credErr?.message || credErr);
+          throw new Error('Erreur de synchronisation Cloud Apple : ' + (credErr?.message || 'Erreur inconnue'));
         }
 
-        // Guaranteed authenticated user with Apple Token ID if Firebase Auth credential times out
-        const appleUid = 'apple_' + (nativeApple.email ? nativeApple.email.replace(/[^a-zA-Z0-9]/g, '_') : Math.random().toString(36).substring(2, 10));
-        const appleUserStored: StoredAuthUser = {
-          uid: appleUid,
-          displayName: fullName,
-          email: nativeApple.email || null,
-          photoURL: defaultPhoto,
-          providerId: 'apple.com',
-          isAnonymous: false,
-        };
-        saveStoredAuthUser(appleUserStored);
-        return buildSyntheticUser(appleUserStored);
       }
     } else {
       const nativeGoogle = await triggerNativeGoogleAuth();
       if (nativeGoogle?.idToken) {
         try {
+          console.log('[Native Debug] Creating Google credential...');
           const credential = GoogleAuthProvider.credential(nativeGoogle.idToken);
-          const res = await withTimeout(signInWithCredential(auth, credential), 5000, null);
+          console.log('[Native Debug] Calling signInWithCredential for Google...');
+          const res = await signInWithCredential(auth, credential);
+          console.log('[Native Debug] signInWithCredential Google success:', res.user?.uid);
           const user = res?.user;
           if (user) {
             saveStoredAuthUser({
@@ -200,25 +196,22 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
             });
             return user;
           }
-        } catch (credErr) {
-          console.warn('Firebase Google credential error, utilizing native Google session:', credErr);
+        } catch (credErr: any) {
+          console.warn('[Native Debug] Firebase Google credential error:', credErr?.message || credErr);
+          throw new Error('Erreur de synchronisation Cloud Google : ' + (credErr?.message || 'Erreur inconnue'));
         }
-
-        const googleUid = 'google_' + (nativeGoogle.email ? nativeGoogle.email.replace(/[^a-zA-Z0-9]/g, '_') : Math.random().toString(36).substring(2, 10));
-        const googleUserStored: StoredAuthUser = {
-          uid: googleUid,
-          displayName: nativeGoogle.displayName || label,
-          email: nativeGoogle.email || null,
-          photoURL: defaultPhoto,
-          providerId: 'google.com',
-          isAnonymous: false,
-        };
-        saveStoredAuthUser(googleUserStored);
-        return buildSyntheticUser(googleUserStored);
       }
     }
-  } catch (nativeErr) {
+  } catch (nativeErr: any) {
+    if (nativeErr?.message && nativeErr.message.includes('Erreur de synchronisation')) {
+      throw nativeErr; // Re-throw critical authentication errors
+    }
     console.warn(`Native ${providerName} plugin attempt failed, continuing to mobile fallback:`, nativeErr);
+  }
+
+  // If in a Capacitor app and native failed, we should not attempt Web Popup as it breaks the app
+  if (isCapacitorNative()) {
+    throw new Error(`La connexion native ${providerName} a échoué ou a été annulée.`);
   }
 
   // 2. Try Web Popup or Redirect

@@ -626,9 +626,10 @@ export const CoupleSettingsModal: React.FC<CoupleSettingsModalProps> = ({
               <button
                 type="button"
                 onClick={() => {
+                  console.log('[Native Debug] Logout confirm clicked');
                   setShowLogoutConfirm(false);
+                  onClose();
                   onLogout?.();
-                  handleCloseModal();
                 }}
                 className="w-full py-3 px-4 rounded-2xl bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-xs shadow-lg shadow-amber-600/30 transition-all cursor-pointer active:scale-95 flex items-center justify-center gap-2"
               >
@@ -669,13 +670,14 @@ export const CoupleSettingsModal: React.FC<CoupleSettingsModalProps> = ({
               <button
                 type="button"
                 onClick={() => {
+                  console.log('[Native Debug] Delete confirm clicked');
                   setShowDeleteConfirm(false);
+                  onClose();
                   if (onDeleteAccount) {
                     onDeleteAccount();
                   } else if (onResetData) {
                     onResetData();
                   }
-                  onClose();
                 }}
                 className="w-full py-3 px-4 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-xs shadow-lg shadow-rose-600/30 transition-all cursor-pointer active:scale-95 flex items-center justify-center gap-2"
               >
