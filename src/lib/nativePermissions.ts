@@ -374,27 +374,44 @@ export async function triggerNativeNotification(): Promise<boolean> {
 export async function triggerNativeGoogleAuth(): Promise<{ idToken: string; displayName?: string; email?: string } | null> {
   const cap = (window as any).Capacitor;
   const googlePlugin = (window as any).GoogleAuth || cap?.Plugins?.GoogleAuth;
+  
+  console.log('[Native Debug] triggerNativeGoogleAuth called. Plugin exists:', !!googlePlugin);
+
   if (googlePlugin) {
     try {
       if (typeof googlePlugin.initialize === 'function') {
         try {
+          console.log('[Native Debug] Calling GoogleAuth.initialize()...');
+          // For web/Android sometimes requires clientId. On iOS it usually uses GoogleService-Info.plist
           await googlePlugin.initialize();
+          console.log('[Native Debug] GoogleAuth.initialize() success.');
         } catch (initErr) {
-          // Ignore if already initialized
+          console.warn('[Native Debug] GoogleAuth.initialize() error (often safe to ignore):', initErr);
         }
       }
+      
+      console.log('[Native Debug] Calling GoogleAuth.signIn()...');
       const googleUser = await googlePlugin.signIn();
+      console.log('[Native Debug] GoogleAuth.signIn() returned:', JSON.stringify(googleUser, null, 2));
+      
       const token = googleUser?.authentication?.idToken || googleUser?.idToken || googleUser?.authentication?.accessToken;
       if (token) {
+        console.log('[Native Debug] Google token successfully extracted.');
         return {
           idToken: token,
           displayName: googleUser.name || googleUser.displayName || googleUser.givenName,
           email: googleUser.email,
         };
+      } else {
+        console.warn('[Native Debug] GoogleAuth.signIn() succeeded but NO TOKEN was returned. Check iOS URL Schemes and GoogleService-Info.plist.');
       }
-    } catch (e) {
-      console.warn('Native GoogleAuth plugin error/cancelled/timeout:', e);
+    } catch (e: any) {
+      console.warn('[Native Debug] Native GoogleAuth plugin error/cancelled/timeout:', e);
+      throw new Error(e?.message || 'Erreur Google Sign-In Native'); // Throwing up so it can be shown
     }
+  } else {
+    console.warn('[Native Debug] GoogleAuth capacitor plugin is NOT installed or NOT injected.');
+    throw new Error('Le plugin GoogleAuth n\'est pas installé sur cet appareil.');
   }
   return null;
 }

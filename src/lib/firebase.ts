@@ -220,7 +220,7 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
       }
     }
   } catch (nativeErr: any) {
-    if (nativeErr?.message && nativeErr.message.includes('Erreur de synchronisation')) {
+    if (nativeErr?.message && (nativeErr.message.includes('Erreur de synchronisation') || nativeErr.message.includes('Le plugin GoogleAuth'))) {
       throw nativeErr; // Re-throw critical authentication errors
     }
     console.warn(`Native ${providerName} plugin attempt failed, continuing to mobile fallback:`, nativeErr);
@@ -228,7 +228,7 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
 
   // If in a Capacitor app and native failed, we should not attempt Web Popup as it breaks the app
   if (isCapacitorNative()) {
-    throw new Error(`La connexion native ${providerName} a échoué ou a été annulée.`);
+    throw new Error(`Erreur : La connexion native ${providerName} n'a pas pu aboutir (vérifiez la configuration Google/Apple).`);
   }
 
   // 2. Try Web Popup or Redirect

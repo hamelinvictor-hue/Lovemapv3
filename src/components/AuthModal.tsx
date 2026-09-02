@@ -100,21 +100,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     }
   };
 
-  const handleGuestLogin = async () => {
-    triggerHaptic('light');
-    setLoading(true);
-    setError(null);
-    try {
-      const u = await loginAsGuest(couple.partnerA.name || 'Invité');
-      await handleSyncUserCouple(u, 'Session locale active !');
-    } catch (err: any) {
-      console.warn('Guest login notice:', err);
-      onToast('Session locale active !');
-      onClose();
-    } finally {
-      setLoading(false);
-    }
-  };
+
 
   const handleLogout = async () => {
     triggerHaptic('selection');
@@ -172,7 +158,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       </span>
                     </div>
                     <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
-                      {currentUser.email ? currentUser.email : 'Mode Invité Sécurisé'}
+                      {currentUser.email ? currentUser.email : 'Compte Local'}
                     </p>
                   </div>
                 </div>
@@ -219,24 +205,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 <span>{loading ? 'Connexion...' : 'Continuer avec Apple'}</span>
               </button>
 
-              <div className="relative my-2">
-                <div className="absolute inset-0 flex items-center">
-                  <div className="w-full border-t border-slate-200 dark:border-slate-800" />
-                </div>
-                <div className="relative flex justify-center text-[10px] font-extrabold text-slate-400 bg-white dark:bg-slate-900 px-2 uppercase tracking-wider">
-                  Ou
-                </div>
-              </div>
 
-              <button
-                type="button"
-                onClick={handleGuestLogin}
-                disabled={loading}
-                className="w-full py-2.5 px-4 rounded-2xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-extrabold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer active:scale-95"
-              >
-                <Sparkles className="w-4 h-4 text-amber-500" />
-                <span>Rester en Mode Invité Démo</span>
-              </button>
             </div>
           )}
         </div>

@@ -1170,25 +1170,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
                     <span>{loading ? 'Connexion...' : 'Continuer avec Apple'}</span>
                   </button>
 
-                  <div className="relative my-1">
-                    <div className="absolute inset-0 flex items-center">
-                      <div className="w-full border-t border-slate-200 dark:border-slate-800" />
-                    </div>
-                    <div className="relative flex justify-center text-[9px] font-black text-slate-400 bg-white dark:bg-slate-900 px-2 uppercase tracking-wider">
-                      Ou
-                    </div>
-                  </div>
 
-                  {/* Immediate guest start */}
-                  <button
-                    type="button"
-                    onClick={() => finalizeOnboarding(null)}
-                    disabled={loading}
-                    className="w-full py-3 px-4 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-xs shadow-md shadow-rose-600/25 transition-all cursor-pointer text-center flex items-center justify-center gap-2 active:scale-98"
-                  >
-                    <span>Démarrer immédiatement (Mode Invité)</span>
-                    <ArrowRight className="w-4 h-4" />
-                  </button>
 
                   <div className="flex items-center justify-center gap-1 text-[10px] text-slate-400 font-medium pt-0.5">
                     <Shield className="w-3 h-3 text-emerald-500" />
