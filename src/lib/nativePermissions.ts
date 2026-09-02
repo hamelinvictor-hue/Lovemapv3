@@ -81,16 +81,32 @@ export async function triggerNativeNotification(): Promise<boolean> {
 /**
  * Native Google Sign In via Capacitor plugin if present
  */
-export async function triggerNativeGoogleAuth(): Promise<{ idToken: string } | null> {
+export async function triggerNativeGoogleAuth(): Promise<{ idToken: string; displayName?: string; email?: string } | null> {
   const cap = (window as any).Capacitor;
-  if (isCapacitorNative() && (window as any).GoogleAuth) {
+  const googlePlugin = (window as any).GoogleAuth || cap?.Plugins?.GoogleAuth;
+  if (googlePlugin) {
     try {
-      const googleUser = await (window as any).GoogleAuth.signIn();
-      if (googleUser?.authentication?.idToken) {
-        return { idToken: googleUser.authentication.idToken };
+      if (typeof googlePlugin.initialize === 'function') {
+        try {
+          await googlePlugin.initialize();
+        } catch (initErr) {
+          // Ignore if already initialized
+        }
+      }
+      const googleUser = await Promise.race([
+        googlePlugin.signIn(),
+        new Promise<null>((_, reject) => setTimeout(() => reject(new Error('Google sign-in plugin timeout')), 5000)),
+      ]);
+      const token = googleUser?.authentication?.idToken || googleUser?.idToken || googleUser?.authentication?.accessToken;
+      if (token) {
+        return {
+          idToken: token,
+          displayName: googleUser.name || googleUser.displayName || googleUser.givenName,
+          email: googleUser.email,
+        };
       }
     } catch (e) {
-      console.warn('Native GoogleAuth plugin error:', e);
+      console.warn('Native GoogleAuth plugin error/cancelled/timeout:', e);
     }
   }
   return null;
@@ -99,23 +115,32 @@ export async function triggerNativeGoogleAuth(): Promise<{ idToken: string } | n
 /**
  * Native Apple Sign In via Capacitor plugin if present
  */
-export async function triggerNativeAppleAuth(): Promise<{ identityToken: string; nonce?: string } | null> {
+export async function triggerNativeAppleAuth(): Promise<{ identityToken: string; nonce?: string; givenName?: string; familyName?: string; email?: string } | null> {
   const cap = (window as any).Capacitor;
-  if (isCapacitorNative() && cap?.Plugins?.SignInWithApple) {
+  const applePlugin = cap?.Plugins?.SignInWithApple || (window as any).SignInWithApple;
+  if (applePlugin) {
     try {
-      const res = await cap.Plugins.SignInWithApple.authorize({
-        clientId: 'com.lovemap.duo',
-        redirectURI: 'https://gen-lang-client-0158057859.firebaseapp.com/__/auth/handler',
-        scopes: 'email name',
-      });
-      if (res?.response?.identityToken) {
+      const res = await Promise.race([
+        applePlugin.authorize({
+          clientId: 'com.lovemap.duo',
+          redirectURI: 'https://gen-lang-client-0158057859.firebaseapp.com/__/auth/handler',
+          scopes: 'email name',
+        }),
+        new Promise<null>((_, reject) => setTimeout(() => reject(new Error('Apple sign-in plugin timeout')), 10000)),
+      ]);
+      
+      const token = res?.response?.identityToken || res?.identityToken;
+      if (token) {
         return {
-          identityToken: res.response.identityToken,
-          nonce: res.response.nonce,
+          identityToken: token,
+          nonce: res?.response?.nonce || res?.nonce,
+          givenName: res?.response?.givenName || res?.givenName,
+          familyName: res?.response?.familyName || res?.familyName,
+          email: res?.response?.email || res?.email,
         };
       }
     } catch (e) {
-      console.warn('Native SignInWithApple plugin error:', e);
+      console.warn('Native SignInWithApple plugin error/cancelled:', e);
     }
   }
   return null;
