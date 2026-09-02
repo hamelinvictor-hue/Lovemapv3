@@ -184,8 +184,8 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
     setLoading(true);
     setError(null);
     try {
-      const u = await loginWithGoogle();
-      onToast(`Connecté avec Google (${userName.trim() || u.displayName})`);
+      const u = await loginWithGoogle(userName.trim());
+      onToast(`Connecté avec Google (${userName.trim() || u.displayName || 'Google'})`);
       await finalizeOnboarding(u);
     } catch (err: any) {
       if (err.code === 'auth/popup-closed-by-user') {
@@ -203,8 +203,8 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
     setLoading(true);
     setError(null);
     try {
-      const u = await loginWithApple();
-      onToast(`Connecté avec Apple (${userName.trim()})`);
+      const u = await loginWithApple(userName.trim());
+      onToast(`Connecté avec Apple (${userName.trim() || u.displayName || 'Apple'})`);
       await finalizeOnboarding(u);
     } catch (err: any) {
       console.error('Apple Login Error Detail:', err);

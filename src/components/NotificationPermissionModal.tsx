@@ -1,6 +1,7 @@
 import React from 'react';
 import { Bell, Sparkles, Heart, Shield, CheckCircle2 } from 'lucide-react';
 import { saveHasSeenNotificationPrompt, saveStoredNotificationPermission } from '../lib/storage';
+import { triggerNativeNotification } from '../lib/nativePermissions';
 
 interface NotificationPermissionModalProps {
   isOpen: boolean;
@@ -15,23 +16,8 @@ export const NotificationPermissionModal: React.FC<NotificationPermissionModalPr
 
   const handleAllow = async () => {
     saveHasSeenNotificationPrompt(true);
-    let granted = false;
-
-    if (typeof window !== 'undefined' && 'Notification' in window) {
-      try {
-        const result = await Notification.requestPermission();
-        granted = result === 'granted';
-        saveStoredNotificationPermission(result as 'granted' | 'denied' | 'default');
-      } catch (err) {
-        console.warn('Error requesting browser notification permission:', err);
-        saveStoredNotificationPermission('granted');
-        granted = true;
-      }
-    } else {
-      saveStoredNotificationPermission('granted');
-      granted = true;
-    }
-
+    const granted = await triggerNativeNotification();
+    saveStoredNotificationPermission(granted ? 'granted' : 'denied');
     onClose(granted);
   };
 

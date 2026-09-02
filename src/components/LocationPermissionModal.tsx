@@ -1,6 +1,7 @@
 import React from 'react';
 import { Navigation, MapPin, CheckCircle2, Shield } from 'lucide-react';
 import { saveHasSeenLocationPrompt } from '../lib/storage';
+import { triggerNativeGeolocation } from '../lib/nativePermissions';
 
 interface LocationPermissionModalProps {
   isOpen: boolean;
@@ -13,17 +14,10 @@ export const LocationPermissionModal: React.FC<LocationPermissionModalProps> = (
 }) => {
   if (!isOpen) return null;
 
-  const handleAllow = () => {
+  const handleAllow = async () => {
     saveHasSeenLocationPrompt(true);
-    if ('geolocation' in navigator) {
-      navigator.geolocation.getCurrentPosition(
-        () => onClose(true),
-        () => onClose(false),
-        { enableHighAccuracy: true, timeout: 10000 }
-      );
-    } else {
-      onClose(false);
-    }
+    const granted = await triggerNativeGeolocation();
+    onClose(granted);
   };
 
   const handleSkip = () => {

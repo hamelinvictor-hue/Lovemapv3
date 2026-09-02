@@ -75,7 +75,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setLoading(true);
     setError(null);
     try {
-      const u = await loginWithGoogle();
+      const u = await loginWithGoogle(couple.partnerA.name || 'Utilisateur Google');
       await handleSyncUserCouple(u, `Connecté avec Google (${u.displayName || u.email || 'Compte Google'}) !`);
     } catch (err: any) {
       setError(err?.message || 'Erreur lors de la connexion Google');
@@ -90,7 +90,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setLoading(true);
     setError(null);
     try {
-      const u = await loginWithApple();
+      const u = await loginWithApple(couple.partnerA.name || 'Utilisateur Apple');
       await handleSyncUserCouple(u, `Connecté avec Apple (${u.displayName || u.email || 'Utilisateur Apple'}) !`);
     } catch (err: any) {
       setError(err?.message || 'Erreur lors de la connexion Apple');
