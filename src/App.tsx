@@ -80,7 +80,7 @@ import { DuoView } from './components/DuoView';
 import { DuoPremiumModal } from './components/DuoPremiumModal';
 import { MobileFrame } from './components/MobileFrame';
 import { AppTrackingModal } from './components/AppTrackingModal';
-import { LocationPermissionModal } from './components/LocationPermissionModal';
+
 import { NotificationPermissionModal } from './components/NotificationPermissionModal';
 import { StoreRatingModal } from './components/StoreRatingModal';
 import { LegalPrivacyModal } from './components/LegalPrivacyModal';
@@ -255,7 +255,7 @@ export default function App() {
     }
   }, []);
 
-  // Trigger location permission prompt (non-blocking, deferred to avoid interrupting initial boot)
+  // Trigger location permission prompt (native)
   useEffect(() => {
     if (
       activeTab === 'map' &&
@@ -265,9 +265,11 @@ export default function App() {
       !showDuoCodeModal &&
       !getHasSeenLocationPrompt()
     ) {
-      const locTimer = setTimeout(() => {
-        setIsLocationModalOpen(true);
-      }, 3500);
+      const locTimer = setTimeout(async () => {
+        saveHasSeenLocationPrompt(true);
+        const granted = await triggerNativeGeolocation();
+        saveLocationPermissionStatus(granted ? 'granted' : 'denied');
+      }, 500);
       return () => clearTimeout(locTimer);
     }
   }, [activeTab, isOnboardingOpen, isAttModalOpen, isAuthOpen, showDuoCodeModal]);
@@ -821,14 +823,8 @@ export default function App() {
     }
     // Clear user data while safely preserving system and onboarding state
     clearUserSessionStorage();
-    setSpots([]);
-    setNotifications([]);
-    setCouple(INITIAL_COUPLE);
-    setActivePartnerId('partner_a');
-    setIsOnboardingOpen(false);
-    // Open clean Auth / Login view directly
-    setIsAuthOpen(true);
-    showToast('Vous avez été déconnecté. Connectez-vous ou créez un nouvel espace Duo.');
+    localStorage.clear();
+    window.location.reload();
   };
 
   // Break Duo handler
@@ -912,18 +908,13 @@ export default function App() {
     try {
       await deleteUserAccountInFirestore(currentUser, currentCode);
       await purgeAllFirestoreData();
+      await logoutFromFirebase();
     } catch (e) {
       console.error(e);
     }
     clearUserSessionStorage();
-    setSpots([]);
-    setNotifications([]);
-    setCouple(INITIAL_COUPLE);
-    setActivePartnerId('partner_a');
-    setIsOnboardingOpen(false);
-    // Open clean Auth / Login view directly
-    setIsAuthOpen(true);
-    showToast('Votre compte et toutes les données de la base de données ont été définitivement purgés.');
+    localStorage.clear();
+    window.location.reload();
   };
 
   // Filter notifications meant for the active partner (creators do not receive notifications for their own actions)
@@ -1280,17 +1271,7 @@ export default function App() {
           }}
         />
 
-        <LocationPermissionModal
-          isOpen={isLocationModalOpen}
-          onClose={(allowed) => {
-            setIsLocationModalOpen(false);
-            if (allowed) {
-              showToast('📍 Position GPS activée en direct !');
-            } else {
-              showToast('🗺️ Saisie manuelle des lieux active.');
-            }
-          }}
-        />
+
 
         <NotificationPermissionModal
           isOpen={isNotificationModalOpen}

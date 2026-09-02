@@ -329,7 +329,7 @@ export const MapView: React.FC<MapViewProps> = ({
     const maptilerKey = 
       (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_MAPTILER_KEY?.trim() ||
       (window as any).__MAPTILER_KEY__?.trim() ||
-      '';
+      'KtJUzIkonFUsEibgTqOb';
     const hasValidMaptilerKey = Boolean(
       maptilerKey &&
       maptilerKey.length > 5 &&
@@ -359,8 +359,8 @@ export const MapView: React.FC<MapViewProps> = ({
         tileUrl = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
         attribution = '&copy; <a href="https://carto.com/" target="_blank">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a>';
       } else {
-        tileUrl = 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png';
-        attribution = '&copy; <a href="https://carto.com/" target="_blank">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a>';
+        tileUrl = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+        attribution = '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap contributors</a>';
       }
     }
 

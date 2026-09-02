@@ -442,8 +442,11 @@ export async function ensureCoupleRoomInFirestore(
         ...localCouple,
         code: cleanCode,
         ownerUid: user.uid,
+        ownerEmail: user.email || '',
         partnerAUid: partnerId === 'partner_a' ? user.uid : null,
+        partnerAEmail: partnerId === 'partner_a' ? (user.email || '') : null,
         partnerBUid: partnerId === 'partner_b' ? user.uid : null,
+        partnerBEmail: partnerId === 'partner_b' ? (user.email || '') : null,
         memberUids,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -611,20 +614,29 @@ export async function joinCoupleInFirestore(
 
   const existingData = snap.data() as CouplePair & {
     ownerUid?: string;
+    ownerEmail?: string;
     partnerAUid?: string;
+    partnerAEmail?: string;
     partnerBUid?: string;
+    partnerBEmail?: string;
     memberUids?: string[];
     isCodeUsed?: boolean;
   };
 
-  // Check if code was already used by a partner
-  const isAlreadyPaired = 
-    (existingData.partnerBUid && existingData.partnerBUid !== user.uid) ||
-    (existingData.isCodeUsed && !existingData.memberUids?.includes(user.uid)) ||
-    (existingData.partnerB?.name && existingData.partnerB.name !== 'En attente...' && !existingData.memberUids?.includes(user.uid));
-
-  if (isAlreadyPaired) {
-    throw new Error('Ce code de duo a déjà été utilisé ! Le couple est déjà complet et connecté.');
+  const existingMembers = existingData.memberUids || [existingData.ownerUid, existingData.partnerAUid].filter(Boolean) as string[];
+  const memberUids = Array.from(new Set([...existingMembers, user.uid]));
+  
+  // If user has same email as owner/partnerA, they are restoring their Partner A account on a new device
+  if (user.email && (user.email === existingData.ownerEmail || user.email === existingData.partnerAEmail)) {
+    await withTimeout(
+      setDoc(coupleRef, {
+        partnerAUid: user.uid,
+        memberUids,
+        updatedAt: serverTimestamp(),
+      }, { merge: true }),
+      3500, null
+    );
+    return existingData;
   }
 
   // Update partner B profile
@@ -639,9 +651,6 @@ export async function joinCoupleInFirestore(
     ...existingData,
     partnerB,
   };
-
-  const existingMembers = existingData.memberUids || [existingData.ownerUid, existingData.partnerAUid].filter(Boolean) as string[];
-  const memberUids = Array.from(new Set([...existingMembers, user.uid]));
 
   await withTimeout(
     setDoc(
