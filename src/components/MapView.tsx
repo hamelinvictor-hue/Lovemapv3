@@ -139,56 +139,61 @@ export const MapView: React.FC<MapViewProps> = ({
     const { lat, lng, accuracy } = userCoords;
     const avatarSrc = userAvatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150';
     const displayName = userName || 'Moi';
+    const addLabel = t?.map?.addSpotHere || 'Ajouter un lieu ici';
 
-    const liveUserIcon = L.divIcon({
-      className: 'user-live-gps-marker',
-      html: `
-        <div style="width: 44px; height: 44px; position: relative; cursor: pointer;">
-          <div style="width: 44px; height: 44px; border-radius: 50%; border: 3px solid #2563eb; background-color: #ffffff; box-shadow: 0 4px 16px rgba(37, 99, 235, 0.4); overflow: hidden; box-sizing: border-box;">
-            <img src="${avatarSrc}" alt="${displayName}" style="width: 100%; height: 100%; object-fit: cover; border-radius: 50%; display: block;" onerror="this.src='https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150'" />
+    try {
+      const liveUserIcon = L.divIcon({
+        className: 'user-live-gps-marker',
+        html: `
+          <div style="width: 44px; height: 44px; position: relative; cursor: pointer;">
+            <div style="width: 44px; height: 44px; border-radius: 50%; border: 3px solid #2563eb; background-color: #ffffff; box-shadow: 0 4px 16px rgba(37, 99, 235, 0.4); overflow: hidden; box-sizing: border-box;">
+              <img src="${avatarSrc}" alt="${displayName}" style="width: 100%; height: 100%; object-fit: cover; border-radius: 50%; display: block;" onerror="this.src='https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150'" />
+            </div>
+            <div style="position: absolute; bottom: 0px; right: 0px; width: 12px; height: 12px; border-radius: 50%; background-color: #10b981; border: 2px solid #ffffff; z-index: 20;"></div>
           </div>
-          <div style="position: absolute; bottom: 0px; right: 0px; width: 12px; height: 12px; border-radius: 50%; background-color: #10b981; border: 2px solid #ffffff; z-index: 20;"></div>
-        </div>
-      `,
-      iconSize: [44, 44],
-      iconAnchor: [22, 22],
-    });
-
-    const popupHtml = `
-      <div style="font-family: system-ui, -apple-system, sans-serif; text-align: center; padding: 6px 4px; min-width: 170px;">
-        <div style="display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 10px;">
-          <img src="${avatarSrc}" style="width: 32px; height: 32px; border-radius: 50%; object-fit: cover; border: 2px solid #2563eb;" />
-          <strong style="color: #0f172a; font-size: 13px;">${displayName}</strong>
-        </div>
-        <button
-          id="btn-add-spot-at-my-location"
-          type="button"
-          data-action="add-spot-at-my-location"
-          style="width: 100%; padding: 9px 12px; background: linear-gradient(135deg, #e11d48, #be123c); color: white; border: none; border-radius: 12px; font-weight: 800; font-size: 11px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; box-shadow: 0 4px 14px rgba(225, 29, 72, 0.4); transition: transform 0.1s;"
-        >
-          📍 ${t.map.addSpotHere}
-        </button>
-      </div>
-    `;
-
-    if (userMarkerRef.current) {
-      userMarkerRef.current.setLatLng([lat, lng]);
-      userMarkerRef.current.setIcon(liveUserIcon);
-      userMarkerRef.current.setPopupContent(popupHtml);
-    } else {
-      const marker = L.marker([lat, lng], {
-        icon: liveUserIcon,
-        zIndexOffset: 3000,
-        interactive: true,
-      }).addTo(map);
-
-      marker.bindPopup(popupHtml, {
-        closeButton: true,
+        `,
+        iconSize: [44, 44],
+        iconAnchor: [22, 22],
       });
 
-      userMarkerRef.current = marker;
+      const popupHtml = `
+        <div style="font-family: system-ui, -apple-system, sans-serif; text-align: center; padding: 6px 4px; min-width: 170px;">
+          <div style="display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 10px;">
+            <img src="${avatarSrc}" style="width: 32px; height: 32px; border-radius: 50%; object-fit: cover; border: 2px solid #2563eb;" />
+            <strong style="color: #0f172a; font-size: 13px;">${displayName}</strong>
+          </div>
+          <button
+            id="btn-add-spot-at-my-location"
+            type="button"
+            data-action="add-spot-at-my-location"
+            style="width: 100%; padding: 9px 12px; background: linear-gradient(135deg, #e11d48, #be123c); color: white; border: none; border-radius: 12px; font-weight: 800; font-size: 11px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; box-shadow: 0 4px 14px rgba(225, 29, 72, 0.4); transition: transform 0.1s;"
+          >
+            📍 ${addLabel}
+          </button>
+        </div>
+      `;
+
+      if (userMarkerRef.current) {
+        userMarkerRef.current.setLatLng([lat, lng]);
+        userMarkerRef.current.setIcon(liveUserIcon);
+        userMarkerRef.current.setPopupContent(popupHtml);
+      } else {
+        const marker = L.marker([lat, lng], {
+          icon: liveUserIcon,
+          zIndexOffset: 3000,
+          interactive: true,
+        }).addTo(map);
+
+        marker.bindPopup(popupHtml, {
+          closeButton: true,
+        });
+
+        userMarkerRef.current = marker;
+      }
+    } catch (err) {
+      console.warn('Live user marker creation notice:', err);
     }
-  }, [userCoords, userAvatar, userName, t.map.addSpotHere]);
+  }, [userCoords, userAvatar, userName, t?.map?.addSpotHere]);
 
   // Robust Global listener for clicks on popup buttons (avoids Leaflet event swallowing)
   useEffect(() => {

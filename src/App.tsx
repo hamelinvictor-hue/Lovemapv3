@@ -930,7 +930,10 @@ export default function App() {
     (s) => s.status === 'pending_validation' && s.creatorId !== activePartnerId
   ).length;
 
-  const activeUser = activePartnerId === 'partner_a' ? couple.partnerA : couple.partnerB;
+  const activeUser = (activePartnerId === 'partner_a' ? couple?.partnerA : couple?.partnerB) || {
+    name: 'Moi',
+    avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+  };
 
   return (
     <div className="w-full h-full bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 flex flex-col font-sans select-none transition-colors duration-200">

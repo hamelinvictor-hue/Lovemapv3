@@ -141,43 +141,55 @@ export async function triggerNativeGeolocation(): Promise<boolean> {
  * Get accurate real-time GPS position from Apple iOS / Android native SDK or WebKit
  */
 export async function getNativeCurrentPosition(): Promise<{ latitude: number; longitude: number; accuracy: number } | null> {
-  const cap = (window as any).Capacitor;
-  if (cap?.Plugins?.Geolocation) {
-    try {
-      const pos = await cap.Plugins.Geolocation.getCurrentPosition({
-        enableHighAccuracy: true,
-        timeout: 15000,
-        maximumAge: 3000,
-      });
-      if (pos?.coords) {
-        return {
-          latitude: pos.coords.latitude,
-          longitude: pos.coords.longitude,
-          accuracy: pos.coords.accuracy || 15,
-        };
-      }
-    } catch (e) {
-      console.warn('Capacitor Geolocation getCurrentPosition fallback:', e);
-    }
-  }
-
-  if (typeof navigator !== 'undefined' && 'geolocation' in navigator) {
-    return new Promise((resolve) => {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          resolve({
+  try {
+    const cap = (window as any).Capacitor;
+    if (cap?.Plugins?.Geolocation) {
+      try {
+        const pos = await cap.Plugins.Geolocation.getCurrentPosition({
+          enableHighAccuracy: true,
+          timeout: 12000,
+          maximumAge: 5000,
+        });
+        if (pos?.coords?.latitude && pos?.coords?.longitude) {
+          return {
             latitude: pos.coords.latitude,
             longitude: pos.coords.longitude,
             accuracy: pos.coords.accuracy || 15,
-          });
-        },
-        (err) => {
-          console.warn('Navigator Geolocation error:', err);
+          };
+        }
+      } catch (e) {
+        console.warn('Capacitor Geolocation getCurrentPosition notice:', e);
+      }
+    }
+
+    if (typeof navigator !== 'undefined' && 'geolocation' in navigator) {
+      return new Promise((resolve) => {
+        try {
+          navigator.geolocation.getCurrentPosition(
+            (pos) => {
+              if (pos?.coords) {
+                resolve({
+                  latitude: pos.coords.latitude,
+                  longitude: pos.coords.longitude,
+                  accuracy: pos.coords.accuracy || 15,
+                });
+              } else {
+                resolve(null);
+              }
+            },
+            (err) => {
+              console.warn('Navigator Geolocation notice:', err);
+              resolve(null);
+            },
+            { enableHighAccuracy: true, timeout: 12000, maximumAge: 5000 }
+          );
+        } catch {
           resolve(null);
-        },
-        { enableHighAccuracy: true, timeout: 15000, maximumAge: 3000 }
-      );
-    });
+        }
+      });
+    }
+  } catch (err) {
+    console.warn('getNativeCurrentPosition general notice:', err);
   }
 
   return null;
@@ -190,63 +202,83 @@ export function watchNativePosition(
   onSuccess: (coords: { latitude: number; longitude: number; accuracy: number }) => void,
   onError?: (error: any) => void
 ): () => void {
-  const cap = (window as any).Capacitor;
-  let watchId: any = null;
-  let cancelled = false;
+  try {
+    const cap = (window as any).Capacitor;
+    let watchId: any = null;
+    let cancelled = false;
 
-  if (cap?.Plugins?.Geolocation) {
-    cap.Plugins.Geolocation.watchPosition(
-      { enableHighAccuracy: true, timeout: 20000, maximumAge: 3000 },
-      (pos: any, err: any) => {
-        if (cancelled) return;
-        if (pos?.coords) {
-          onSuccess({
-            latitude: pos.coords.latitude,
-            longitude: pos.coords.longitude,
-            accuracy: pos.coords.accuracy || 15,
-          });
-        } else if (err && onError) {
-          onError(err);
+    if (cap?.Plugins?.Geolocation) {
+      try {
+        const watchPromise = cap.Plugins.Geolocation.watchPosition(
+          { enableHighAccuracy: true, timeout: 20000, maximumAge: 5000 },
+          (pos: any, err: any) => {
+            if (cancelled) return;
+            if (pos?.coords?.latitude && pos?.coords?.longitude) {
+              onSuccess({
+                latitude: pos.coords.latitude,
+                longitude: pos.coords.longitude,
+                accuracy: pos.coords.accuracy || 15,
+              });
+            } else if (err && onError) {
+              onError(err);
+            }
+          }
+        );
+
+        if (watchPromise && typeof watchPromise.then === 'function') {
+          watchPromise
+            .then((id: any) => {
+              if (cancelled) {
+                if (id) cap.Plugins.Geolocation.clearWatch({ id }).catch(() => {});
+              } else {
+                watchId = id;
+              }
+            })
+            .catch((err: any) => {
+              if (onError) onError(err);
+            });
         }
+      } catch (err) {
+        console.warn('Capacitor watchPosition call notice:', err);
       }
-    )
-      .then((id: any) => {
-        if (cancelled) {
-          cap.Plugins.Geolocation.clearWatch({ id });
-        } else {
-          watchId = id;
+
+      return () => {
+        cancelled = true;
+        if (watchId && cap?.Plugins?.Geolocation) {
+          cap.Plugins.Geolocation.clearWatch({ id: watchId }).catch(() => {});
         }
-      })
-      .catch((err: any) => {
-        if (onError) onError(err);
-      });
+      };
+    }
 
-    return () => {
-      cancelled = true;
-      if (watchId && cap?.Plugins?.Geolocation) {
-        cap.Plugins.Geolocation.clearWatch({ id: watchId });
+    if (typeof navigator !== 'undefined' && 'geolocation' in navigator) {
+      try {
+        const navWatchId = navigator.geolocation.watchPosition(
+          (pos) => {
+            if (pos?.coords?.latitude && pos?.coords?.longitude) {
+              onSuccess({
+                latitude: pos.coords.latitude,
+                longitude: pos.coords.longitude,
+                accuracy: pos.coords.accuracy || 15,
+              });
+            }
+          },
+          (err) => {
+            if (onError) onError(err);
+          },
+          { enableHighAccuracy: true, timeout: 20000, maximumAge: 5000 }
+        );
+
+        return () => {
+          try {
+            navigator.geolocation.clearWatch(navWatchId);
+          } catch {}
+        };
+      } catch (err) {
+        console.warn('Navigator watchPosition notice:', err);
       }
-    };
-  }
-
-  if (typeof navigator !== 'undefined' && 'geolocation' in navigator) {
-    const navWatchId = navigator.geolocation.watchPosition(
-      (pos) => {
-        onSuccess({
-          latitude: pos.coords.latitude,
-          longitude: pos.coords.longitude,
-          accuracy: pos.coords.accuracy || 15,
-        });
-      },
-      (err) => {
-        if (onError) onError(err);
-      },
-      { enableHighAccuracy: true, timeout: 20000, maximumAge: 3000 }
-    );
-
-    return () => {
-      navigator.geolocation.clearWatch(navWatchId);
-    };
+    }
+  } catch (err) {
+    console.warn('watchNativePosition global notice:', err);
   }
 
   return () => {};

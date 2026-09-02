@@ -2,19 +2,20 @@ import * as React from 'react';
 
 export class ErrorBoundary extends React.Component<
   { children: React.ReactNode },
-  { hasError: boolean }
+  { hasError: boolean; error: Error | null; errorInfo: React.ErrorInfo | null; showDetails: boolean }
 > {
   constructor(props: { children: React.ReactNode }) {
     super(props);
-    this.state = { hasError: false };
+    this.state = { hasError: false, error: null, errorInfo: null, showDetails: false };
   }
 
-  static getDerivedStateFromError() {
-    return { hasError: true };
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
   }
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
-    console.error('App ErrorBoundary caught:', error, errorInfo);
+    console.error('App ErrorBoundary caught error:', error?.message || error, error?.stack, errorInfo?.componentStack);
+    this.setState({ errorInfo });
   }
 
   render() {
@@ -29,9 +30,14 @@ export class ErrorBoundary extends React.Component<
             <p className="text-xs text-slate-300">
               L'application a rencontré un imprévu temporaire. Vos données et vos spots sont bien conservés.
             </p>
+            {this.state.error && (
+              <div className="text-left bg-slate-950/80 p-3 rounded-xl border border-slate-800 text-[11px] font-mono text-rose-300 break-words max-h-32 overflow-y-auto">
+                {String(this.state.error.message || this.state.error)}
+              </div>
+            )}
             <button
               onClick={() => {
-                this.setState({ hasError: false });
+                this.setState({ hasError: false, error: null, errorInfo: null });
                 window.location.reload();
               }}
               className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-rose-500 to-pink-500 text-white font-extrabold text-xs shadow-lg hover:brightness-110 active:scale-98 transition-all cursor-pointer"
@@ -46,5 +52,6 @@ export class ErrorBoundary extends React.Component<
     return this.props.children;
   }
 }
+
 
 
