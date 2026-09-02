@@ -90,12 +90,6 @@ export const MapView: React.FC<MapViewProps> = ({
     let cleanupWatch: (() => void) | null = null;
 
     const startTrackingIfAllowed = async () => {
-      if (!getHasSeenLocationPrompt()) {
-        saveHasSeenLocationPrompt(true);
-        const newlyGranted = await triggerNativeGeolocation();
-        saveLocationPermissionStatus(newlyGranted ? 'granted' : 'denied');
-      }
-
       const storedStatus = getLocationPermissionStatus();
       if (storedStatus === 'denied') return;
 

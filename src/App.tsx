@@ -80,7 +80,7 @@ import { DuoView } from './components/DuoView';
 import { DuoPremiumModal } from './components/DuoPremiumModal';
 import { MobileFrame } from './components/MobileFrame';
 import { AppTrackingModal } from './components/AppTrackingModal';
-
+import { LocationPermissionModal } from './components/LocationPermissionModal';
 import { NotificationPermissionModal } from './components/NotificationPermissionModal';
 import { StoreRatingModal } from './components/StoreRatingModal';
 import { LegalPrivacyModal } from './components/LegalPrivacyModal';
@@ -254,6 +254,23 @@ export default function App() {
       }
     }
   }, []);
+
+  // Trigger location permission prompt
+  useEffect(() => {
+    if (
+      activeTab === 'map' &&
+      !isOnboardingOpen &&
+      !isAttModalOpen &&
+      !isAuthOpen &&
+      !showDuoCodeModal &&
+      !getHasSeenLocationPrompt()
+    ) {
+      const locTimer = setTimeout(() => {
+        setIsLocationModalOpen(true);
+      }, 500);
+      return () => clearTimeout(locTimer);
+    }
+  }, [activeTab, isOnboardingOpen, isAttModalOpen, isAuthOpen, showDuoCodeModal]);
 
   // Monitor 48H countdown: when remaining time hits <= 1 hour (3600s), dispatch urgency system notification!
   useEffect(() => {
@@ -805,7 +822,15 @@ export default function App() {
     // Clear user data while safely preserving system and onboarding state
     clearUserSessionStorage();
     localStorage.clear();
-    window.location.reload();
+    setSpots([]);
+    setNotifications([]);
+    setCouple(INITIAL_COUPLE);
+    setActivePartnerId('partner_a');
+    setIsOnboardingOpen(false);
+    setIsSettingsOpen(false);
+    // Open clean Auth / Login view directly
+    setIsAuthOpen(true);
+    showToast('Vous avez été déconnecté.');
   };
 
   // Break Duo handler
@@ -895,7 +920,15 @@ export default function App() {
     }
     clearUserSessionStorage();
     localStorage.clear();
-    window.location.reload();
+    setSpots([]);
+    setNotifications([]);
+    setCouple(INITIAL_COUPLE);
+    setActivePartnerId('partner_a');
+    setIsOnboardingOpen(false);
+    setIsSettingsOpen(false);
+    // Open clean Auth / Login view directly
+    setIsAuthOpen(true);
+    showToast('Votre compte a été définitivement supprimé.');
   };
 
   // Filter notifications meant for the active partner (creators do not receive notifications for their own actions)
@@ -1253,6 +1286,18 @@ export default function App() {
         />
 
 
+
+        <LocationPermissionModal
+          isOpen={isLocationModalOpen}
+          onClose={(allowed) => {
+            setIsLocationModalOpen(false);
+            if (allowed) {
+              showToast('📍 Position GPS activée en direct !');
+            } else {
+              showToast('🗺️ Saisie manuelle des lieux active.');
+            }
+          }}
+        />
 
         <NotificationPermissionModal
           isOpen={isNotificationModalOpen}
