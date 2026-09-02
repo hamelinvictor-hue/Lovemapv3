@@ -11,6 +11,7 @@ const ONBOARDING_KEY = 'lovemap_onboarding_completed_v2';
 const LAUNCH_COUNT_KEY = 'lovemap_launch_count_v2';
 const ATT_CONSENT_KEY = 'lovemap_att_consent_v2';
 const LOCATION_PROMPT_KEY = 'lovemap_location_prompt_seen_v2';
+const LOCATION_PERMISSION_STATUS_KEY = 'lovemap_location_permission_status_v2';
 const RATED_APP_KEY = 'lovemap_has_rated_app_v2';
 const FIRST_SPOT_RATING_PROMPTED_KEY = 'lovemap_first_spot_rating_prompted_v2';
 const NOTIFICATION_PROMPT_KEY = 'lovemap_notification_prompt_seen_v2';
@@ -125,6 +126,24 @@ export function saveHasSeenLocationPrompt(seen: boolean): void {
     localStorage.setItem(LOCATION_PROMPT_KEY, seen ? 'true' : 'false');
   } catch (err) {
     console.error('Failed to save location prompt state', err);
+  }
+}
+
+export function getLocationPermissionStatus(): 'granted' | 'denied' | 'prompt' {
+  try {
+    const val = localStorage.getItem(LOCATION_PERMISSION_STATUS_KEY);
+    if (val === 'granted' || val === 'denied') return val;
+    return 'prompt';
+  } catch {
+    return 'prompt';
+  }
+}
+
+export function saveLocationPermissionStatus(status: 'granted' | 'denied' | 'prompt'): void {
+  try {
+    localStorage.setItem(LOCATION_PERMISSION_STATUS_KEY, status);
+  } catch (err) {
+    console.error('Failed to save location permission status', err);
   }
 }
 

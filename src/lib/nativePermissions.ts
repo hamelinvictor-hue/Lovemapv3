@@ -85,6 +85,34 @@ export async function showNativeConfirm(title: string, message: string, okButton
 }
 
 /**
+ * Check if Geolocation permission is already granted without prompting system dialog
+ */
+export async function checkNativeLocationPermission(): Promise<boolean> {
+  try {
+    const cap = (window as any).Capacitor;
+    if (cap?.Plugins?.Geolocation?.checkPermissions) {
+      const res = await cap.Plugins.Geolocation.checkPermissions();
+      if (res?.location === 'granted' || res?.coarseLocation === 'granted') {
+        return true;
+      }
+      return false;
+    }
+
+    if (typeof navigator !== 'undefined' && 'permissions' in navigator && navigator.permissions?.query) {
+      try {
+        const perm = await navigator.permissions.query({ name: 'geolocation' as PermissionName });
+        return perm.state === 'granted';
+      } catch {
+        return false;
+      }
+    }
+  } catch (err) {
+    console.warn('checkNativeLocationPermission check notice:', err);
+  }
+  return false;
+}
+
+/**
  * Native Geolocation permission request and Apple iOS trigger
  */
 export async function triggerNativeGeolocation(): Promise<boolean> {

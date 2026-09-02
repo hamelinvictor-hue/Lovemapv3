@@ -1,6 +1,6 @@
 import React from 'react';
 import { Navigation, MapPin, CheckCircle2, Shield } from 'lucide-react';
-import { saveHasSeenLocationPrompt } from '../lib/storage';
+import { saveHasSeenLocationPrompt, saveLocationPermissionStatus } from '../lib/storage';
 import { triggerNativeGeolocation } from '../lib/nativePermissions';
 
 interface LocationPermissionModalProps {
@@ -17,11 +17,13 @@ export const LocationPermissionModal: React.FC<LocationPermissionModalProps> = (
   const handleAllow = async () => {
     saveHasSeenLocationPrompt(true);
     const granted = await triggerNativeGeolocation();
+    saveLocationPermissionStatus(granted ? 'granted' : 'denied');
     onClose(granted);
   };
 
   const handleSkip = () => {
     saveHasSeenLocationPrompt(true);
+    saveLocationPermissionStatus('denied');
     onClose(false);
   };
 

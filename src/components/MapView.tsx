@@ -2,7 +2,8 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import L, { createHeatLayer } from '../lib/heatmapPlugin';
 import { createCachedTileLayer, autoPreCacheViewport } from '../lib/cachedTileLayer';
-import { getNativeCurrentPosition, watchNativePosition, triggerNativeGeolocation } from '../lib/nativePermissions';
+import { getNativeCurrentPosition, watchNativePosition, triggerNativeGeolocation, checkNativeLocationPermission } from '../lib/nativePermissions';
+import { getLocationPermissionStatus, saveLocationPermissionStatus } from '../lib/storage';
 import { Spot, PartnerId, AppMode } from '../types';
 import { CATEGORIES } from '../data/initialData';
 import { triggerHaptic } from '../lib/feedback';
@@ -84,26 +85,39 @@ export const MapView: React.FC<MapViewProps> = ({
     }
   }, [theme]);
 
-  // Continuous real-time GPS tracking across Apple iOS native & Web
+  // Continuous real-time GPS tracking across Apple iOS native & Web (only if user has already granted permission)
   useEffect(() => {
-    // Initial fetch of exact position
-    getNativeCurrentPosition().then((pos) => {
+    let cleanupWatch: (() => void) | null = null;
+
+    const startTrackingIfAllowed = async () => {
+      const storedStatus = getLocationPermissionStatus();
+      if (storedStatus === 'denied') return;
+
+      const isGranted = storedStatus === 'granted' || (await checkNativeLocationPermission());
+      if (!isGranted) return;
+
+      // Initial fetch of exact position
+      const pos = await getNativeCurrentPosition();
       if (pos) {
         setUserCoords({ lat: pos.latitude, lng: pos.longitude, accuracy: pos.accuracy });
       }
-    });
 
-    const cleanupWatch = watchNativePosition(
-      (pos) => {
-        setUserCoords({ lat: pos.latitude, lng: pos.longitude, accuracy: pos.accuracy });
-      },
-      (err) => {
-        console.warn('Realtime geolocation watch notice:', err);
-      }
-    );
+      cleanupWatch = watchNativePosition(
+        (updatedPos) => {
+          setUserCoords({ lat: updatedPos.latitude, lng: updatedPos.longitude, accuracy: updatedPos.accuracy });
+        },
+        (err) => {
+          console.warn('Realtime geolocation watch notice:', err);
+        }
+      );
+    };
+
+    startTrackingIfAllowed();
 
     return () => {
-      cleanupWatch();
+      if (cleanupWatch) {
+        cleanupWatch();
+      }
     };
   }, []);
 
@@ -704,10 +718,19 @@ export const MapView: React.FC<MapViewProps> = ({
     try {
       const pos = await getNativeCurrentPosition();
       if (pos) {
+        saveLocationPermissionStatus('granted');
         setUserCoords({ lat: pos.latitude, lng: pos.longitude, accuracy: pos.accuracy });
         mapInstanceRef.current?.flyTo([pos.latitude, pos.longitude], 16, { duration: 1 });
       } else {
-        await triggerNativeGeolocation();
+        const granted = await triggerNativeGeolocation();
+        if (granted) {
+          saveLocationPermissionStatus('granted');
+          const secondPos = await getNativeCurrentPosition();
+          if (secondPos) {
+            setUserCoords({ lat: secondPos.latitude, lng: secondPos.longitude, accuracy: secondPos.accuracy });
+            mapInstanceRef.current?.flyTo([secondPos.latitude, secondPos.longitude], 16, { duration: 1 });
+          }
+        }
       }
     } catch (err) {
       console.warn('Geolocation trigger error:', err);

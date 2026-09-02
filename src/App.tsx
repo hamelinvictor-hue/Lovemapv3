@@ -255,15 +255,22 @@ export default function App() {
     }
   }, []);
 
-  // Trigger location permission prompt
+  // Trigger location permission prompt (non-blocking, deferred to avoid interrupting initial boot)
   useEffect(() => {
-    if (activeTab === 'map' && !isOnboardingOpen && !isAttModalOpen && !getHasSeenLocationPrompt()) {
+    if (
+      activeTab === 'map' &&
+      !isOnboardingOpen &&
+      !isAttModalOpen &&
+      !isAuthOpen &&
+      !showDuoCodeModal &&
+      !getHasSeenLocationPrompt()
+    ) {
       const locTimer = setTimeout(() => {
         setIsLocationModalOpen(true);
-      }, 800);
+      }, 3500);
       return () => clearTimeout(locTimer);
     }
-  }, [activeTab, isOnboardingOpen, isAttModalOpen]);
+  }, [activeTab, isOnboardingOpen, isAttModalOpen, isAuthOpen, showDuoCodeModal]);
 
   // Monitor 48H countdown: when remaining time hits <= 1 hour (3600s), dispatch urgency system notification!
   useEffect(() => {
