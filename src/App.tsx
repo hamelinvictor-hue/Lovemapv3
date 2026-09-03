@@ -61,6 +61,7 @@ import {
   getTrialOfferRemainingSeconds,
 } from './lib/subscription';
 import { ensureSubscriberInRevenueCat } from './lib/revenuecatClient';
+import { initializePurchases } from './lib/purchases';
 import { triggerHaptic } from './lib/feedback';
 import { INITIAL_SPOTS, INITIAL_NOTIFICATIONS, INITIAL_COUPLE } from './data/initialData';
 
@@ -259,6 +260,11 @@ export default function App() {
       }
     }
   }, []);
+
+  // Initialize RevenueCat SDK early for native iOS
+  useEffect(() => {
+    initializePurchases(couple.code || undefined);
+  }, [couple.code]);
 
   // Trigger location permission prompt
   useEffect(() => {

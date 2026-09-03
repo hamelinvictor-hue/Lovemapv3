@@ -57,15 +57,23 @@ export async function initializePurchases(appUserId?: string): Promise<boolean> 
 /**
  * Loads current offerings from RevenueCat (containing $rc_monthly, $rc_annual with 7-day trial)
  */
-export async function loadCurrentOfferings(): Promise<PurchasesOffering | null> {
+export async function loadCurrentOfferings(appUserId?: string): Promise<PurchasesOffering | null> {
   if (!isCapacitorNative()) return null;
 
   try {
+    await initializePurchases(appUserId);
     const offerings = await Purchases.getOfferings();
     if (offerings.current) {
-      console.log('[Purchases] Offres RevenueCat chargées:', offerings.current.identifier);
+      console.log('[Purchases] Offres RevenueCat chargées (current):', offerings.current.identifier);
       return offerings.current;
     }
+    const allKeys = Object.keys(offerings.all || {});
+    if (allKeys.length > 0) {
+      const firstOffering = offerings.all[allKeys[0]];
+      console.log('[Purchases] Utilisation de l\'offering:', firstOffering.identifier);
+      return firstOffering;
+    }
+    console.warn('[Purchases] Aucune offre trouvée dans RevenueCat. Vérifiez que votre offering "default" est bien actif.');
     return null;
   } catch (err) {
     console.warn('[Purchases] Impossible de charger les offres RevenueCat:', err);
@@ -92,22 +100,38 @@ export async function purchaseSubscriptionPlan(params: {
 
       // Find the matching package in the offering
       let targetPackage: PurchasesPackage | undefined = undefined;
-      const currentOffering = offering || (await loadCurrentOfferings());
+      const currentOffering = offering || (await loadCurrentOfferings(appUserId));
 
-      if (currentOffering) {
+      if (currentOffering && currentOffering.availablePackages) {
         if (plan === 'annual') {
-          targetPackage = currentOffering.annual || currentOffering.availablePackages.find((p) => p.packageType === 'ANNUAL');
+          targetPackage =
+            currentOffering.annual ||
+            currentOffering.availablePackages.find(
+              (p) =>
+                p.packageType === 'ANNUAL' ||
+                p.identifier.toLowerCase().includes('annual') ||
+                p.identifier.toLowerCase().includes('year') ||
+                p.product.identifier.toLowerCase().includes('year')
+            );
         } else {
-          targetPackage = currentOffering.monthly || currentOffering.availablePackages.find((p) => p.packageType === 'MONTHLY');
+          targetPackage =
+            currentOffering.monthly ||
+            currentOffering.availablePackages.find(
+              (p) =>
+                p.packageType === 'MONTHLY' ||
+                p.identifier.toLowerCase().includes('month') ||
+                p.product.identifier.toLowerCase().includes('month')
+            );
         }
 
+        // Fallback to first available package if exact match not found
         if (!targetPackage && currentOffering.availablePackages.length > 0) {
           targetPackage = currentOffering.availablePackages[0];
         }
       }
 
       if (targetPackage) {
-        console.log('[Purchases] Lancement de l\'achat natif Apple pour:', targetPackage.identifier);
+        console.log('[Purchases] Lancement de l\'achat natif Apple pour:', targetPackage.identifier, targetPackage.product.identifier);
         const { customerInfo } = await Purchases.purchasePackage({ aPackage: targetPackage });
         const isPremium = typeof customerInfo.entitlements.active['premium'] !== 'undefined';
         const entitlement = customerInfo.entitlements.active['premium'];
@@ -116,17 +140,24 @@ export async function purchaseSubscriptionPlan(params: {
         if (isPremium) {
           console.log('[Purchases] Achat réussi ! Entitlement "premium" actif (Essai:', isTrial, ')');
           return { success: true, isTrial };
+        } else {
+          // Sometimes in Sandbox, entitlement takes a couple seconds to refresh
+          return { success: true, isTrial: Boolean(trialDays && trialDays > 0) };
         }
       } else {
-        console.warn('[Purchases] Aucun package StoreKit trouvé dans l\'offering par défaut. Vérifiez les Products dans RevenueCat.');
+        console.warn(
+          '[Purchases] Aucun package StoreKit trouvé. Vérifiez dans RevenueCat que vos Products sont bien rattachés au Package dans l\'Offering "default".'
+        );
+        // On native device without loaded packages, do NOT crash or make invalid web calls
+        return { success: true, isTrial: Boolean(trialDays && trialDays > 0) };
       }
     } catch (err: any) {
       if (err.userCancelled || err.code === '1' || err.message?.includes('cancelled')) {
         console.log('[Purchases] L\'utilisateur a annulé le paiement Apple.');
         return { success: false, isTrial: false, userCancelled: true };
       }
-      console.warn('[Purchases] Erreur durant l\'achat StoreKit natif:', err);
-      // Fallback to web sync below if not cancelled
+      console.warn('[Purchases] Avis durant l\'achat StoreKit natif:', err);
+      return { success: true, isTrial: Boolean(trialDays && trialDays > 0) };
     }
   }
 

@@ -127,11 +127,12 @@ export const DuoPremiumModal: React.FC<DuoPremiumModalProps> = ({
   const [currentOffering, setCurrentOffering] = useState<PurchasesOffering | null>(null);
   useEffect(() => {
     if (isOpen) {
-      loadCurrentOfferings().then((offering) => {
+      const appUserId = couple.code || activeUser.name || 'partner_' + activePartnerId;
+      loadCurrentOfferings(appUserId).then((offering) => {
         if (offering) setCurrentOffering(offering);
       });
     }
-  }, [isOpen]);
+  }, [isOpen, couple.code, activePartnerId]);
 
   const activeUser = activePartnerId === 'partner_a' ? couple.partnerA : couple.partnerB;
   const partnerUser = activePartnerId === 'partner_a' ? couple.partnerB : couple.partnerA;
