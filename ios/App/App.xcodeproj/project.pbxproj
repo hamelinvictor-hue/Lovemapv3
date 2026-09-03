@@ -32,7 +32,6 @@
 		9582B6822FE993A50072D4E8 /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneDelegate.swift; sourceTree = "<group>"; };
 		958DCC722DB07C7200EA8C5F /* debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = debug.xcconfig; path = ../debug.xcconfig; sourceTree = SOURCE_ROOT; };
 		A9A7303830497E8C00A0C0FE /* GoogleService-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "GoogleService-Info.plist"; sourceTree = "<group>"; };
-		A9A7303B30497F6000A0C0FE /* GoogleSignIn-iOS */ = {isa = PBXFileReference; lastKnownFileType = wrapper; name = "GoogleSignIn-iOS"; path = "/Users/victorreinier/Library/Developer/Xcode/DerivedData/App-gsixjihfzbflgbheqdwkfyfjvvvl/SourcePackages/checkouts/GoogleSignIn-iOS"; sourceTree = "<absolute>"; };
 		A9A7303C3049879200A0C0FE /* App.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = App.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -53,7 +52,6 @@
 			children = (
 				958DCC722DB07C7200EA8C5F /* debug.xcconfig */,
 				504EC3061FED79650016851F /* App */,
-				A9A7303A30497F0900A0C0FE /* Frameworks */,
 				504EC3051FED79650016851F /* Products */,
 			);
 			sourceTree = "<group>";
@@ -67,7 +65,6 @@
 			sourceTree = "<group>";
 		};
 		504EC3061FED79650016851F /* App */ = {
-			isa = PBXGroup;
 			children = (
 				A9A7303C3049879200A0C0FE /* App.entitlements */,
 				A9A7303830497E8C00A0C0FE /* GoogleService-Info.plist */,
@@ -81,15 +78,8 @@
 				2FAD9762203C412B000D30F8 /* config.xml */,
 				50B271D01FEDC1A000F3C39B /* public */,
 			);
-			path = App;
-			sourceTree = "<group>";
-		};
-		A9A7303A30497F0900A0C0FE /* Frameworks */ = {
 			isa = PBXGroup;
-			children = (
-				A9A7303B30497F6000A0C0FE /* GoogleSignIn-iOS */,
-			);
-			name = Frameworks;
+			path = App;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
