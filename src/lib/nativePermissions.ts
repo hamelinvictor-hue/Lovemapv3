@@ -1,4 +1,5 @@
-import { GoogleAuth } from '@codetrix-studio/capacitor-google-auth';
+import { GoogleSignIn } from '@capawesome/capacitor-google-sign-in';
+import { SignInWithApple } from '@capacitor-community/apple-sign-in';
 
 /**
  * Bridge for Capacitor Native iOS / Android plugins with clean dynamic fallback
@@ -62,7 +63,6 @@ function dismissActiveKeyboard(): void {
  * Native System Confirmation Dialog (replaces web modal popups on mobile iOS/Android)
  */
 export async function showNativeConfirm(title: string, message: string, okButtonTitle = 'Confirmer', cancelButtonTitle = 'Annuler'): Promise<boolean> {
-  // Dismiss keyboard/active inputs first to ensure iOS text session is not invalidated
   dismissActiveKeyboard();
   
   const cap = (window as any).Capacitor;
@@ -79,7 +79,6 @@ export async function showNativeConfirm(title: string, message: string, okButton
       console.warn('Native Dialog plugin error:', e);
     }
   }
-  // Standard browser confirm fallback
   if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
     return window.confirm(`${title}\n\n${message}`);
   }
@@ -133,7 +132,6 @@ export async function triggerNativeGeolocation(): Promise<boolean> {
     }
   }
 
-  // Trigger Apple / WebKit native location prompt via getCurrentPosition
   return new Promise((resolve) => {
     console.log('[Native Debug] Falling back to getCurrentPosition...');
     const fallbackTimeout = setTimeout(() => {
@@ -371,72 +369,63 @@ export async function triggerNativeNotification(): Promise<boolean> {
 }
 
 /**
- * Native Google Sign In via Capacitor plugin if present
+ * Native Google Sign In via Capacitor plugin (@capawesome/capacitor-google-sign-in)
  */
 export async function triggerNativeGoogleAuth(): Promise<{ idToken: string; displayName?: string; email?: string } | null> {
   const cap = (window as any).Capacitor;
-  const plugin = GoogleAuth || (window as any).GoogleAuth || cap?.Plugins?.GoogleAuth;
-
-  console.log('[Native Debug] triggerNativeGoogleAuth called. GoogleAuth available:', !!plugin);
-
-  if (plugin) {
+  
+  const capawesomePlugin = GoogleSignIn || cap?.Plugins?.GoogleSignIn || (window as any).GoogleSignIn;
+  if (capawesomePlugin && typeof capawesomePlugin.signIn === 'function') {
+    console.log('[Native Debug] Using @capawesome/capacitor-google-sign-in plugin...');
     try {
-      if (typeof plugin.initialize === 'function') {
+      if (typeof capawesomePlugin.initialize === 'function') {
         try {
-          console.log('[Native Debug] Calling GoogleAuth.initialize()...');
-          await plugin.initialize({
+          await capawesomePlugin.initialize({
             scopes: ['profile', 'email'],
-            grantOfflineAccess: false,
           });
-          console.log('[Native Debug] GoogleAuth.initialize() success.');
         } catch (initErr) {
-          console.warn('[Native Debug] GoogleAuth.initialize() warning:', initErr);
+          console.warn('[Native Debug] GoogleSignIn.initialize() warning:', initErr);
         }
       }
-      
-      console.log('[Native Debug] Calling GoogleAuth.signIn()...');
-      const googleUser: any = await plugin.signIn();
-      console.log('[Native Debug] GoogleAuth.signIn() returned user response');
-      
-      const token = googleUser?.authentication?.idToken || 
-                    googleUser?.idToken || 
-                    googleUser?.authentication?.accessToken ||
-                    googleUser?.accessToken;
-                    
+
+      const res = await capawesomePlugin.signIn();
+      console.log('[Native Debug] GoogleSignIn.signIn() completed:', res);
+      const token = res?.idToken || res?.authentication?.idToken || res?.accessToken;
       if (token) {
-        console.log('[Native Debug] Google token successfully extracted.');
         return {
           idToken: token,
-          displayName: googleUser.name || googleUser.displayName || googleUser.givenName,
-          email: googleUser.email,
+          displayName: res?.user?.displayName || res?.user?.name || res?.user?.givenName,
+          email: res?.user?.email,
         };
-      } else {
-        console.warn('[Native Debug] GoogleAuth.signIn() succeeded but NO TOKEN was returned. Check iOS URL Schemes and GoogleService-Info.plist.');
       }
-    } catch (e: any) {
-      console.warn('[Native Debug] Native GoogleAuth plugin error/cancelled/timeout:', e);
-      throw new Error(e?.message || 'Erreur Google Sign-In Native');
+    } catch (err: any) {
+      console.warn('[Native Debug] @capawesome/capacitor-google-sign-in error:', err);
+      if (err?.code !== 'UNIMPLEMENTED') {
+        throw new Error(err?.message || 'Erreur Google Sign-In Native');
+      }
     }
-  } else {
-    console.warn('[Native Debug] GoogleAuth capacitor plugin is NOT installed or NOT injected.');
-    throw new Error('Le plugin GoogleAuth n\'est pas installé sur cet appareil.');
   }
-  return null;
+
+  throw new Error('Le plugin GoogleSignIn n\'est pas installé sur cet appareil.');
 }
 
 /**
- * Native Apple Sign In via Capacitor plugin if present
+ * Native Apple Sign In via Capacitor plugin (@capacitor-community/apple-sign-in)
  */
 export async function triggerNativeAppleAuth(): Promise<{ identityToken: string; nonce?: string; givenName?: string; familyName?: string; email?: string } | null> {
   const cap = (window as any).Capacitor;
-  const applePlugin = cap?.Plugins?.SignInWithApple || (window as any).SignInWithApple;
-  if (applePlugin) {
+  const applePlugin = SignInWithApple || cap?.Plugins?.SignInWithApple || (window as any).SignInWithApple;
+  console.log('[Native Debug] triggerNativeAppleAuth called. Available:', !!applePlugin);
+  
+  if (applePlugin && typeof applePlugin.authorize === 'function') {
     try {
+      console.log('[Native Debug] Calling SignInWithApple.authorize()...');
       const res = await applePlugin.authorize({
         clientId: 'com.lovemap.duo',
         redirectURI: 'https://gen-lang-client-0158057859.firebaseapp.com/__/auth/handler',
         scopes: 'email name',
       });
+      console.log('[Native Debug] SignInWithApple.authorize() result received');
       
       const token = res?.response?.identityToken || res?.identityToken;
       if (token) {
@@ -449,7 +438,8 @@ export async function triggerNativeAppleAuth(): Promise<{ identityToken: string;
         };
       }
     } catch (e) {
-      console.warn('Native SignInWithApple plugin error/cancelled:', e);
+      console.warn('[Native Debug] Native SignInWithApple plugin error/cancelled:', e);
+      throw e;
     }
   }
   return null;
@@ -461,21 +451,13 @@ export async function triggerNativeAppleAuth(): Promise<{ identityToken: string;
 export async function triggerNativeSignOut(): Promise<void> {
   const cap = (window as any).Capacitor;
   
-  // Google Sign Out
-  const googlePlugin = GoogleAuth || (window as any).GoogleAuth || cap?.Plugins?.GoogleAuth;
-  if (googlePlugin && typeof googlePlugin.signOut === 'function') {
+  const capawesomePlugin = GoogleSignIn || cap?.Plugins?.GoogleSignIn || (window as any).GoogleSignIn;
+  if (capawesomePlugin && typeof capawesomePlugin.signOut === 'function') {
     try {
-      console.log('[Native Debug] Calling native GoogleAuth.signOut()...');
-      // Wrap in a Promise.race to prevent it from hanging forever
-      await Promise.race([
-        googlePlugin.signOut(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout waiting for GoogleAuth.signOut')), 2000))
-      ]);
-      console.log('[Native Debug] Native GoogleAuth.signOut() completed.');
+      await capawesomePlugin.signOut();
+      console.log('[Native Debug] Native GoogleSignIn.signOut() completed.');
     } catch (e) {
-      console.warn('[Native Debug] Native GoogleAuth signOut error (ignored):', e);
+      console.warn('[Native Debug] GoogleSignIn signOut error (ignored):', e);
     }
-  } else {
-    console.log('[Native Debug] No native GoogleAuth plugin found for signout.');
   }
 }
