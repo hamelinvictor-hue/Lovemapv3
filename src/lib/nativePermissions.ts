@@ -1,3 +1,5 @@
+import { GoogleAuth } from '@codetrix-studio/capacitor-google-auth';
+
 /**
  * Bridge for Capacitor Native iOS / Android plugins with clean dynamic fallback
  * Allows native iOS Apple dialogs and native SDK auth when running in Xcode / iPhone,
@@ -373,28 +375,34 @@ export async function triggerNativeNotification(): Promise<boolean> {
  */
 export async function triggerNativeGoogleAuth(): Promise<{ idToken: string; displayName?: string; email?: string } | null> {
   const cap = (window as any).Capacitor;
-  const googlePlugin = (window as any).GoogleAuth || cap?.Plugins?.GoogleAuth;
-  
-  console.log('[Native Debug] triggerNativeGoogleAuth called. Plugin exists:', !!googlePlugin);
+  const plugin = GoogleAuth || (window as any).GoogleAuth || cap?.Plugins?.GoogleAuth;
 
-  if (googlePlugin) {
+  console.log('[Native Debug] triggerNativeGoogleAuth called. GoogleAuth available:', !!plugin);
+
+  if (plugin) {
     try {
-      if (typeof googlePlugin.initialize === 'function') {
+      if (typeof plugin.initialize === 'function') {
         try {
           console.log('[Native Debug] Calling GoogleAuth.initialize()...');
-          // For web/Android sometimes requires clientId. On iOS it usually uses GoogleService-Info.plist
-          await googlePlugin.initialize();
+          await plugin.initialize({
+            scopes: ['profile', 'email'],
+            grantOfflineAccess: false,
+          });
           console.log('[Native Debug] GoogleAuth.initialize() success.');
         } catch (initErr) {
-          console.warn('[Native Debug] GoogleAuth.initialize() error (often safe to ignore):', initErr);
+          console.warn('[Native Debug] GoogleAuth.initialize() warning:', initErr);
         }
       }
       
       console.log('[Native Debug] Calling GoogleAuth.signIn()...');
-      const googleUser = await googlePlugin.signIn();
-      console.log('[Native Debug] GoogleAuth.signIn() returned:', JSON.stringify(googleUser, null, 2));
+      const googleUser: any = await plugin.signIn();
+      console.log('[Native Debug] GoogleAuth.signIn() returned user response');
       
-      const token = googleUser?.authentication?.idToken || googleUser?.idToken || googleUser?.authentication?.accessToken;
+      const token = googleUser?.authentication?.idToken || 
+                    googleUser?.idToken || 
+                    googleUser?.authentication?.accessToken ||
+                    googleUser?.accessToken;
+                    
       if (token) {
         console.log('[Native Debug] Google token successfully extracted.');
         return {
@@ -407,7 +415,7 @@ export async function triggerNativeGoogleAuth(): Promise<{ idToken: string; disp
       }
     } catch (e: any) {
       console.warn('[Native Debug] Native GoogleAuth plugin error/cancelled/timeout:', e);
-      throw new Error(e?.message || 'Erreur Google Sign-In Native'); // Throwing up so it can be shown
+      throw new Error(e?.message || 'Erreur Google Sign-In Native');
     }
   } else {
     console.warn('[Native Debug] GoogleAuth capacitor plugin is NOT installed or NOT injected.');
@@ -454,7 +462,7 @@ export async function triggerNativeSignOut(): Promise<void> {
   const cap = (window as any).Capacitor;
   
   // Google Sign Out
-  const googlePlugin = (window as any).GoogleAuth || cap?.Plugins?.GoogleAuth;
+  const googlePlugin = GoogleAuth || (window as any).GoogleAuth || cap?.Plugins?.GoogleAuth;
   if (googlePlugin && typeof googlePlugin.signOut === 'function') {
     try {
       console.log('[Native Debug] Calling native GoogleAuth.signOut()...');
