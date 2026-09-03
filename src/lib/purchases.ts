@@ -5,7 +5,7 @@ import { subscribeViaRevenueCat, revokeViaRevenueCat } from './revenuecatClient'
 // Public Apple API key from RevenueCat (Starts with 'appl_...')
 // Can be overridden via VITE_REVENUECAT_APPLE_KEY in .env
 export const REVENUECAT_APPLE_API_KEY =
-  (import.meta.env.VITE_REVENUECAT_APPLE_KEY as string) || 'appl_lovemap_placeholder_key';
+  (import.meta.env.VITE_REVENUECAT_APPLE_KEY as string) || 'appl_nlGwMiSRkeGRFTGCscEaFkQBide';
 
 let isPurchasesConfigured = false;
 let currentConfiguredUserId: string | null = null;
