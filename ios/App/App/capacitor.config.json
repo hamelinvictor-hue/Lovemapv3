@@ -4,6 +4,7 @@
 	"webDir": "dist",
 	"packageClassList": [
 		"SignInWithApple",
-		"GoogleSignInPlugin"
+		"GoogleSignInPlugin",
+		"PurchasesPlugin"
 	]
 }

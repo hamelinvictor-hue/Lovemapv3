@@ -51,7 +51,9 @@ import {
   ensureGuestUser,
   ensureCoupleRoomInFirestore,
   purgeAllFirestoreData,
+  getEffectiveUser,
 } from './lib/firebase';
+import type { User } from 'firebase/auth';
 import {
   getDuoPremiumState,
   hasTrialOfferStarted,
@@ -148,6 +150,7 @@ export default function App() {
   };
 
   // Modals state
+  const [authUser, setAuthUser] = useState<User | null>(() => getEffectiveUser());
   const [isOnboardingOpen, setIsOnboardingOpen] = useState<boolean>(() => !getHasCompletedOnboarding());
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isAuthOpen, setIsAuthOpen] = useState(false);
@@ -376,7 +379,8 @@ export default function App() {
   // Auto-restore user's couple room from Firestore upon logging in
   useEffect(() => {
     const unsub = auth.onAuthStateChanged(async (user) => {
-      if (user) {
+      if (user && !user.isAnonymous) {
+        setAuthUser(user);
         const result = await findUserCoupleInFirestore(user);
         if (result) {
           setCouple(result.couple);
@@ -387,6 +391,9 @@ export default function App() {
           setIsOnboardingOpen(false);
           showToast(`💖 Espace duo restauré pour ${user.displayName || user.email || 'votre compte'} !`);
         }
+      } else {
+        const eff = getEffectiveUser();
+        setAuthUser(eff && !eff.isAnonymous ? eff : null);
       }
     });
     return () => unsub();
@@ -828,6 +835,7 @@ export default function App() {
     showToast('Vous avez été déconnecté.');
 
     // Clear local state
+    setAuthUser(null);
     setSpots([]);
     setNotifications([]);
     setCouple(INITIAL_COUPLE);
@@ -933,6 +941,7 @@ export default function App() {
     showToast('Votre compte a été définitivement supprimé.');
 
     // Clear local state
+    setAuthUser(null);
     setSpots([]);
     setNotifications([]);
     setCouple(INITIAL_COUPLE);
@@ -990,6 +999,7 @@ export default function App() {
           onOpenSettings={() => setIsSettingsOpen(true)}
           onOpenDuoTab={() => setActiveTab('couple')}
           onOpenAuth={() => {
+            if (authUser && !authUser.isAnonymous) return;
             setIsAuthMandatory(false);
             setAuthModalSource('general');
             setAuthModalMode('login');
@@ -1095,6 +1105,7 @@ export default function App() {
               onSwitchPartner={handleSwitchPartner}
               onOpenSettings={() => setIsSettingsOpen(true)}
               onOpenAuth={() => {
+                if (authUser && !authUser.isAnonymous) return;
                 setIsAuthMandatory(false);
                 setAuthModalSource('general');
                 setAuthModalMode('login');
@@ -1198,8 +1209,10 @@ export default function App() {
           couple={couple}
           activePartnerId={activePartnerId}
           appMode={appMode}
+          authUser={authUser}
           onClose={() => setIsSettingsOpen(false)}
           onOpenAuth={() => {
+            if (authUser && !authUser.isAnonymous) return;
             setIsAuthMandatory(false);
             setAuthModalSource('settings');
             setAuthModalMode('login');
@@ -1236,6 +1249,7 @@ export default function App() {
           onUpdateCoupleSubscription={handleUpdateCoupleSubscription}
           reasonMessage={premiumModalReason}
           isFirstSpotPaywall={isFirstSpotPaywall}
+          onOpenLegalPrivacy={() => setIsLegalPrivacyOpen(true)}
         />
 
         <AuthModal

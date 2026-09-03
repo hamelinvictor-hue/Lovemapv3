@@ -13,6 +13,12 @@ import {
   formatTrialCountdown,
 } from '../lib/subscription';
 import { subscribeViaRevenueCat, revokeViaRevenueCat } from '../lib/revenuecatClient';
+import {
+  purchaseSubscriptionPlan,
+  restorePurchasesFromStore,
+  loadCurrentOfferings,
+} from '../lib/purchases';
+import type { PurchasesOffering } from '@revenuecat/purchases-capacitor';
 import { triggerConfetti, triggerHaptic } from '../lib/feedback';
 import {
   X,
@@ -30,6 +36,7 @@ import {
   Music2,
   Pencil,
   Lock,
+  RotateCcw,
 } from 'lucide-react';
 
 interface DuoPremiumModalProps {
@@ -44,6 +51,7 @@ interface DuoPremiumModalProps {
   ) => void;
   reasonMessage?: string;
   isFirstSpotPaywall?: boolean;
+  onOpenLegalPrivacy?: () => void;
 }
 
 export const DuoPremiumModal: React.FC<DuoPremiumModalProps> = ({
@@ -54,6 +62,7 @@ export const DuoPremiumModal: React.FC<DuoPremiumModalProps> = ({
   onUpdateCoupleSubscription,
   reasonMessage,
   isFirstSpotPaywall = false,
+  onOpenLegalPrivacy,
 }) => {
   const premiumState = getDuoPremiumState(couple, activePartnerId);
   const [selectedPlan, setSelectedPlan] = useState<'monthly' | 'annual'>('annual');
@@ -114,10 +123,20 @@ export const DuoPremiumModal: React.FC<DuoPremiumModalProps> = ({
     }
   }, [isOpen, isFirstSpotPaywall]);
 
+  // Load native RevenueCat offerings (with localized Apple StoreKit pricing)
+  const [currentOffering, setCurrentOffering] = useState<PurchasesOffering | null>(null);
+  useEffect(() => {
+    if (isOpen) {
+      loadCurrentOfferings().then((offering) => {
+        if (offering) setCurrentOffering(offering);
+      });
+    }
+  }, [isOpen]);
+
   const activeUser = activePartnerId === 'partner_a' ? couple.partnerA : couple.partnerB;
   const partnerUser = activePartnerId === 'partner_a' ? couple.partnerB : couple.partnerA;
 
-  // Handle subscribe with RevenueCat, Apple & Google Play integration
+  // Handle subscribe with RevenueCat & Native Apple StoreKit integration
   const handleSubscribe = async (trialDaysOverride?: number) => {
     triggerHaptic('medium');
     setIsProcessing(true);
@@ -139,9 +158,19 @@ export const DuoPremiumModal: React.FC<DuoPremiumModalProps> = ({
     }
 
     try {
-      await subscribeViaRevenueCat(appUserId, selectedPlan, currentTrialDays);
+      const purchaseRes = await purchaseSubscriptionPlan({
+        plan: selectedPlan,
+        appUserId,
+        trialDays: currentTrialDays,
+        offering: currentOffering,
+      });
+
+      if (purchaseRes.userCancelled) {
+        setIsProcessing(false);
+        return;
+      }
     } catch (err) {
-      console.warn('RevenueCat API call warning:', err);
+      console.warn('RevenueCat purchase notice:', err);
     }
 
     onUpdateCoupleSubscription(activePartnerId, selectedPlan, true);
@@ -149,12 +178,37 @@ export const DuoPremiumModal: React.FC<DuoPremiumModalProps> = ({
     triggerConfetti(1.0);
 
     const trialText = currentTrialDays ? `Vos ${currentTrialDays} jours d'essai gratuit sont activés !` : 'Votre Pass Duo Premium est actif !';
-    setSuccessMessage(`🎉 Félicitations ! ${trialText} Synchro RevenueCat, Apple & Google Play validée !`);
+    setSuccessMessage(`🎉 Félicitations ! ${trialText} Synchro RevenueCat & Apple validée !`);
 
     setTimeout(() => {
       setSuccessMessage(null);
       onClose();
     }, 2800);
+  };
+
+  // Restore Purchases handler (Apple Review requirement)
+  const handleRestorePurchases = async () => {
+    triggerHaptic('medium');
+    setIsProcessing(true);
+    const appUserId = couple.code || activeUser.name || 'partner_' + activePartnerId;
+    try {
+      const res = await restorePurchasesFromStore(appUserId);
+      setIsProcessing(false);
+      if (res.isPremium) {
+        onUpdateCoupleSubscription(activePartnerId, 'annual', true);
+        triggerConfetti(0.8);
+        setSuccessMessage('🎉 Vos achats précédents ont été restaurés avec succès !');
+        setTimeout(() => {
+          setSuccessMessage(null);
+          onClose();
+        }, 2500);
+      } else {
+        alert(res.error || 'Aucun abonnement actif trouvé à restaurer.');
+      }
+    } catch {
+      setIsProcessing(false);
+      alert('Impossible de contacter l\'App Store pour le moment.');
+    }
   };
 
   // Handle Refusal on 7-Day Trial -> Transition to 14-Day Trial Downsell (ONLY in first spot modal)
@@ -443,6 +497,29 @@ export const DuoPremiumModal: React.FC<DuoPremiumModalProps> = ({
                       <ShieldCheck className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
                       <span>App Store, Google Play & RevenueCat • Aucun prélèvement pendant 7j</span>
                     </p>
+
+                    <div className="pt-2 flex items-center justify-center gap-4 text-[10px] text-slate-400">
+                      <button
+                        type="button"
+                        onClick={handleRestorePurchases}
+                        className="hover:text-slate-600 dark:hover:text-slate-200 transition-colors cursor-pointer flex items-center gap-1 font-semibold"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        <span>Restaurer les achats</span>
+                      </button>
+                      {onOpenLegalPrivacy && (
+                        <>
+                          <span>•</span>
+                          <button
+                            type="button"
+                            onClick={onOpenLegalPrivacy}
+                            className="hover:text-slate-600 dark:hover:text-slate-200 transition-colors cursor-pointer"
+                          >
+                            Conditions & Confidentialité
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
                 </div>
               </motion.div>
@@ -591,6 +668,29 @@ export const DuoPremiumModal: React.FC<DuoPremiumModalProps> = ({
                       <ShieldCheck className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
                       <span>App Store, Google Play & RevenueCat • Aucun prélèvement pendant 14j</span>
                     </p>
+
+                    <div className="pt-2 flex items-center justify-center gap-4 text-[10px] text-slate-400">
+                      <button
+                        type="button"
+                        onClick={handleRestorePurchases}
+                        className="hover:text-slate-600 dark:hover:text-slate-200 transition-colors cursor-pointer flex items-center gap-1 font-semibold"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        <span>Restaurer les achats</span>
+                      </button>
+                      {onOpenLegalPrivacy && (
+                        <>
+                          <span>•</span>
+                          <button
+                            type="button"
+                            onClick={onOpenLegalPrivacy}
+                            className="hover:text-slate-600 dark:hover:text-slate-200 transition-colors cursor-pointer"
+                          >
+                            Conditions & Confidentialité
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
                 </div>
               </motion.div>
@@ -909,6 +1009,29 @@ export const DuoPremiumModal: React.FC<DuoPremiumModalProps> = ({
                           <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
                           <span>App Store, Google Play & RevenueCat API</span>
                         </p>
+
+                        <div className="pt-2 flex items-center justify-center gap-4 text-[10px] text-slate-400">
+                          <button
+                            type="button"
+                            onClick={handleRestorePurchases}
+                            className="hover:text-slate-600 dark:hover:text-slate-200 transition-colors cursor-pointer flex items-center gap-1 font-semibold"
+                          >
+                            <RotateCcw className="w-3 h-3" />
+                            <span>Restaurer les achats</span>
+                          </button>
+                          {onOpenLegalPrivacy && (
+                            <>
+                              <span>•</span>
+                              <button
+                                type="button"
+                                onClick={onOpenLegalPrivacy}
+                                className="hover:text-slate-600 dark:hover:text-slate-200 transition-colors cursor-pointer"
+                              >
+                                Conditions & Confidentialité
+                              </button>
+                            </>
+                          )}
+                        </div>
                       </div>
                     </>
                   )}

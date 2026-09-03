@@ -63,7 +63,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     if (isOpen) {
       setMode(initialMode);
       setError(null);
-      setCurrentUser(getEffectiveUser());
+      const eff = getEffectiveUser();
+      setCurrentUser(eff && !eff.isAnonymous ? eff : null);
     }
   }, [isOpen, initialMode]);
 
@@ -79,9 +80,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     return () => unsubscribe();
   }, [isOpen]);
 
-  if (!isOpen) return null;
+  const isRealUser = Boolean(currentUser && !currentUser.isAnonymous);
 
-  const isRealUser = currentUser && !currentUser.isAnonymous;
+  // If already authenticated with a real account, do not show this popup
+  useEffect(() => {
+    if (isOpen && isRealUser && !loading) {
+      onClose();
+    }
+  }, [isOpen, isRealUser, loading, onClose]);
+
+  if (!isOpen || (isRealUser && !loading)) return null;
 
   const handleSyncUserCouple = async (u: User, successToast: string) => {
     setCurrentUser(u);
@@ -215,15 +223,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             </div>
             <div>
               <h2 className="font-black text-slate-900 dark:text-white text-sm">
-                {isRealUser
-                  ? 'Compte Synchronisé'
+                {loading
+                  ? 'Connexion sécurisée'
                   : mode === 'register'
                   ? 'Créer un compte'
                   : 'Se connecter'}
               </h2>
               <p className="text-[11px] text-slate-500 dark:text-slate-400 font-medium">
-                {isRealUser
-                  ? 'Vos données et votre code Duo sont sauvegardés'
+                {loading
+                  ? 'Vérification en cours...'
                   : mode === 'register'
                   ? 'Démarrez votre carte secrète avec Google ou Apple'
                   : 'Retrouvez votre espace couple et vos souvenirs'}
@@ -231,8 +239,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             </div>
           </div>
 
-          {/* Close button ONLY when canClose is true */}
-          {canClose ? (
+          {/* Close button ONLY when canClose is true and not loading */}
+          {canClose && !loading ? (
             <button
               onClick={onClose}
               className="p-1.5 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
@@ -256,43 +264,22 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             </div>
           )}
 
-          {/* Connected User Card (Only if already authenticated with a real non-anonymous account) */}
-          {isRealUser ? (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200/80 dark:border-slate-700 shadow-xs">
-                <div className="flex items-center gap-3 min-w-0">
-                  <img
-                    src={currentUser?.photoURL || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150'}
-                    alt="User"
-                    className="w-10 h-10 rounded-full object-cover border-2 border-rose-500 shrink-0"
-                  />
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-1.5">
-                      <p className="font-black text-slate-900 dark:text-white text-xs truncate">
-                        {currentUser?.displayName || currentUser?.email || 'Compte Connecté'}
-                      </p>
-                      <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-0.5 shrink-0">
-                        <ShieldCheck className="w-3.5 h-3.5" />
-                      </span>
-                    </div>
-                    <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
-                      {currentUser?.email ? currentUser.email : 'Compte Google / Apple'}
-                    </p>
-                  </div>
+          {/* Loading Transition Screen */}
+          {loading ? (
+            <div className="py-10 px-4 flex flex-col items-center justify-center text-center space-y-4 animate-fade-in">
+              <div className="relative flex items-center justify-center">
+                <div className="w-16 h-16 rounded-full border-4 border-rose-100 dark:border-rose-950 border-t-rose-500 animate-spin" />
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <Heart className="w-6 h-6 text-rose-500 fill-rose-500 animate-pulse" />
                 </div>
-                <button
-                  type="button"
-                  onClick={handleLogout}
-                  className="p-2 rounded-xl text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors cursor-pointer shrink-0"
-                  title="Déconnexion"
-                >
-                  <LogOut className="w-4 h-4" />
-                </button>
               </div>
-
-              <div className="p-3 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900/40 flex items-center gap-2 text-emerald-700 dark:text-emerald-300 text-xs">
-                <Check className="w-4 h-4 shrink-0 text-emerald-500" />
-                <span>Vos souvenirs et votre espace Duo ({couple.code}) sont sauvegardés.</span>
+              <div className="space-y-1">
+                <h3 className="text-sm font-black text-slate-900 dark:text-white">
+                  Connexion sécurisée en cours...
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">
+                  Synchronisation de votre espace Duo et de vos lieux secrets
+                </p>
               </div>
             </div>
           ) : (

@@ -148,27 +148,6 @@ export function getEffectiveUser(): User | null {
   return null;
 }
 
-// Helper to decode JWT payload safely
-function decodeJwtPayload(token: string): any {
-  try {
-    const parts = token.split('.');
-    if (parts.length >= 2) {
-      const base64Url = parts[1];
-      const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
-      const jsonPayload = decodeURIComponent(
-        atob(base64)
-          .split('')
-          .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
-          .join('')
-      );
-      return JSON.parse(jsonPayload);
-    }
-  } catch (e) {
-    console.warn('[Native Debug] JWT decode error:', e);
-  }
-  return null;
-}
-
 // Specialized Mobile Sign-in Bridge (for iOS Capacitor, iPhone Safari, and Android)
 async function performMobileAuth(providerName: 'google' | 'apple', preferredDisplayName?: string): Promise<User> {
   const isApple = providerName === 'apple';
@@ -188,63 +167,35 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
           fullName = `${nativeApple.givenName || ''} ${nativeApple.familyName || ''}`.trim() || label;
         }
 
-        const jwtPayload = decodeJwtPayload(nativeApple.identityToken);
-        const appleSub = jwtPayload?.sub || nativeApple.nonce;
-        const appleEmail = nativeApple.email || jwtPayload?.email || null;
-
-        // Attempt Firebase credential exchange with a reasonable non-blocking window
-        try {
-          console.log('[Native Debug] Creating Apple credential...');
-          const credOptions: any = { idToken: nativeApple.identityToken };
-          if (nativeApple.nonce) {
-            credOptions.rawNonce = nativeApple.nonce;
-          }
-          const credential = appleProvider.credential(credOptions);
-          console.log('[Native Debug] Calling signInWithCredential for Apple...');
-          const res = await Promise.race([
-            signInWithCredential(auth, credential),
-            new Promise<null>((resolve) => setTimeout(() => resolve(null), 3500))
-          ]);
-          if (res?.user) {
-            console.log('[Native Debug] signInWithCredential Apple success:', res.user?.uid);
-            saveStoredAuthUser({
-              uid: res.user.uid,
-              displayName: res.user.displayName || fullName,
-              email: res.user.email || appleEmail,
-              photoURL: res.user.photoURL || defaultPhoto,
-              providerId,
-              isAnonymous: false,
-            });
-            return res.user;
-          }
-        } catch (credErr: any) {
-          console.warn('[Native Debug] Firebase Apple credential notice (proceeding with verified Apple identity):', credErr?.message || credErr);
+        console.log('[Native Debug] Creating Apple credential with idToken and rawNonce...');
+        const credOptions: any = { idToken: nativeApple.identityToken };
+        if (nativeApple.rawNonce) {
+          credOptions.rawNonce = nativeApple.rawNonce;
         }
-
-        // Resilient native Apple session:
-        // Apple successfully verified the user natively via iOS FaceID/TouchID/Passcode!
-        // We construct a durable authenticated session with their verified Apple identity.
-        const stableUid = appleSub ? `apple_${appleSub}` : `apple_${Math.random().toString(36).substring(2, 11)}`;
-        const appleUser = {
-          uid: stableUid,
-          displayName: fullName,
-          email: appleEmail,
-          photoURL: defaultPhoto,
-          providerId: 'apple.com',
-          isAnonymous: false,
-        };
-        saveStoredAuthUser(appleUser);
-
-        // Ensure background Firebase auth token for Firestore rules
-        try {
-          if (!auth.currentUser) {
-            await withTimeout(signInAnonymously(auth), 2000, null);
+        const credential = appleProvider.credential(credOptions);
+        console.log('[Native Debug] Calling signInWithCredential for Apple...');
+        const res = await signInWithCredential(auth, credential);
+        console.log('[Native Debug] signInWithCredential Apple success:', res.user?.uid);
+        const user = res?.user;
+        if (user) {
+          if (nativeApple.givenName || nativeApple.familyName) {
+            try {
+              await updateProfile(user, { displayName: fullName });
+            } catch (pErr) {
+              console.warn('[Native Debug] Profile update warning:', pErr);
+            }
           }
-        } catch {
-          // ignore
+          saveStoredAuthUser({
+            uid: user.uid,
+            displayName: user.displayName || fullName,
+            email: user.email || nativeApple.email || null,
+            photoURL: user.photoURL || defaultPhoto,
+            providerId,
+            isAnonymous: false,
+          });
+          return user;
         }
-
-        return buildSyntheticUser(appleUser);
+        throw new Error('La connexion avec Apple n\'a pas retourné d\'utilisateur.');
       }
     } else {
       const nativeGoogle = await triggerNativeGoogleAuth();
@@ -254,55 +205,24 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
           fullName = nativeGoogle.displayName;
         }
 
-        // Attempt Firebase credential exchange with a reasonable non-blocking window
-        try {
-          console.log('[Native Debug] Creating Google credential...');
-          const credential = GoogleAuthProvider.credential(nativeGoogle.idToken);
-          console.log('[Native Debug] Calling signInWithCredential for Google...');
-          const res = await Promise.race([
-            signInWithCredential(auth, credential),
-            new Promise<null>((resolve) => setTimeout(() => resolve(null), 3500))
-          ]);
-          if (res?.user) {
-            console.log('[Native Debug] signInWithCredential Google success:', res.user?.uid);
-            saveStoredAuthUser({
-              uid: res.user.uid,
-              displayName: res.user.displayName || fullName,
-              email: res.user.email || nativeGoogle.email || null,
-              photoURL: res.user.photoURL || defaultPhoto,
-              providerId,
-              isAnonymous: false,
-            });
-            return res.user;
-          }
-        } catch (credErr: any) {
-          console.warn('[Native Debug] Firebase Google credential notice (proceeding with verified Google identity):', credErr?.message || credErr);
+        console.log('[Native Debug] Creating Google credential...');
+        const credential = GoogleAuthProvider.credential(nativeGoogle.idToken);
+        console.log('[Native Debug] Calling signInWithCredential for Google...');
+        const res = await signInWithCredential(auth, credential);
+        console.log('[Native Debug] signInWithCredential Google success:', res.user?.uid);
+        const user = res?.user;
+        if (user) {
+          saveStoredAuthUser({
+            uid: user.uid,
+            displayName: user.displayName || fullName,
+            email: user.email || nativeGoogle.email || null,
+            photoURL: user.photoURL || defaultPhoto,
+            providerId,
+            isAnonymous: false,
+          });
+          return user;
         }
-
-        // Resilient native Google session
-        const stableUid = nativeGoogle.email
-          ? `google_${nativeGoogle.email.replace(/[^a-zA-Z0-9]/g, '_')}`
-          : `google_${Math.random().toString(36).substring(2, 11)}`;
-        const googleUser = {
-          uid: stableUid,
-          displayName: fullName,
-          email: nativeGoogle.email || null,
-          photoURL: defaultPhoto,
-          providerId: 'google.com',
-          isAnonymous: false,
-        };
-        saveStoredAuthUser(googleUser);
-
-        // Ensure background Firebase auth token for Firestore rules
-        try {
-          if (!auth.currentUser) {
-            await withTimeout(signInAnonymously(auth), 2000, null);
-          }
-        } catch {
-          // ignore
-        }
-
-        return buildSyntheticUser(googleUser);
+        throw new Error('La connexion avec Google n\'a pas retourné d\'utilisateur.');
       }
     }
   } catch (nativeErr: any) {
@@ -316,6 +236,9 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
       throw new Error(`Connexion ${providerName === 'apple' ? 'Apple' : 'Google'} annulée.`);
     }
     console.warn(`Native ${providerName} plugin attempt notice:`, nativeErr);
+    if (isCapacitorNative()) {
+      throw nativeErr;
+    }
   }
 
   // If in a Capacitor app and native failed, we should not attempt Web Popup as it breaks the app

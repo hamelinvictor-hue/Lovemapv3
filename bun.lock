@@ -9,6 +9,7 @@
         "@capacitor/core": "^8.5.1",
         "@capawesome/capacitor-google-sign-in": "^0.1.4",
         "@google/genai": "^2.4.0",
+        "@revenuecat/purchases-capacitor": "^13.5.0",
         "@tailwindcss/vite": "^4.1.14",
         "@types/canvas-confetti": "^1.9.0",
         "@types/leaflet": "^1.9.21",
@@ -281,6 +282,10 @@
     "@protobufjs/pool": ["@protobufjs/pool@1.1.0", "", {}, "sha512-0kELaGSIDBKvcgS4zkjz1PeddatrjYcmMWOlAuAPwAeccUrPHdUqo/J6LiymHHEiJT5NrF1UVwxY14f+fy4WQw=="],
 
     "@protobufjs/utf8": ["@protobufjs/utf8@1.1.2", "", {}, "sha512-b1UQwcEZ4yCnMCD8DAL1VlbvBJE9/IX4FTIp7BG1xYpf29SLazLSrqUkj4w7Y5y7cCVP6E5tcqqcI0xemPkHug=="],
+
+    "@revenuecat/purchases-capacitor": ["@revenuecat/purchases-capacitor@13.5.0", "", { "dependencies": { "@revenuecat/purchases-typescript-internal-esm": "18.33.1" }, "peerDependencies": { "@capacitor/core": ">=8.0.0" } }, "sha512-m+5lockasPY9bhK989nXNUBtpoSwr6Kd8AqIhBDsq0scspJPV9QSLE1H08rFx41l3t60DNnJLtFTbFWhJyg0ZQ=="],
+
+    "@revenuecat/purchases-typescript-internal-esm": ["@revenuecat/purchases-typescript-internal-esm@18.33.1", "", {}, "sha512-X83gP4VXX4j98tZ+WW6daD40IHkPAoUUap5/rrdihLZUBeeHdWUIQlm59Syx06LwBbsvalMc1eSfMib7M5vAjA=="],
 
     "@rolldown/pluginutils": ["@rolldown/pluginutils@1.0.0-rc.3", "", {}, "sha512-eybk3TjzzzV97Dlj5c+XrBFW57eTNhzod66y9HrBlzJ6NsCrWCp/2kaPS3K9wJmurBC0Tdw4yPjXKZqlznim3Q=="],
 

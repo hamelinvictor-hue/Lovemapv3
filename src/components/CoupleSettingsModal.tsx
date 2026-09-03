@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { CouplePair, PartnerId, AppMode } from '../types';
-import { auth } from '../lib/firebase';
+import { auth, getEffectiveUser } from '../lib/firebase';
+import type { User as FirebaseUser } from 'firebase/auth';
 import { triggerHaptic, triggerHeartBurst } from '../lib/feedback';
 import { compressImageFile } from '../lib/imageCompressor';
 import { getDuoPremiumState } from '../lib/subscription';
@@ -50,6 +51,7 @@ interface CoupleSettingsModalProps {
   onOpenOnboarding?: () => void;
   theme?: 'light' | 'dark';
   onToggleTheme?: () => void;
+  authUser?: FirebaseUser | null;
 }
 
 export const CoupleSettingsModal: React.FC<CoupleSettingsModalProps> = ({
@@ -71,12 +73,41 @@ export const CoupleSettingsModal: React.FC<CoupleSettingsModalProps> = ({
   onOpenOnboarding,
   theme = 'dark',
   onToggleTheme,
+  authUser,
 }) => {
   const { t } = useTranslation();
   const isSolo = appMode === 'solo';
   const isPartnerA = activePartnerId === 'partner_a';
   const isPaired = couple.partnerB.name !== 'En attente...' && couple.status !== 'broken';
   const premiumState = getDuoPremiumState(couple, activePartnerId);
+
+  // Reactive tracking of user connection to prevent showing sync cards when already authenticated
+  const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(() => authUser || auth.currentUser || getEffectiveUser());
+
+  useEffect(() => {
+    if (authUser) {
+      setCurrentUser(authUser);
+    }
+  }, [authUser]);
+
+  useEffect(() => {
+    const unsub = auth.onAuthStateChanged((u) => {
+      if (u && !u.isAnonymous) {
+        setCurrentUser(u);
+      } else {
+        const eff = getEffectiveUser();
+        setCurrentUser(eff && !eff.isAnonymous ? eff : null);
+      }
+    });
+    return () => unsub();
+  }, []);
+
+  const isUserConnected = Boolean(
+    (authUser && !authUser.isAnonymous) ||
+    (currentUser && !currentUser.isAnonymous) ||
+    (auth.currentUser && !auth.currentUser.isAnonymous) ||
+    (getEffectiveUser() && !getEffectiveUser()?.isAnonymous)
+  );
 
   const [partnerAName, setPartnerAName] = useState(couple.partnerA.name);
   const [partnerAAvatar, setPartnerAAvatar] = useState(couple.partnerA.avatar || '');
@@ -194,7 +225,7 @@ export const CoupleSettingsModal: React.FC<CoupleSettingsModalProps> = ({
 
         <div className="p-6 overflow-y-auto space-y-6">
           {/* Cloud Account Connection Card (Only shown if NOT logged in) */}
-          {!auth.currentUser && (
+          {!isUserConnected && (
             <div className="p-4 rounded-2xl bg-gradient-to-r from-rose-50 to-amber-50 dark:from-rose-950/40 dark:to-amber-950/40 border border-rose-200 dark:border-rose-900/50 space-y-3 shadow-2xs">
               <div className="flex items-center gap-2.5">
                 <div className="w-8 h-8 rounded-xl bg-rose-500 text-white flex items-center justify-center shrink-0 shadow-xs">

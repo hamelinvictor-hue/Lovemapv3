@@ -409,21 +409,59 @@ export async function triggerNativeGoogleAuth(): Promise<{ idToken: string; disp
   throw new Error('Le plugin GoogleSignIn n\'est pas installé sur cet appareil.');
 }
 
+// Helper to generate a cryptographically random raw nonce
+function generateRawNonce(length = 32): string {
+  const chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz-._';
+  let result = '';
+  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+    const values = new Uint8Array(length);
+    crypto.getRandomValues(values);
+    for (let i = 0; i < length; i++) {
+      result += chars[values[i] % chars.length];
+    }
+  } else {
+    for (let i = 0; i < length; i++) {
+      result += chars[Math.floor(Math.random() * chars.length)];
+    }
+  }
+  return result;
+}
+
+// Helper to compute SHA-256 for Apple authorize request
+async function sha256Hex(plain: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(plain);
+  const hash = await crypto.subtle.digest('SHA-256', data);
+  const bytes = new Uint8Array(hash);
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
 /**
  * Native Apple Sign In via Capacitor plugin (@capacitor-community/apple-sign-in)
  */
-export async function triggerNativeAppleAuth(): Promise<{ identityToken: string; nonce?: string; givenName?: string; familyName?: string; email?: string } | null> {
+export async function triggerNativeAppleAuth(): Promise<{
+  identityToken: string;
+  rawNonce?: string;
+  givenName?: string;
+  familyName?: string;
+  email?: string;
+} | null> {
   const cap = (window as any).Capacitor;
   const applePlugin = SignInWithApple || cap?.Plugins?.SignInWithApple || (window as any).SignInWithApple;
   console.log('[Native Debug] triggerNativeAppleAuth called. Available:', !!applePlugin);
   
   if (applePlugin && typeof applePlugin.authorize === 'function') {
     try {
-      console.log('[Native Debug] Calling SignInWithApple.authorize()...');
+      const rawNonce = generateRawNonce(32);
+      const hashedNonce = await sha256Hex(rawNonce);
+      console.log('[Native Debug] Calling SignInWithApple.authorize() with hashed nonce...');
       const res = await applePlugin.authorize({
         clientId: 'com.lovemap.duo',
         redirectURI: 'https://gen-lang-client-0158057859.firebaseapp.com/__/auth/handler',
         scopes: 'email name',
+        nonce: hashedNonce,
       });
       console.log('[Native Debug] SignInWithApple.authorize() result received');
       
@@ -431,7 +469,7 @@ export async function triggerNativeAppleAuth(): Promise<{ identityToken: string;
       if (token) {
         return {
           identityToken: token,
-          nonce: res?.response?.nonce || res?.nonce,
+          rawNonce,
           givenName: res?.response?.givenName || res?.givenName,
           familyName: res?.response?.familyName || res?.familyName,
           email: res?.response?.email || res?.email,
