@@ -438,11 +438,21 @@ async function sha256Hex(plain: string): Promise<string> {
     .join('');
 }
 
+function withTimeoutPromise<T>(promise: Promise<T>, timeoutMs: number, errorMessage: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(errorMessage)), timeoutMs)
+    ),
+  ]);
+}
+
 /**
  * Native Apple Sign In via Capacitor plugin (@capacitor-community/apple-sign-in)
  */
 export async function triggerNativeAppleAuth(): Promise<{
   identityToken: string;
+  appleUserId?: string;
   rawNonce?: string;
   givenName?: string;
   familyName?: string;
@@ -457,24 +467,36 @@ export async function triggerNativeAppleAuth(): Promise<{
       const rawNonce = generateRawNonce(32);
       const hashedNonce = await sha256Hex(rawNonce);
       console.log('[Native Debug] Calling SignInWithApple.authorize() with hashed nonce...');
-      const res = await applePlugin.authorize({
+      
+      const authPromise = applePlugin.authorize({
         clientId: 'com.lovemap.duo',
         redirectURI: 'https://gen-lang-client-0158057859.firebaseapp.com/__/auth/handler',
         scopes: 'email name',
         nonce: hashedNonce,
       });
+
+      // Safety timeout: 45 seconds to prevent hanging on native iOS
+      const res = await withTimeoutPromise(
+        authPromise,
+        45000,
+        'Délai de connexion Apple dépassé. Veuillez réessayer.'
+      );
+
       console.log('[Native Debug] SignInWithApple.authorize() result received');
       
-      const token = res?.response?.identityToken || res?.identityToken;
+      const resp = (res as any)?.response || res || {};
+      const token = resp.identityToken;
       if (token) {
         return {
           identityToken: token,
+          appleUserId: resp.user,
           rawNonce,
-          givenName: res?.response?.givenName || res?.givenName,
-          familyName: res?.response?.familyName || res?.familyName,
-          email: res?.response?.email || res?.email,
+          givenName: resp.givenName,
+          familyName: resp.familyName,
+          email: resp.email,
         };
       }
+      throw new Error('Jeton d\'authentification Apple non reçu.');
     } catch (e) {
       console.warn('[Native Debug] Native SignInWithApple plugin error/cancelled:', e);
       throw e;

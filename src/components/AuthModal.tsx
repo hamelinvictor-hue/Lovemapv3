@@ -92,26 +92,29 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   if (!isOpen || (isRealUser && !loading)) return null;
 
   const handleSyncUserCouple = async (u: User, successToast: string) => {
-    setCurrentUser(u);
-    let existing = null;
     try {
-      existing = await findUserCoupleInFirestore(u);
-    } catch (e) {
-      console.warn('Firestore lookup notice:', e);
-    }
-    if (existing) {
-      onCoupleSync(existing.couple, existing.partnerId);
-      onToast(`Espace duo (${existing.couple.code}) restauré 💖`);
-    } else {
+      setCurrentUser(u);
+      let existing = null;
       try {
-        const synced = await ensureCoupleRoomInFirestore(couple.code, couple, 'partner_a');
-        onCoupleSync(synced, 'partner_a');
+        existing = await findUserCoupleInFirestore(u);
       } catch (e) {
-        onCoupleSync(couple, 'partner_a');
+        console.warn('Firestore lookup notice:', e);
       }
-      onToast(successToast);
+      if (existing) {
+        onCoupleSync(existing.couple, existing.partnerId);
+        onToast(`Espace duo (${existing.couple.code}) restauré 💖`);
+      } else {
+        try {
+          const synced = await ensureCoupleRoomInFirestore(couple.code, couple, 'partner_a');
+          onCoupleSync(synced, 'partner_a');
+        } catch (e) {
+          onCoupleSync(couple, 'partner_a');
+        }
+        onToast(successToast);
+      }
+    } finally {
+      onClose();
     }
-    onClose();
   };
 
   const handleGoogleLogin = async () => {
