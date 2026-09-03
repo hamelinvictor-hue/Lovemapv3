@@ -151,6 +151,8 @@ export default function App() {
   const [isOnboardingOpen, setIsOnboardingOpen] = useState<boolean>(() => !getHasCompletedOnboarding());
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isAuthOpen, setIsAuthOpen] = useState(false);
+  const [authModalMode, setAuthModalMode] = useState<'login' | 'register'>('login');
+  const [isAuthMandatory, setIsAuthMandatory] = useState(false);
   const [authModalSource, setAuthModalSource] = useState<'settings' | 'general'>('general');
   const [addCoords, setAddCoords] = useState<{ lat: number; lng: number }>({ lat: 43.2118, lng: 5.5186 });
 
@@ -329,6 +331,8 @@ export default function App() {
   const handleCompleteOnboarding = (mode: AppMode, syncedCouple?: CouplePair, partnerId?: PartnerId) => {
     saveHasCompletedOnboarding(true);
     setIsOnboardingOpen(false);
+    setIsAuthMandatory(false);
+    setIsAuthOpen(false);
     setAppMode(mode);
     saveAppMode(mode);
     if (syncedCouple) {
@@ -815,6 +819,21 @@ export default function App() {
   // Logout handler
   const handleLogout = async () => {
     console.log('[Native Debug] handleLogout triggered');
+    // Immediately close settings and open clean Auth / Login popup
+    setIsSettingsOpen(false);
+    setIsOnboardingOpen(false);
+    setIsAuthMandatory(true);
+    setAuthModalMode('login');
+    setIsAuthOpen(true);
+    showToast('Vous avez été déconnecté.');
+
+    // Clear local state
+    setSpots([]);
+    setNotifications([]);
+    setCouple(INITIAL_COUPLE);
+    setActivePartnerId('partner_a');
+    clearUserSessionStorage();
+
     try {
       console.log('[Native Debug] Calling logoutFromFirebase...');
       await logoutFromFirebase();
@@ -822,19 +841,6 @@ export default function App() {
     } catch (e) {
       console.error('[Native Debug] Error in logoutFromFirebase:', e);
     }
-    console.log('[Native Debug] Clearing session storage...');
-    // Clear user data while safely preserving system and onboarding state
-    clearUserSessionStorage();
-    localStorage.clear();
-    setSpots([]);
-    setNotifications([]);
-    setCouple(INITIAL_COUPLE);
-    setActivePartnerId('partner_a');
-    setIsOnboardingOpen(false);
-    setIsSettingsOpen(false);
-    // Open clean Auth / Login view directly
-    setIsAuthOpen(true);
-    showToast('Vous avez été déconnecté.');
     console.log('[Native Debug] handleLogout finished');
   };
 
@@ -917,6 +923,22 @@ export default function App() {
     console.log('[Native Debug] handleDeleteAccount triggered');
     const currentUser = auth.currentUser;
     const currentCode = couple.code;
+
+    // Immediately close settings and open Auth popup in register mode (propose Google, Apple or Create account)
+    setIsSettingsOpen(false);
+    setIsOnboardingOpen(false);
+    setIsAuthMandatory(true);
+    setAuthModalMode('register');
+    setIsAuthOpen(true);
+    showToast('Votre compte a été définitivement supprimé.');
+
+    // Clear local state
+    setSpots([]);
+    setNotifications([]);
+    setCouple(INITIAL_COUPLE);
+    setActivePartnerId('partner_a');
+    clearUserSessionStorage();
+
     try {
       console.log('[Native Debug] Calling deleteUserAccountInFirestore...');
       await deleteUserAccountInFirestore(currentUser, currentCode);
@@ -928,18 +950,6 @@ export default function App() {
     } catch (e) {
       console.error('[Native Debug] Error deleting account:', e);
     }
-    console.log('[Native Debug] Clearing session storage...');
-    clearUserSessionStorage();
-    localStorage.clear();
-    setSpots([]);
-    setNotifications([]);
-    setCouple(INITIAL_COUPLE);
-    setActivePartnerId('partner_a');
-    setIsOnboardingOpen(false);
-    setIsSettingsOpen(false);
-    // Open clean Auth / Login view directly
-    setIsAuthOpen(true);
-    showToast('Votre compte a été définitivement supprimé.');
     console.log('[Native Debug] handleDeleteAccount finished');
   };
 
@@ -980,7 +990,9 @@ export default function App() {
           onOpenSettings={() => setIsSettingsOpen(true)}
           onOpenDuoTab={() => setActiveTab('couple')}
           onOpenAuth={() => {
+            setIsAuthMandatory(false);
             setAuthModalSource('general');
+            setAuthModalMode('login');
             setIsAuthOpen(true);
           }}
           isMobileFrame={isMobileFrame}
@@ -1083,7 +1095,9 @@ export default function App() {
               onSwitchPartner={handleSwitchPartner}
               onOpenSettings={() => setIsSettingsOpen(true)}
               onOpenAuth={() => {
+                setIsAuthMandatory(false);
                 setAuthModalSource('general');
+                setAuthModalMode('login');
                 setIsAuthOpen(true);
               }}
               onToast={showToast}
@@ -1186,7 +1200,9 @@ export default function App() {
           appMode={appMode}
           onClose={() => setIsSettingsOpen(false)}
           onOpenAuth={() => {
+            setIsAuthMandatory(false);
             setAuthModalSource('settings');
+            setAuthModalMode('login');
             setIsAuthOpen(true);
           }}
           onUpdateCouple={(updated) => {
@@ -1224,9 +1240,16 @@ export default function App() {
 
         <AuthModal
           isOpen={isAuthOpen}
-          onClose={() => setIsAuthOpen(false)}
+          canClose={!isAuthMandatory}
+          initialMode={authModalMode}
+          onClose={() => {
+            setIsAuthMandatory(false);
+            setIsAuthOpen(false);
+          }}
           couple={couple}
           onCoupleSync={(syncedCouple, partnerId) => {
+            setIsAuthMandatory(false);
+            setIsAuthOpen(false);
             setCouple(syncedCouple);
             if (partnerId) {
               setActivePartnerId(partnerId);
@@ -1238,6 +1261,10 @@ export default function App() {
             }
           }}
           onToast={showToast}
+          onOpenOnboarding={() => {
+            setIsAuthOpen(false);
+            setIsOnboardingOpen(true);
+          }}
         />
 
         <OnboardingModal
@@ -1275,6 +1302,8 @@ export default function App() {
               <button
                 onClick={() => {
                   setBrokenDuoNotice(null);
+                  setIsAuthMandatory(true);
+                  setAuthModalMode('register');
                   setIsAuthOpen(true);
                 }}
                 className="w-full py-3 px-4 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-xs shadow-lg shadow-rose-600/30 transition-all cursor-pointer active:scale-95"

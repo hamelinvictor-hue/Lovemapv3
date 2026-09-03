@@ -1,0 +1,9 @@
+{
+	"appId": "com.lovemap.duo",
+	"appName": "react-example",
+	"webDir": "dist",
+	"packageClassList": [
+		"SignInWithApple",
+		"GoogleSignInPlugin"
+	]
+}

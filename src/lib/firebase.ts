@@ -1,7 +1,11 @@
 import { initializeApp } from 'firebase/app';
 import {
+  getAuth,
   initializeAuth,
   browserLocalPersistence,
+  indexedDBLocalPersistence,
+  browserSessionPersistence,
+  browserPopupRedirectResolver,
   GoogleAuthProvider,
   OAuthProvider,
   signInWithPopup,
@@ -44,11 +48,16 @@ const app = initializeApp(firebaseConfig);
 
 let authInstance;
 try {
-  authInstance = initializeAuth(app, {
-    persistence: browserLocalPersistence
-  });
-} catch (e) {
-  authInstance = initializeAuth(app);
+  authInstance = getAuth(app);
+} catch {
+  try {
+    authInstance = initializeAuth(app, {
+      popupRedirectResolver: browserPopupRedirectResolver,
+      persistence: [indexedDBLocalPersistence, browserLocalPersistence, browserSessionPersistence],
+    });
+  } catch {
+    authInstance = getAuth(app);
+  }
 }
 export const auth = authInstance;
 
@@ -70,7 +79,7 @@ try {
 
 // Check for redirect result on initialization for iOS PWA/Web (skip on Native to prevent auth hanging)
 if (!isCapacitorNative()) {
-  getRedirectResult(auth).then((res) => {
+  getRedirectResult(auth, browserPopupRedirectResolver).then((res) => {
     if (res?.user) {
       const user = res.user;
       saveStoredAuthUser({
@@ -238,13 +247,13 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
     // Try popup first
     let user;
     try {
-      const res = await signInWithPopup(auth, provider);
+      const res = await signInWithPopup(auth, provider, browserPopupRedirectResolver);
       user = res.user;
     } catch (popupErr: any) {
       console.warn(`Popup error on mobile (${providerName}):`, popupErr?.code || popupErr?.message || popupErr);
       if (popupErr?.code === 'auth/popup-blocked' || popupErr?.code === 'auth/operation-not-supported-in-this-environment') {
         // Fallback to redirect
-        await signInWithRedirect(auth, provider);
+        await signInWithRedirect(auth, provider, browserPopupRedirectResolver);
         // Execution will stop here and redirect the page
         return null as any; 
       } else {
@@ -301,13 +310,13 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
 
 // Helper to sign in with Google with mobile and web support
 export async function loginWithGoogle(preferredDisplayName?: string): Promise<User> {
-  // If running on iPhone, iPad, Android or Capacitor native app, use the mobile-optimized bridge
-  if (isMobileDevice()) {
+  // If running on Capacitor native app, use the native bridge
+  if (isCapacitorNative()) {
     return performMobileAuth('google', preferredDisplayName);
   }
 
   try {
-    const res = await signInWithPopup(auth, googleProvider);
+    const res = await signInWithPopup(auth, googleProvider, browserPopupRedirectResolver);
     const user = res.user;
     saveStoredAuthUser({
       uid: user.uid,
@@ -319,9 +328,10 @@ export async function loginWithGoogle(preferredDisplayName?: string): Promise<Us
     });
     return user;
   } catch (popupErr: any) {
-    console.warn('Google Popup error on web, using resilient auth:', popupErr?.message || popupErr);
+    console.warn('Google Popup error on web:', popupErr?.message || popupErr);
     if (popupErr?.code === 'auth/popup-blocked' || popupErr?.code === 'auth/operation-not-supported-in-this-environment' || popupErr?.code === 'auth/internal-error') {
-      return performMobileAuth('google', preferredDisplayName);
+      await signInWithRedirect(auth, googleProvider, browserPopupRedirectResolver);
+      return null as any;
     }
     throw popupErr;
   }
@@ -329,13 +339,13 @@ export async function loginWithGoogle(preferredDisplayName?: string): Promise<Us
 
 // Helper to sign in with Apple with mobile and web support
 export async function loginWithApple(preferredDisplayName?: string): Promise<User> {
-  // If running on iPhone, iPad, Android or Capacitor native app, use the mobile-optimized bridge
-  if (isMobileDevice()) {
+  // If running on Capacitor native app, use the native bridge
+  if (isCapacitorNative()) {
     return performMobileAuth('apple', preferredDisplayName);
   }
 
   try {
-    const res = await signInWithPopup(auth, appleProvider);
+    const res = await signInWithPopup(auth, appleProvider, browserPopupRedirectResolver);
     const user = res.user;
     saveStoredAuthUser({
       uid: user.uid,
@@ -347,11 +357,75 @@ export async function loginWithApple(preferredDisplayName?: string): Promise<Use
     });
     return user;
   } catch (popupErr: any) {
-    console.warn('Apple Popup error on web, using resilient auth:', popupErr?.message || popupErr);
+    console.warn('Apple Popup error on web:', popupErr?.message || popupErr);
     if (popupErr?.code === 'auth/popup-blocked' || popupErr?.code === 'auth/operation-not-supported-in-this-environment' || popupErr?.code === 'auth/internal-error') {
-      return performMobileAuth('apple', preferredDisplayName);
+      await signInWithRedirect(auth, appleProvider, browserPopupRedirectResolver);
+      return null as any;
     }
     throw popupErr;
+  }
+}
+
+// Register with Email & Password
+export async function registerWithEmail(email: string, pass: string, displayName?: string): Promise<User> {
+  try {
+    const userCredential = await createUserWithEmailAndPassword(auth, email.trim(), pass);
+    const user = userCredential.user;
+    if (displayName && displayName.trim()) {
+      try {
+        await updateProfile(user, { displayName: displayName.trim() });
+      } catch (e) {
+        console.warn('Profile update warning:', e);
+      }
+    }
+    saveStoredAuthUser({
+      uid: user.uid,
+      displayName: displayName?.trim() || user.displayName || email.split('@')[0],
+      email: user.email || email.trim(),
+      photoURL: user.photoURL || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+      providerId: 'password',
+      isAnonymous: false,
+    });
+    return user;
+  } catch (err: any) {
+    console.error('Email registration error:', err);
+    if (err.code === 'auth/email-already-in-use') {
+      throw new Error('Cet e-mail est déjà utilisé. Veuillez vous connecter.');
+    } else if (err.code === 'auth/weak-password') {
+      throw new Error('Le mot de passe doit comporter au moins 6 caractères.');
+    } else if (err.code === 'auth/invalid-email') {
+      throw new Error('Adresse e-mail invalide.');
+    } else if (err.code === 'auth/operation-not-allowed') {
+      console.warn('Email provider not enabled in Firebase Console, using guest account with chosen profile');
+      const guest = await loginAsGuest(displayName || email.split('@')[0]);
+      return guest;
+    }
+    throw new Error(err.message || 'Erreur lors de la création du compte');
+  }
+}
+
+// Login with Email & Password
+export async function loginWithEmail(email: string, pass: string): Promise<User> {
+  try {
+    const userCredential = await signInWithEmailAndPassword(auth, email.trim(), pass);
+    const user = userCredential.user;
+    saveStoredAuthUser({
+      uid: user.uid,
+      displayName: user.displayName || email.split('@')[0],
+      email: user.email || email.trim(),
+      photoURL: user.photoURL || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+      providerId: 'password',
+      isAnonymous: false,
+    });
+    return user;
+  } catch (err: any) {
+    console.error('Email login error:', err);
+    if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
+      throw new Error('E-mail ou mot de passe incorrect.');
+    } else if (err.code === 'auth/invalid-email') {
+      throw new Error('Adresse e-mail invalide.');
+    }
+    throw new Error(err.message || 'Erreur lors de la connexion');
   }
 }
 
