@@ -590,7 +590,7 @@ export async function ensureCoupleRoomInFirestore(
   try {
     const user = await ensureGuestUser();
     const coupleRef = doc(db, 'couples', cleanCode);
-    const snap = await withTimeout(getDoc(coupleRef), 3000, null);
+    const snap = await withTimeout(getDoc(coupleRef), 12000, null);
 
     if (!snap || !snap.exists()) {
       const memberUids = [user.uid];
@@ -607,7 +607,7 @@ export async function ensureCoupleRoomInFirestore(
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
-      await withTimeout(setDoc(coupleRef, newRoom, { merge: true }), 3000, null);
+      await withTimeout(setDoc(coupleRef, newRoom, { merge: true }), 12000, null);
 
       // Seed spots into Firestore
       for (const s of INITIAL_SPOTS) {
@@ -622,7 +622,7 @@ export async function ensureCoupleRoomInFirestore(
             },
             { merge: true }
           ),
-          2000,
+          12000,
           null
         );
       }
@@ -640,7 +640,7 @@ export async function ensureCoupleRoomInFirestore(
         });
         await withTimeout(
           setDoc(coupleRef, updatePayload, { merge: true }),
-          3000,
+          12000,
           null
         );
       }
@@ -729,7 +729,7 @@ export async function createCoupleInFirestore(
           createdAt: serverTimestamp(),
         })
       ),
-      3000,
+      12000,
       null
     );
 
@@ -742,7 +742,7 @@ export async function createCoupleInFirestore(
           ...sanitizedSpot,
           updatedAt: serverTimestamp(),
         }, { merge: true }),
-        1500,
+        12000,
         null
       );
     }
@@ -762,9 +762,13 @@ export async function joinCoupleInFirestore(
 ): Promise<CouplePair | null> {
   const normalizedCode = code.trim().toUpperCase();
   const coupleRef = doc(db, 'couples', normalizedCode);
-  const snap = await withTimeout(getDoc(coupleRef), 3500, null);
+  const snap = await withTimeout(getDoc(coupleRef), 12000, null);
 
-  if (!snap || !snap.exists()) {
+  if (!snap) {
+    throw new Error('Erreur de connexion (délai dépassé). Vérifiez votre réseau.');
+  }
+
+  if (!snap.exists()) {
     throw new Error('Code de couple introuvable. Vérifiez le code fourni par votre partenaire.');
   }
 
@@ -790,7 +794,7 @@ export async function joinCoupleInFirestore(
         memberUids,
         updatedAt: serverTimestamp(),
       }, { merge: true }),
-      3500, null
+      12000, null
     );
     return existingData;
   }
@@ -821,7 +825,7 @@ export async function joinCoupleInFirestore(
       },
       { merge: true }
     ),
-    3500,
+    12000,
     null
   );
 
@@ -839,7 +843,7 @@ export async function findUserCoupleInFirestore(
 
     // Check memberUids array-contains with timeout
     const q1 = query(couplesRef, where('memberUids', 'array-contains', user.uid));
-    const snap1 = await withTimeout(getDocs(q1), 3000, null);
+    const snap1 = await withTimeout(getDocs(q1), 12000, null);
     if (snap1 && !snap1.empty) {
       const docData = snap1.docs[0].data() as CouplePair & { partnerBUid?: string };
       const partnerId: PartnerId = docData.partnerBUid === user.uid ? 'partner_b' : 'partner_a';
@@ -848,7 +852,7 @@ export async function findUserCoupleInFirestore(
 
     // Fallback query ownerUid
     const q2 = query(couplesRef, where('ownerUid', '==', user.uid));
-    const snap2 = await withTimeout(getDocs(q2), 2500, null);
+    const snap2 = await withTimeout(getDocs(q2), 12000, null);
     if (snap2 && !snap2.empty) {
       const docData = snap2.docs[0].data() as CouplePair;
       return { couple: docData, partnerId: 'partner_a' };
@@ -857,7 +861,7 @@ export async function findUserCoupleInFirestore(
     // Fallback query by email if available
     if (user.email) {
       const qEmailA = query(couplesRef, where('ownerEmail', '==', user.email));
-      const snapEmailA = await withTimeout(getDocs(qEmailA), 2500, null);
+      const snapEmailA = await withTimeout(getDocs(qEmailA), 12000, null);
       if (snapEmailA && !snapEmailA.empty) {
         const docData = snapEmailA.docs[0].data() as CouplePair;
         return { couple: docData, partnerId: 'partner_a' };
