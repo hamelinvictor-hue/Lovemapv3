@@ -223,7 +223,7 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
         if (user) {
           if (nativeApple.givenName || nativeApple.familyName) {
             try {
-              await updateProfile(user, { displayName: fullName });
+              await withTimeout(updateProfile(user, { displayName: fullName }), 5000, null);
             } catch (pErr) {
               console.warn('[Native Debug] Profile update warning:', pErr);
             }
@@ -444,7 +444,7 @@ export async function registerWithEmail(email: string, pass: string, displayName
     const user = userCredential.user;
     if (displayName && displayName.trim()) {
       try {
-        await updateProfile(user, { displayName: displayName.trim() });
+        await withTimeout(updateProfile(user, { displayName: displayName.trim() }), 5000, null);
       } catch (e) {
         console.warn('Profile update warning:', e);
       }
@@ -612,23 +612,16 @@ export async function ensureCoupleRoomInFirestore(
       });
       await withTimeout(setDoc(coupleRef, newRoom, { merge: true }), 12000, null);
 
-      // Seed spots into Firestore
-      for (const s of INITIAL_SPOTS) {
+      // Seed spots into Firestore in parallel
+      const spotPromises = INITIAL_SPOTS.map(s => {
         const spotRef = doc(db, 'couples', cleanCode, 'spots', s.id);
         const sanitizedSpot = cleanFirestoreData(JSON.parse(JSON.stringify(s)));
-        await withTimeout(
-          setDoc(
-            spotRef,
-            {
-              ...sanitizedSpot,
-              updatedAt: serverTimestamp(),
-            },
-            { merge: true }
-          ),
-          12000,
-          null
-        );
-      }
+        return setDoc(spotRef, {
+          ...sanitizedSpot,
+          updatedAt: serverTimestamp(),
+        }, { merge: true });
+      });
+      await withTimeout(Promise.all(spotPromises), 8000, null);
       return { ...localCouple, code: cleanCode };
     } else {
       const data = snap.data() as CouplePair & { memberUids?: string[] };
@@ -736,19 +729,16 @@ export async function createCoupleInFirestore(
       null
     );
 
-    // Seed initial spots into Firestore
-    for (const s of INITIAL_SPOTS) {
+    // Seed initial spots into Firestore in parallel
+    const spotPromises = INITIAL_SPOTS.map(s => {
       const spotRef = doc(db, 'couples', code, 'spots', s.id);
       const sanitizedSpot = cleanFirestoreData(JSON.parse(JSON.stringify(s)));
-      await withTimeout(
-        setDoc(spotRef, {
-          ...sanitizedSpot,
-          updatedAt: serverTimestamp(),
-        }, { merge: true }),
-        12000,
-        null
-      );
-    }
+      return setDoc(spotRef, {
+        ...sanitizedSpot,
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+    });
+    await withTimeout(Promise.all(spotPromises), 8000, null);
   } catch (e) {
     console.warn('Firestore setDoc notice (proceeding locally):', e);
   }
@@ -812,7 +802,7 @@ export async function joinCoupleInFirestore(
       const ref = doc(db, 'couples', cand);
       return getDoc(ref).then(s => ({ ref, s })).catch(() => null);
     });
-    const results = await withTimeout(Promise.all(promises), 6000, []);
+    const results = await withTimeout(Promise.all(promises), 15000, []);
     
     for (const res of results) {
       if (res && res.s && res.s.exists() && res.s.id !== 'LOVE-NEW') {
@@ -828,7 +818,7 @@ export async function joinCoupleInFirestore(
   // 2. Fallback scan if direct getDoc didn't match (e.g., formatting differences)
   if (!snap || !snap.exists()) {
     try {
-      const allCouplesSnap = await withTimeout(getDocs(collection(db, 'couples')), 6000, null);
+      const allCouplesSnap = await withTimeout(getDocs(collection(db, 'couples')), 15000, null);
       if (allCouplesSnap && !allCouplesSnap.empty) {
         const inputAlpha = rawClean.replace(/[^A-Z0-9]/g, '');
         const inputCore = inputAlpha.startsWith('LM') ? inputAlpha.substring(2) : inputAlpha;
@@ -941,7 +931,7 @@ export async function findUserCoupleInFirestore(
     }
 
     const promises = queries.map(q => getDocs(q).catch(() => null));
-    const results = await withTimeout(Promise.all(promises), 10000, null);
+    const results = await withTimeout(Promise.all(promises), 15000, null);
     
     if (results === null) throw new Error('Erreur de connexion (délai dépassé)');
 
@@ -1008,9 +998,8 @@ export async function breakCoupleInFirestore(code: string, breakerName: string) 
     const spotsCol = collection(db, 'couples', cleanCode, 'spots');
     const spotsSnap = await withTimeout(getDocs(spotsCol), 3000, null);
     if (spotsSnap) {
-      for (const d of spotsSnap.docs) {
-        await deleteDoc(doc(db, 'couples', cleanCode, 'spots', d.id));
-      }
+      const deletePromises = spotsSnap.docs.map(d => deleteDoc(doc(db, 'couples', cleanCode, 'spots', d.id)));
+      await withTimeout(Promise.all(deletePromises), 5000, null);
     }
 
     // Mark room as broken
