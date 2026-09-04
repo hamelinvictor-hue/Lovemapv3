@@ -756,6 +756,36 @@ export async function createCoupleInFirestore(
   return { couple: newCouple, isExisting: false };
 }
 
+// Helper to generate candidate codes for room matching
+export function getCoupleCodeCandidates(input: string): string[] {
+  if (!input) return [];
+  const raw = input.trim().toUpperCase();
+  const candidates = new Set<string>();
+  
+  // 1. Raw trimmed uppercase
+  candidates.add(raw);
+
+  // 2. Without spaces
+  const cleanNoSpaces = raw.replace(/\s+/g, '');
+  candidates.add(cleanNoSpaces);
+
+  // 3. Normalized alphanumeric only
+  const cleanAlphaNum = raw.replace(/[^A-Z0-9]/g, '');
+  if (cleanAlphaNum) {
+    candidates.add(cleanAlphaNum);
+  }
+
+  // 4. If code is 8 chars (e.g. "DZ399HR9" or "DZ39-9HR9")
+  const coreAlpha = cleanAlphaNum.startsWith('LM') ? cleanAlphaNum.substring(2) : cleanAlphaNum;
+  if (coreAlpha.length === 8) {
+    candidates.add(`LM-${coreAlpha.substring(0, 4)}-${coreAlpha.substring(4, 8)}`);
+    candidates.add(`LM-${coreAlpha.substring(0, 4)}${coreAlpha.substring(4, 8)}`);
+    candidates.add(`${coreAlpha.substring(0, 4)}-${coreAlpha.substring(4, 8)}`);
+  }
+
+  return Array.from(candidates);
+}
+
 // Join an existing couple room by couple code
 export async function joinCoupleInFirestore(
   user: User,
@@ -763,16 +793,67 @@ export async function joinCoupleInFirestore(
   partnerName: string = 'Sam',
   avatarUrl?: string
 ): Promise<CouplePair | null> {
-  const normalizedCode = code.trim().toUpperCase();
-  const coupleRef = doc(db, 'couples', normalizedCode);
-  const snap = await withTimeout(getDoc(coupleRef), 12000, null);
-
-  if (!snap) {
-    throw new Error('Erreur de connexion (délai dépassé). Vérifiez votre réseau.');
+  if (!code || !code.trim()) {
+    throw new Error('Veuillez saisir un code de couple valide.');
   }
 
-  if (!snap.exists()) {
-    throw new Error('Code de couple introuvable. Vérifiez le code fourni par votre partenaire.');
+  const rawClean = code.trim().toUpperCase();
+  if (rawClean === 'LOVE-NEW') {
+    throw new Error('Ce code temporaire n\'est pas valide. Veuillez utiliser le code unique partagé par votre partenaire.');
+  }
+
+  const candidates = getCoupleCodeCandidates(code);
+  let coupleRef: any = null;
+  let snap: any = null;
+
+  // 1. Fast path: try candidates by exact document ID
+  for (const cand of candidates) {
+    try {
+      const ref = doc(db, 'couples', cand);
+      const s = await withTimeout(getDoc(ref), 5000, null);
+      if (s && s.exists() && s.id !== 'LOVE-NEW') {
+        coupleRef = ref;
+        snap = s;
+        break;
+      }
+    } catch {
+      // Continue to next candidate
+    }
+  }
+
+  // 2. Fallback scan if direct getDoc didn't match (e.g., formatting differences)
+  if (!snap || !snap.exists()) {
+    try {
+      const allCouplesSnap = await withTimeout(getDocs(collection(db, 'couples')), 8000, null);
+      if (allCouplesSnap && !allCouplesSnap.empty) {
+        const inputAlpha = rawClean.replace(/[^A-Z0-9]/g, '');
+        const inputCore = inputAlpha.startsWith('LM') ? inputAlpha.substring(2) : inputAlpha;
+
+        for (const docItem of allCouplesSnap.docs) {
+          if (docItem.id === 'LOVE-NEW') continue;
+          const docIdAlpha = docItem.id.replace(/[^A-Z0-9]/g, '');
+          const docIdCore = docIdAlpha.startsWith('LM') ? docIdAlpha.substring(2) : docIdAlpha;
+          const dataCode = String((docItem.data() as any).code || '').replace(/[^A-Z0-9]/g, '').toUpperCase();
+          const dataCore = dataCode.startsWith('LM') ? dataCode.substring(2) : dataCode;
+
+          if (
+            docIdAlpha === inputAlpha ||
+            dataCode === inputAlpha ||
+            (inputCore.length >= 6 && (docIdCore === inputCore || dataCore === inputCore))
+          ) {
+            coupleRef = docItem.ref;
+            snap = docItem;
+            break;
+          }
+        }
+      }
+    } catch (scanErr) {
+      console.warn('Fallback couples scan notice:', scanErr);
+    }
+  }
+
+  if (!snap || !snap.exists() || !coupleRef) {
+    throw new Error(`Code de couple "${code.trim().toUpperCase()}" introuvable. Vérifiez que votre partenaire vous a bien partagé son code (ex: LM-XXXX-XXXX).`);
   }
 
   const existingData = snap.data() as CouplePair & {
@@ -849,9 +930,12 @@ export async function findUserCoupleInFirestore(
     const snap1 = await withTimeout(getDocs(q1), 12000, null);
     if (snap1 === null) throw new Error('Erreur de connexion (délai dépassé)');
     if (!snap1.empty) {
-      const docData = snap1.docs[0].data() as CouplePair & { partnerBUid?: string };
-      const partnerId: PartnerId = docData.partnerBUid === user.uid ? 'partner_b' : 'partner_a';
-      return { couple: docData, partnerId };
+      const validDoc = snap1.docs.find(d => d.id !== 'LOVE-NEW' && (d.data() as any).code !== 'LOVE-NEW');
+      if (validDoc) {
+        const docData = validDoc.data() as CouplePair & { partnerBUid?: string };
+        const partnerId: PartnerId = docData.partnerBUid === user.uid ? 'partner_b' : 'partner_a';
+        return { couple: docData, partnerId };
+      }
     }
 
     // Fallback query ownerUid
@@ -859,8 +943,11 @@ export async function findUserCoupleInFirestore(
     const snap2 = await withTimeout(getDocs(q2), 12000, null);
     if (snap2 === null) throw new Error('Erreur de connexion (délai dépassé)');
     if (!snap2.empty) {
-      const docData = snap2.docs[0].data() as CouplePair;
-      return { couple: docData, partnerId: 'partner_a' };
+      const validDoc = snap2.docs.find(d => d.id !== 'LOVE-NEW' && (d.data() as any).code !== 'LOVE-NEW');
+      if (validDoc) {
+        const docData = validDoc.data() as CouplePair;
+        return { couple: docData, partnerId: 'partner_a' };
+      }
     }
 
     // Fallback query by email if available
@@ -868,8 +955,11 @@ export async function findUserCoupleInFirestore(
       const qEmailA = query(couplesRef, where('ownerEmail', '==', user.email));
       const snapEmailA = await withTimeout(getDocs(qEmailA), 12000, null);
       if (snapEmailA && !snapEmailA.empty) {
-        const docData = snapEmailA.docs[0].data() as CouplePair;
-        return { couple: docData, partnerId: 'partner_a' };
+        const validDoc = snapEmailA.docs.find(d => d.id !== 'LOVE-NEW' && (d.data() as any).code !== 'LOVE-NEW');
+        if (validDoc) {
+          const docData = validDoc.data() as CouplePair;
+          return { couple: docData, partnerId: 'partner_a' };
+        }
       }
     }
 

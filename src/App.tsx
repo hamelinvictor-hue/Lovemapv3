@@ -412,6 +412,7 @@ export default function App() {
         .then((updatedCouple) => {
           if (updatedCouple.code !== couple.code) {
             setCouple(updatedCouple);
+            saveCouple(updatedCouple);
           }
           ensureSubscriberInRevenueCat(updatedCouple.code);
         })

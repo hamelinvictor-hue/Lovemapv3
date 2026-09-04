@@ -340,7 +340,12 @@ export function getStoredCouple(): CouplePair {
       localStorage.setItem(COUPLE_KEY, JSON.stringify(INITIAL_COUPLE));
       return INITIAL_COUPLE;
     }
-    return JSON.parse(data);
+    const parsed = JSON.parse(data) as CouplePair;
+    if (!parsed.code || parsed.code === 'LOVE-NEW') {
+      parsed.code = INITIAL_COUPLE.code;
+      localStorage.setItem(COUPLE_KEY, JSON.stringify(parsed));
+    }
+    return parsed;
   } catch (err) {
     return INITIAL_COUPLE;
   }

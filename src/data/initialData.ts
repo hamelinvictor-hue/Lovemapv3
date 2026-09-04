@@ -102,8 +102,19 @@ export const RATING_CRITERIA: RatingCriteria[] = [
   },
 ];
 
+export function generateDefaultCoupleCode(): string {
+  const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+  let p1 = '';
+  let p2 = '';
+  for (let i = 0; i < 4; i++) {
+    p1 += chars.charAt(Math.floor(Math.random() * chars.length));
+    p2 += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return `LM-${p1}-${p2}`;
+}
+
 export const INITIAL_COUPLE: CouplePair = {
-  code: 'LOVE-NEW',
+  code: generateDefaultCoupleCode(),
   anniversaryDate: new Date().toISOString().split('T')[0],
   secretPin: '1234',
   isPinLocked: false,
