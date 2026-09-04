@@ -388,7 +388,13 @@ export async function triggerNativeGoogleAuth(): Promise<{ idToken: string; disp
         }
       }
 
-      const res = await capawesomePlugin.signIn();
+      const authPromise = capawesomePlugin.signIn();
+      console.log('[Native Debug] Waiting for capawesomePlugin.signIn()...');
+      const res: any = await withTimeoutPromise(
+        authPromise,
+        45000,
+        'Délai de connexion Google dépassé. Veuillez réessayer.'
+      );
       console.log('[Native Debug] GoogleSignIn.signIn() completed:', res);
       const token = res?.idToken || res?.authentication?.idToken || res?.accessToken;
       if (token) {
