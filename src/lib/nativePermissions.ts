@@ -392,7 +392,7 @@ export async function triggerNativeGoogleAuth(): Promise<{ idToken: string; disp
       console.log('[Native Debug] Waiting for capawesomePlugin.signIn()...');
       const res: any = await withTimeoutPromise(
         authPromise,
-        45000,
+        20000,
         'Délai de connexion Google dépassé. Veuillez réessayer.'
       );
       console.log('[Native Debug] GoogleSignIn.signIn() completed:', res);
@@ -481,10 +481,10 @@ export async function triggerNativeAppleAuth(): Promise<{
         nonce: hashedNonce,
       });
 
-      // Safety timeout: 45 seconds to prevent hanging on native iOS
+      // Safety timeout: 20 seconds to prevent hanging on native iOS
       const res = await withTimeoutPromise(
         authPromise,
-        45000,
+        20000,
         'Délai de connexion Apple dépassé. Veuillez réessayer.'
       );
 

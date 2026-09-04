@@ -194,7 +194,7 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
 
         let user: User | null = null;
         try {
-          const res = await withTimeout(signInWithCredential(auth, credential), 15000, null);
+          const res = await withTimeout(signInWithCredential(auth, credential), 7000, null);
           if (res?.user) {
             user = res.user;
             console.log('[Native Debug] signInWithCredential Apple success:', user.uid);
@@ -254,7 +254,7 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
 
         let user: User | null = null;
         try {
-          const res = await withTimeout(signInWithCredential(auth, credential), 15000, null);
+          const res = await withTimeout(signInWithCredential(auth, credential), 7000, null);
           if (res?.user) {
             user = res.user;
             console.log('[Native Debug] signInWithCredential Google success:', user.uid);
@@ -612,16 +612,23 @@ export async function ensureCoupleRoomInFirestore(
       });
       await withTimeout(setDoc(coupleRef, newRoom, { merge: true }), 12000, null);
 
-      // Seed spots into Firestore in parallel
-      const spotPromises = INITIAL_SPOTS.map(s => {
+      // Seed spots into Firestore
+      for (const s of INITIAL_SPOTS) {
         const spotRef = doc(db, 'couples', cleanCode, 'spots', s.id);
         const sanitizedSpot = cleanFirestoreData(JSON.parse(JSON.stringify(s)));
-        return setDoc(spotRef, {
-          ...sanitizedSpot,
-          updatedAt: serverTimestamp(),
-        }, { merge: true });
-      });
-      await withTimeout(Promise.all(spotPromises), 8000, null);
+        await withTimeout(
+          setDoc(
+            spotRef,
+            {
+              ...sanitizedSpot,
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true }
+          ),
+          12000,
+          null
+        );
+      }
       return { ...localCouple, code: cleanCode };
     } else {
       const data = snap.data() as CouplePair & { memberUids?: string[] };
@@ -729,16 +736,19 @@ export async function createCoupleInFirestore(
       null
     );
 
-    // Seed initial spots into Firestore in parallel
-    const spotPromises = INITIAL_SPOTS.map(s => {
+    // Seed initial spots into Firestore
+    for (const s of INITIAL_SPOTS) {
       const spotRef = doc(db, 'couples', code, 'spots', s.id);
       const sanitizedSpot = cleanFirestoreData(JSON.parse(JSON.stringify(s)));
-      return setDoc(spotRef, {
-        ...sanitizedSpot,
-        updatedAt: serverTimestamp(),
-      }, { merge: true });
-    });
-    await withTimeout(Promise.all(spotPromises), 8000, null);
+      await withTimeout(
+        setDoc(spotRef, {
+          ...sanitizedSpot,
+          updatedAt: serverTimestamp(),
+        }, { merge: true }),
+        12000,
+        null
+      );
+    }
   } catch (e) {
     console.warn('Firestore setDoc notice (proceeding locally):', e);
   }
@@ -796,29 +806,25 @@ export async function joinCoupleInFirestore(
   let coupleRef: any = null;
   let snap: any = null;
 
-  // 1. Fast path: try candidates by exact document ID in parallel
-  try {
-    const promises = candidates.map(cand => {
+  // 1. Fast path: try candidates by exact document ID
+  for (const cand of candidates) {
+    try {
       const ref = doc(db, 'couples', cand);
-      return getDoc(ref).then(s => ({ ref, s })).catch(() => null);
-    });
-    const results = await withTimeout(Promise.all(promises), 15000, []);
-    
-    for (const res of results) {
-      if (res && res.s && res.s.exists() && res.s.id !== 'LOVE-NEW') {
-        coupleRef = res.ref;
-        snap = res.s;
+      const s = await withTimeout(getDoc(ref), 5000, null);
+      if (s && s.exists() && s.id !== 'LOVE-NEW') {
+        coupleRef = ref;
+        snap = s;
         break;
       }
+    } catch {
+      // Continue
     }
-  } catch {
-    // Ignore and fallback
   }
 
   // 2. Fallback scan if direct getDoc didn't match (e.g., formatting differences)
   if (!snap || !snap.exists()) {
     try {
-      const allCouplesSnap = await withTimeout(getDocs(collection(db, 'couples')), 15000, null);
+      const allCouplesSnap = await withTimeout(getDocs(collection(db, 'couples')), 8000, null);
       if (allCouplesSnap && !allCouplesSnap.empty) {
         const inputAlpha = rawClean.replace(/[^A-Z0-9]/g, '');
         const inputCore = inputAlpha.startsWith('LM') ? inputAlpha.substring(2) : inputAlpha;
@@ -919,32 +925,40 @@ export async function findUserCoupleInFirestore(
   try {
     const couplesRef = collection(db, 'couples');
 
-    const queries = [
-      query(couplesRef, where('memberUids', 'array-contains', user.uid)),
-      query(couplesRef, where('ownerUid', '==', user.uid))
-    ];
-    
-    if (user.email) {
-      queries.push(query(couplesRef, where('ownerEmail', '==', user.email)));
-      queries.push(query(couplesRef, where('partnerAEmail', '==', user.email)));
-      queries.push(query(couplesRef, where('partnerBEmail', '==', user.email)));
+    // Check memberUids array-contains with timeout
+    const q1 = query(couplesRef, where('memberUids', 'array-contains', user.uid));
+    const snap1 = await withTimeout(getDocs(q1), 6000, null);
+    if (snap1 === null) throw new Error('Erreur de connexion (délai dépassé)');
+    if (!snap1.empty) {
+      const validDoc = snap1.docs.find(d => d.id !== 'LOVE-NEW' && (d.data() as any).code !== 'LOVE-NEW');
+      if (validDoc) {
+        const docData = validDoc.data() as CouplePair & { partnerBUid?: string };
+        const partnerId: PartnerId = docData.partnerBUid === user.uid ? 'partner_b' : 'partner_a';
+        return { couple: docData, partnerId };
+      }
     }
 
-    const promises = queries.map(q => getDocs(q).catch(() => null));
-    const results = await withTimeout(Promise.all(promises), 15000, null);
-    
-    if (results === null) throw new Error('Erreur de connexion (délai dépassé)');
+    // Fallback query ownerUid
+    const q2 = query(couplesRef, where('ownerUid', '==', user.uid));
+    const snap2 = await withTimeout(getDocs(q2), 6000, null);
+    if (snap2 === null) throw new Error('Erreur de connexion (délai dépassé)');
+    if (!snap2.empty) {
+      const validDoc = snap2.docs.find(d => d.id !== 'LOVE-NEW' && (d.data() as any).code !== 'LOVE-NEW');
+      if (validDoc) {
+        const docData = validDoc.data() as CouplePair;
+        return { couple: docData, partnerId: 'partner_a' };
+      }
+    }
 
-    for (const snap of results) {
-      if (snap && !snap.empty) {
-        const validDoc = snap.docs.find(d => d.id !== 'LOVE-NEW' && (d.data() as any).code !== 'LOVE-NEW');
+    // Fallback query by email if available
+    if (user.email) {
+      const qEmailA = query(couplesRef, where('ownerEmail', '==', user.email));
+      const snapEmailA = await withTimeout(getDocs(qEmailA), 6000, null);
+      if (snapEmailA && !snapEmailA.empty) {
+        const validDoc = snapEmailA.docs.find(d => d.id !== 'LOVE-NEW' && (d.data() as any).code !== 'LOVE-NEW');
         if (validDoc) {
-          const docData = validDoc.data() as CouplePair & { partnerBUid?: string; partnerBEmail?: string };
-          let partnerId: PartnerId = 'partner_a';
-          if (docData.partnerBUid === user.uid || (user.email && docData.partnerBEmail === user.email)) {
-            partnerId = 'partner_b';
-          }
-          return { couple: docData, partnerId };
+          const docData = validDoc.data() as CouplePair;
+          return { couple: docData, partnerId: 'partner_a' };
         }
       }
     }
