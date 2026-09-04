@@ -143,6 +143,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         } catch (joinErr: any) {
           console.warn('Join couple error on Google login:', joinErr);
           setError(joinErr?.message || 'Code Duo introuvable ou déjà complet.');
+          return;
         }
       }
 
@@ -185,6 +186,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         } catch (joinErr: any) {
           console.warn('Join couple error on Apple login:', joinErr);
           setError(joinErr?.message || 'Code Duo introuvable ou déjà complet.');
+          return;
         }
       }
 
