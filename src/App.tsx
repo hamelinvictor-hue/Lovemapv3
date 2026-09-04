@@ -408,8 +408,14 @@ export default function App() {
   // Ensure couple room registration in Firestore & RevenueCat
   useEffect(() => {
     if (couple.code) {
-      ensureCoupleRoomInFirestore(couple.code, couple, activePartnerId);
-      ensureSubscriberInRevenueCat(couple.code);
+      ensureCoupleRoomInFirestore(couple.code, couple, activePartnerId)
+        .then((updatedCouple) => {
+          if (updatedCouple.code !== couple.code) {
+            setCouple(updatedCouple);
+          }
+          ensureSubscriberInRevenueCat(updatedCouple.code);
+        })
+        .catch(console.error);
     }
   }, [couple.code]);
 

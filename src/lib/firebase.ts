@@ -586,7 +586,10 @@ export async function ensureCoupleRoomInFirestore(
   partnerId: PartnerId
 ): Promise<CouplePair> {
   if (!code) return localCouple;
-  const cleanCode = code.trim().toUpperCase();
+  let cleanCode = code.trim().toUpperCase();
+  if (cleanCode === 'LOVE-NEW') {
+    cleanCode = generateCoupleCode();
+  }
   try {
     const user = await ensureGuestUser();
     const coupleRef = doc(db, 'couples', cleanCode);
@@ -844,7 +847,8 @@ export async function findUserCoupleInFirestore(
     // Check memberUids array-contains with timeout
     const q1 = query(couplesRef, where('memberUids', 'array-contains', user.uid));
     const snap1 = await withTimeout(getDocs(q1), 12000, null);
-    if (snap1 && !snap1.empty) {
+    if (snap1 === null) throw new Error('Erreur de connexion (délai dépassé)');
+    if (!snap1.empty) {
       const docData = snap1.docs[0].data() as CouplePair & { partnerBUid?: string };
       const partnerId: PartnerId = docData.partnerBUid === user.uid ? 'partner_b' : 'partner_a';
       return { couple: docData, partnerId };
@@ -853,7 +857,8 @@ export async function findUserCoupleInFirestore(
     // Fallback query ownerUid
     const q2 = query(couplesRef, where('ownerUid', '==', user.uid));
     const snap2 = await withTimeout(getDocs(q2), 12000, null);
-    if (snap2 && !snap2.empty) {
+    if (snap2 === null) throw new Error('Erreur de connexion (délai dépassé)');
+    if (!snap2.empty) {
       const docData = snap2.docs[0].data() as CouplePair;
       return { couple: docData, partnerId: 'partner_a' };
     }
@@ -869,9 +874,9 @@ export async function findUserCoupleInFirestore(
     }
 
     return null;
-  } catch (err) {
+  } catch (err: any) {
     console.warn('Notice querying user couple from Firestore:', err);
-    return null;
+    throw err;
   }
 }
 
