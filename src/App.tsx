@@ -61,7 +61,7 @@ import {
   getTrialOfferRemainingSeconds,
 } from './lib/subscription';
 import { ensureSubscriberInRevenueCat } from './lib/revenuecatClient';
-import { initializePurchases } from './lib/purchases';
+import { initializePurchases, resetPurchasesSession } from './lib/purchases';
 import { triggerHaptic } from './lib/feedback';
 import { INITIAL_SPOTS, INITIAL_NOTIFICATIONS, INITIAL_COUPLE } from './data/initialData';
 
@@ -935,36 +935,40 @@ export default function App() {
   // Delete account handler
   const handleDeleteAccount = async () => {
     console.log('[Native Debug] handleDeleteAccount triggered');
-    const currentUser = auth.currentUser;
+    const currentUser = auth.currentUser || getEffectiveUser();
     const currentCode = couple.code;
 
-    // Immediately close settings and open Auth popup in register mode (propose Google, Apple or Create account)
+    // 1. Immediately close settings, reset modals and clear user session
     setIsSettingsOpen(false);
-    setIsOnboardingOpen(false);
-    setIsAuthMandatory(true);
-    setAuthModalMode('register');
-    setIsAuthOpen(true);
-    showToast('Votre compte a été définitivement supprimé.');
+    showToast('Suppression du compte en cours...');
 
     // Clear local state
     setAuthUser(null);
     setSpots([]);
     setNotifications([]);
-    setCouple(INITIAL_COUPLE);
+    const freshCouple: CouplePair = {
+      ...INITIAL_COUPLE,
+      code: generateCoupleCode(),
+    };
+    setCouple(freshCouple);
     setActivePartnerId('partner_a');
     clearUserSessionStorage();
 
     try {
       console.log('[Native Debug] Calling deleteUserAccountInFirestore...');
       await deleteUserAccountInFirestore(currentUser, currentCode);
-      console.log('[Native Debug] Calling purgeAllFirestoreData...');
-      await purgeAllFirestoreData();
-      console.log('[Native Debug] Calling logoutFromFirebase...');
-      await logoutFromFirebase();
+      console.log('[Native Debug] Calling resetPurchasesSession...');
+      await resetPurchasesSession();
       console.log('[Native Debug] Delete operations completed');
     } catch (e) {
       console.error('[Native Debug] Error deleting account:', e);
     }
+
+    // 2. Open onboarding / auth screen clean
+    setIsAuthMandatory(true);
+    setAuthModalMode('register');
+    setIsAuthOpen(true);
+    showToast('Votre compte a été définitivement supprimé.');
     console.log('[Native Debug] handleDeleteAccount finished');
   };
 

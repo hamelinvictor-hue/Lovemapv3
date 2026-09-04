@@ -204,6 +204,7 @@ export function clearUserSessionStorage(): void {
     localStorage.removeItem(ACTIVE_PARTNER_KEY);
     localStorage.removeItem(APP_MODE_KEY);
     localStorage.removeItem(AUTH_USER_KEY);
+    localStorage.removeItem(ONBOARDING_KEY);
     sessionStorage.clear();
   } catch (err) {
     console.error('Failed to clear user session storage', err);

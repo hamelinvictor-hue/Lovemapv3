@@ -208,3 +208,18 @@ export async function checkActiveSubscription(appUserId?: string): Promise<boole
   }
   return false;
 }
+
+/**
+ * Log out and reset RevenueCat state for clean account deletion
+ */
+export async function resetPurchasesSession(): Promise<void> {
+  if (isCapacitorNative()) {
+    try {
+      await Purchases.logOut();
+      currentConfiguredUserId = null;
+      console.log('[Purchases] RevenueCat session successfully reset.');
+    } catch (e) {
+      console.warn('[Purchases] RevenueCat logOut notice:', e);
+    }
+  }
+}

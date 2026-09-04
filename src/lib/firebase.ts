@@ -1084,33 +1084,118 @@ export async function purgeAllFirestoreData() {
 
 // Delete user account
 export async function deleteUserAccountInFirestore(user: User | null, code?: string) {
-  if (code) {
+  const targetUser = user || auth.currentUser || getEffectiveUser();
+  const targetUid = targetUser?.uid;
+  const targetEmail = targetUser?.email;
+
+  console.log('[Native Debug] deleteUserAccountInFirestore called for:', {
+    targetUid,
+    targetEmail,
+    code,
+  });
+
+  // 1. Delete the specific couple passed in or clean up couple documents associated with this user
+  const coupleCodesToDelete = new Set<string>();
+  if (code && code !== 'LOVE-NEW') {
+    coupleCodesToDelete.add(code.trim().toUpperCase());
+  }
+
+  try {
+    const couplesCol = collection(db, 'couples');
+    if (targetUid) {
+      // Find couples where user is in memberUids
+      const qMembers = query(couplesCol, where('memberUids', 'array-contains', targetUid));
+      const sMembers = await withTimeout(getDocs(qMembers), 3500, null);
+      sMembers?.forEach((d) => coupleCodesToDelete.add(d.id));
+
+      // Find couples where user is ownerUid
+      const qOwner = query(couplesCol, where('ownerUid', '==', targetUid));
+      const sOwner = await withTimeout(getDocs(qOwner), 3500, null);
+      sOwner?.forEach((d) => coupleCodesToDelete.add(d.id));
+
+      // Find couples where user is partnerAUid
+      const qPartnerA = query(couplesCol, where('partnerAUid', '==', targetUid));
+      const sPartnerA = await withTimeout(getDocs(qPartnerA), 3500, null);
+      sPartnerA?.forEach((d) => coupleCodesToDelete.add(d.id));
+
+      // Find couples where user is partnerBUid
+      const qPartnerB = query(couplesCol, where('partnerBUid', '==', targetUid));
+      const sPartnerB = await withTimeout(getDocs(qPartnerB), 3500, null);
+      sPartnerB?.forEach((d) => coupleCodesToDelete.add(d.id));
+    }
+
+    if (targetEmail) {
+      const qEmailA = query(couplesCol, where('ownerEmail', '==', targetEmail));
+      const sEmailA = await withTimeout(getDocs(qEmailA), 3500, null);
+      sEmailA?.forEach((d) => coupleCodesToDelete.add(d.id));
+
+      const qEmailB = query(couplesCol, where('partnerBEmail', '==', targetEmail));
+      const sEmailB = await withTimeout(getDocs(qEmailB), 3500, null);
+      sEmailB?.forEach((d) => coupleCodesToDelete.add(d.id));
+    }
+  } catch (findErr) {
+    console.warn('[Native Debug] Error looking up couple docs to delete:', findErr);
+  }
+
+  // Delete all identified couple collections, spots, and notifications
+  for (const cCode of coupleCodesToDelete) {
+    console.log('[Native Debug] Deleting couple document and subcollections for:', cCode);
     try {
-      const spotsCol = collection(db, 'couples', code, 'spots');
+      // Delete spots subcollection
+      const spotsCol = collection(db, 'couples', cCode, 'spots');
       const spotsSnap = await withTimeout(getDocs(spotsCol), 3000, null);
       if (spotsSnap) {
         for (const d of spotsSnap.docs) {
-          await deleteDoc(doc(db, 'couples', code, 'spots', d.id));
+          await deleteDoc(doc(db, 'couples', cCode, 'spots', d.id));
         }
       }
-      await deleteDoc(doc(db, 'couples', code));
+
+      // Delete notifications subcollection
+      const notifsCol = collection(db, 'couples', cCode, 'notifications');
+      const notifsSnap = await withTimeout(getDocs(notifsCol), 3000, null);
+      if (notifsSnap) {
+        for (const d of notifsSnap.docs) {
+          await deleteDoc(doc(db, 'couples', cCode, 'notifications', d.id));
+        }
+      }
+
+      // Delete main couple document
+      await deleteDoc(doc(db, 'couples', cCode));
+      console.log('[Native Debug] Successfully deleted couple document:', cCode);
     } catch (e) {
-      console.warn('Notice deleting couple document in Firestore:', e);
+      console.warn('[Native Debug] Notice deleting couple document in Firestore:', e);
     }
   }
 
+  // 2. Clear persisted auth storage
   saveStoredAuthUser(null);
-  if (user) {
+
+  // 3. Delete Firebase Auth User account
+  const firebaseAuthUser = auth.currentUser || (targetUser && typeof (targetUser as any).delete === 'function' ? targetUser : null);
+  if (firebaseAuthUser && typeof firebaseAuthUser.delete === 'function') {
     try {
-      await user.delete();
-    } catch {
-      // Ignore
+      console.log('[Native Debug] Attempting firebaseAuthUser.delete()...');
+      await firebaseAuthUser.delete();
+      console.log('[Native Debug] firebaseAuthUser.delete() successful.');
+    } catch (delErr: any) {
+      console.warn('[Native Debug] Notice during firebaseAuthUser.delete():', delErr?.code || delErr?.message || delErr);
+      // If requires recent login, sign out will ensure user cannot access current session
     }
   }
+
+  // 4. Native Plugins sign out (Google / Apple tokens cached on device)
+  try {
+    await triggerNativeSignOut();
+  } catch (nsErr) {
+    console.warn('[Native Debug] triggerNativeSignOut error:', nsErr);
+  }
+
+  // 5. Firebase Auth signOut
   try {
     await signOut(auth);
-  } catch {
-    // Ignore
+    console.log('[Native Debug] Firebase signOut completed.');
+  } catch (soErr) {
+    console.warn('[Native Debug] signOut error:', soErr);
   }
 }
 
