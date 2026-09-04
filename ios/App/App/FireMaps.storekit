@@ -1,0 +1,122 @@
+{
+  "appPolicies" : {
+    "eula" : "",
+    "policies" : [
+      {
+        "locale" : "en_US",
+        "policyText" : "",
+        "policyURL" : ""
+      }
+    ]
+  },
+  "identifier" : "C323A711",
+  "nonRenewingSubscriptions" : [
+
+  ],
+  "products" : [
+
+  ],
+  "settings" : {
+    "_applicationInternalID" : "6808297517",
+    "_askToBuyEnabled" : false,
+    "_billingGracePeriodEnabled" : false,
+    "_billingIssuesEnabled" : false,
+    "_developerTeamID" : "QKZC645G24",
+    "_disableDialogs" : false,
+    "_failTransactionsEnabled" : false,
+    "_lastSynchronizedDate" : 810204371.55162704,
+    "_locale" : "en_US",
+    "_renewalBillingIssuesEnabled" : false,
+    "_storefront" : "USA",
+    "_storeKitErrors" : [
+
+    ],
+    "_timeRate" : 0
+  },
+  "subscriptionGroups" : [
+    {
+      "id" : "22356924",
+      "localizations" : [
+
+      ],
+      "name" : "LoveMap Premium",
+      "subscriptions" : [
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "34.99",
+          "familyShareable" : false,
+          "groupNumber" : 2,
+          "internalID" : "6808298764",
+          "introductoryOffer" : {
+            "internalID" : "61F13499",
+            "numberOfPeriods" : 1,
+            "paymentMode" : "free",
+            "subscriptionPeriod" : "P1W"
+          },
+          "localizations" : [
+            {
+              "description" : "1 an de premium duo",
+              "displayName" : "1 an d'abonnement premium Duo",
+              "locale" : "fr"
+            },
+            {
+              "description" : "1 year premium duo",
+              "displayName" : "1 year premium duo",
+              "locale" : "en_AU"
+            },
+            {
+              "description" : "1 year premium duo",
+              "displayName" : "1 year premium duo",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "lovemap_premium_yearly",
+          "recurringSubscriptionPeriod" : "P1Y",
+          "referenceName" : "Abonnement Annuel",
+          "subscriptionGroupID" : "22356924",
+          "type" : "RecurringSubscription",
+          "winbackOffers" : [
+
+          ]
+        },
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "4.99",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "6808297829",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "1 mois premium Duo",
+              "displayName" : "Abonnement Premium Duo 1 an",
+              "locale" : "fr"
+            }
+          ],
+          "productID" : "lovemap_premium_monthly",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Abonnement Mensuel ",
+          "subscriptionGroupID" : "22356924",
+          "type" : "RecurringSubscription",
+          "winbackOffers" : [
+
+          ]
+        }
+      ]
+    }
+  ],
+  "version" : {
+    "major" : 4,
+    "minor" : 0
+  }
+}
