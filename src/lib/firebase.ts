@@ -35,7 +35,7 @@ import {
   where,
   orderBy,
   serverTimestamp,
-  deleteDoc,
+  deleteDoc, writeBatch,
   memoryLocalCache,
 } from 'firebase/firestore';
 import { Spot, CouplePair, NotificationItem, PartnerId, UserProfile } from '../types';
@@ -610,25 +610,24 @@ export async function ensureCoupleRoomInFirestore(
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
-      await withTimeout(setDoc(coupleRef, newRoom, { merge: true }), 12000, null);
+      const batch = writeBatch(db);
+      batch.set(coupleRef, newRoom, { merge: true });
 
       // Seed spots into Firestore
       for (const s of INITIAL_SPOTS) {
         const spotRef = doc(db, 'couples', cleanCode, 'spots', s.id);
         const sanitizedSpot = cleanFirestoreData(JSON.parse(JSON.stringify(s)));
-        await withTimeout(
-          setDoc(
-            spotRef,
-            {
-              ...sanitizedSpot,
-              updatedAt: serverTimestamp(),
-            },
-            { merge: true }
-          ),
-          12000,
-          null
+        batch.set(
+          spotRef,
+          {
+            ...sanitizedSpot,
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
         );
       }
+      
+      await withTimeout(batch.commit(), 12000, null);
       return { ...localCouple, code: cleanCode };
     } else {
       const data = snap.data() as CouplePair & { memberUids?: string[] };
@@ -719,36 +718,31 @@ export async function createCoupleInFirestore(
   };
 
   try {
-    await withTimeout(
-      setDoc(
-        coupleRef,
-        cleanFirestoreData({
-          ...newCouple,
-          ownerUid: user.uid,
-          ownerEmail: user.email || '',
-          partnerAUid: user.uid,
-          memberUids: [user.uid],
-          isCodeUsed: false,
-          createdAt: serverTimestamp(),
-        })
-      ),
-      12000,
-      null
+    const batch = writeBatch(db);
+    batch.set(
+      coupleRef,
+      cleanFirestoreData({
+        ...newCouple,
+        ownerUid: user.uid,
+        ownerEmail: user.email || '',
+        partnerAUid: user.uid,
+        memberUids: [user.uid],
+        isCodeUsed: false,
+        createdAt: serverTimestamp(),
+      })
     );
 
     // Seed initial spots into Firestore
     for (const s of INITIAL_SPOTS) {
       const spotRef = doc(db, 'couples', code, 'spots', s.id);
       const sanitizedSpot = cleanFirestoreData(JSON.parse(JSON.stringify(s)));
-      await withTimeout(
-        setDoc(spotRef, {
-          ...sanitizedSpot,
-          updatedAt: serverTimestamp(),
-        }, { merge: true }),
-        12000,
-        null
-      );
+      batch.set(spotRef, {
+        ...sanitizedSpot,
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
     }
+    
+    await withTimeout(batch.commit(), 12000, null);
   } catch (e) {
     console.warn('Firestore setDoc notice (proceeding locally):', e);
   }
@@ -806,18 +800,19 @@ export async function joinCoupleInFirestore(
   let coupleRef: any = null;
   let snap: any = null;
 
-  // 1. Fast path: try candidates by exact document ID
-  for (const cand of candidates) {
-    try {
-      const ref = doc(db, 'couples', cand);
-      const s = await withTimeout(getDoc(ref), 5000, null);
-      if (s && s.exists() && s.id !== 'LOVE-NEW') {
-        coupleRef = ref;
-        snap = s;
-        break;
-      }
-    } catch {
-      // Continue
+  // 1. Fast path: try candidates by exact document ID concurrently
+  const candidatePromises = candidates.map(cand => {
+    const ref = doc(db, 'couples', cand);
+    return getDoc(ref).then(s => ({ ref, s })).catch(() => null);
+  });
+  
+  const results = await withTimeout(Promise.all(candidatePromises), 8000, []);
+  
+  for (const res of results) {
+    if (res && res.s && res.s.exists() && res.s.id !== 'LOVE-NEW') {
+      coupleRef = res.ref;
+      snap = res.s;
+      break;
     }
   }
 
@@ -924,41 +919,32 @@ export async function findUserCoupleInFirestore(
 
   try {
     const couplesRef = collection(db, 'couples');
+    
+    // We will run queries in parallel to make this extremely fast
+    const queries: Promise<any>[] = [
+      getDocs(query(couplesRef, where('memberUids', 'array-contains', user.uid))).catch(() => null),
+      getDocs(query(couplesRef, where('ownerUid', '==', user.uid))).catch(() => null)
+    ];
 
-    // Check memberUids array-contains with timeout
-    const q1 = query(couplesRef, where('memberUids', 'array-contains', user.uid));
-    const snap1 = await withTimeout(getDocs(q1), 6000, null);
-    if (snap1 === null) throw new Error('Erreur de connexion (délai dépassé)');
-    if (!snap1.empty) {
-      const validDoc = snap1.docs.find(d => d.id !== 'LOVE-NEW' && (d.data() as any).code !== 'LOVE-NEW');
-      if (validDoc) {
-        const docData = validDoc.data() as CouplePair & { partnerBUid?: string };
-        const partnerId: PartnerId = docData.partnerBUid === user.uid ? 'partner_b' : 'partner_a';
-        return { couple: docData, partnerId };
-      }
-    }
-
-    // Fallback query ownerUid
-    const q2 = query(couplesRef, where('ownerUid', '==', user.uid));
-    const snap2 = await withTimeout(getDocs(q2), 6000, null);
-    if (snap2 === null) throw new Error('Erreur de connexion (délai dépassé)');
-    if (!snap2.empty) {
-      const validDoc = snap2.docs.find(d => d.id !== 'LOVE-NEW' && (d.data() as any).code !== 'LOVE-NEW');
-      if (validDoc) {
-        const docData = validDoc.data() as CouplePair;
-        return { couple: docData, partnerId: 'partner_a' };
-      }
-    }
-
-    // Fallback query by email if available
     if (user.email) {
-      const qEmailA = query(couplesRef, where('ownerEmail', '==', user.email));
-      const snapEmailA = await withTimeout(getDocs(qEmailA), 6000, null);
-      if (snapEmailA && !snapEmailA.empty) {
-        const validDoc = snapEmailA.docs.find(d => d.id !== 'LOVE-NEW' && (d.data() as any).code !== 'LOVE-NEW');
+      queries.push(getDocs(query(couplesRef, where('ownerEmail', '==', user.email))).catch(() => null));
+    }
+
+    // Wait up to 15 seconds for any of these to resolve
+    const results = await withTimeout(Promise.all(queries), 15000, null);
+    
+    if (results === null) throw new Error('Erreur de connexion (délai dépassé)');
+
+    for (const snap of results) {
+      if (snap && !snap.empty) {
+        const validDoc = snap.docs.find((d: any) => d.id !== 'LOVE-NEW' && (d.data() as any).code !== 'LOVE-NEW');
         if (validDoc) {
-          const docData = validDoc.data() as CouplePair;
-          return { couple: docData, partnerId: 'partner_a' };
+          const docData = validDoc.data() as CouplePair & { partnerBUid?: string; partnerBEmail?: string };
+          let partnerId: PartnerId = 'partner_a';
+          if (docData.partnerBUid === user.uid || (user.email && docData.partnerBEmail === user.email)) {
+            partnerId = 'partner_b';
+          }
+          return { couple: docData, partnerId };
         }
       }
     }
@@ -1200,36 +1186,25 @@ export async function deleteUserAccountInFirestore(user: User | null, code?: str
 
   try {
     const couplesCol = collection(db, 'couples');
+    const lookupPromises: Promise<any>[] = [];
+
     if (targetUid) {
-      // Find couples where user is in memberUids
-      const qMembers = query(couplesCol, where('memberUids', 'array-contains', targetUid));
-      const sMembers = await withTimeout(getDocs(qMembers), 3500, null);
-      sMembers?.forEach((d) => coupleCodesToDelete.add(d.id));
-
-      // Find couples where user is ownerUid
-      const qOwner = query(couplesCol, where('ownerUid', '==', targetUid));
-      const sOwner = await withTimeout(getDocs(qOwner), 3500, null);
-      sOwner?.forEach((d) => coupleCodesToDelete.add(d.id));
-
-      // Find couples where user is partnerAUid
-      const qPartnerA = query(couplesCol, where('partnerAUid', '==', targetUid));
-      const sPartnerA = await withTimeout(getDocs(qPartnerA), 3500, null);
-      sPartnerA?.forEach((d) => coupleCodesToDelete.add(d.id));
-
-      // Find couples where user is partnerBUid
-      const qPartnerB = query(couplesCol, where('partnerBUid', '==', targetUid));
-      const sPartnerB = await withTimeout(getDocs(qPartnerB), 3500, null);
-      sPartnerB?.forEach((d) => coupleCodesToDelete.add(d.id));
+      lookupPromises.push(getDocs(query(couplesCol, where('memberUids', 'array-contains', targetUid))).catch(() => null));
+      lookupPromises.push(getDocs(query(couplesCol, where('ownerUid', '==', targetUid))).catch(() => null));
+      lookupPromises.push(getDocs(query(couplesCol, where('partnerAUid', '==', targetUid))).catch(() => null));
+      lookupPromises.push(getDocs(query(couplesCol, where('partnerBUid', '==', targetUid))).catch(() => null));
     }
 
     if (targetEmail) {
-      const qEmailA = query(couplesCol, where('ownerEmail', '==', targetEmail));
-      const sEmailA = await withTimeout(getDocs(qEmailA), 3500, null);
-      sEmailA?.forEach((d) => coupleCodesToDelete.add(d.id));
+      lookupPromises.push(getDocs(query(couplesCol, where('ownerEmail', '==', targetEmail))).catch(() => null));
+      lookupPromises.push(getDocs(query(couplesCol, where('partnerBEmail', '==', targetEmail))).catch(() => null));
+    }
 
-      const qEmailB = query(couplesCol, where('partnerBEmail', '==', targetEmail));
-      const sEmailB = await withTimeout(getDocs(qEmailB), 3500, null);
-      sEmailB?.forEach((d) => coupleCodesToDelete.add(d.id));
+    const results = await withTimeout(Promise.all(lookupPromises), 15000, []);
+    for (const snap of results) {
+      if (snap) {
+        snap.forEach((d: any) => coupleCodesToDelete.add(d.id));
+      }
     }
   } catch (findErr) {
     console.warn('[Native Debug] Error looking up couple docs to delete:', findErr);
@@ -1239,22 +1214,32 @@ export async function deleteUserAccountInFirestore(user: User | null, code?: str
   for (const cCode of coupleCodesToDelete) {
     console.log('[Native Debug] Deleting couple document and subcollections for:', cCode);
     try {
-      // Delete spots subcollection
+      // Fetch subcollections in parallel
       const spotsCol = collection(db, 'couples', cCode, 'spots');
-      const spotsSnap = await withTimeout(getDocs(spotsCol), 3000, null);
+      const notifsCol = collection(db, 'couples', cCode, 'notifications');
+      
+      const [spotsSnap, notifsSnap] = await withTimeout(Promise.all([
+        getDocs(spotsCol).catch(() => null),
+        getDocs(notifsCol).catch(() => null)
+      ]), 10000, [null, null]);
+
+      const delPromises: Promise<any>[] = [];
+
       if (spotsSnap) {
-        for (const d of spotsSnap.docs) {
-          await deleteDoc(doc(db, 'couples', cCode, 'spots', d.id));
-        }
+        spotsSnap.docs.forEach((d: any) => {
+          delPromises.push(deleteDoc(doc(db, 'couples', cCode, 'spots', d.id)).catch(() => null));
+        });
       }
 
-      // Delete notifications subcollection
-      const notifsCol = collection(db, 'couples', cCode, 'notifications');
-      const notifsSnap = await withTimeout(getDocs(notifsCol), 3000, null);
       if (notifsSnap) {
-        for (const d of notifsSnap.docs) {
-          await deleteDoc(doc(db, 'couples', cCode, 'notifications', d.id));
-        }
+        notifsSnap.docs.forEach((d: any) => {
+          delPromises.push(deleteDoc(doc(db, 'couples', cCode, 'notifications', d.id)).catch(() => null));
+        });
+      }
+
+      // Execute subcollection deletions
+      if (delPromises.length > 0) {
+        await withTimeout(Promise.all(delPromises), 15000, null);
       }
 
       // Delete main couple document
