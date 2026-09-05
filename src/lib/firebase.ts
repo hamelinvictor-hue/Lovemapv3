@@ -191,7 +191,64 @@ function encodeFirestoreRestValue(val: any): any {
   return { stringValue: String(val) };
 }
 
+export async function serverGetCouple(code: string): Promise<CouplePair | null> {
+  try {
+    const url = getBackendApiUrl(`/api/couples/${encodeURIComponent(code)}`);
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data?.couple || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function serverSaveCouple(code: string, couple: any): Promise<boolean> {
+  try {
+    const url = getBackendApiUrl(`/api/couples/${encodeURIComponent(code)}`);
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(couple),
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function serverJoinCouple(
+  code: string,
+  partnerName: string,
+  avatarUrl?: string,
+  userUid?: string,
+  userEmail?: string
+): Promise<CouplePair | null> {
+  try {
+    const url = getBackendApiUrl(`/api/couples/${encodeURIComponent(code)}/join`);
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ partnerName, avatarUrl, userUid, userEmail }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data?.couple || null;
+  } catch {
+    return null;
+  }
+}
+
 export async function restGetCoupleDoc(code: string): Promise<CouplePair | null> {
+  // 1. Try server engine first (ultra-fast, zero quota cost)
+  try {
+    const serverDoc = await serverGetCouple(code);
+    if (serverDoc) return serverDoc;
+  } catch {
+    // Continue
+  }
+
+  // 2. Try Firestore REST
   try {
     const dbId = (firebaseConfig as any).firestoreDatabaseId || '(default)';
     const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${dbId}/documents/couples/${encodeURIComponent(code)}?key=${firebaseConfig.apiKey}`;
@@ -816,6 +873,10 @@ export async function ensureCoupleRoomInFirestore(
   if (cleanCode === 'LOVE-NEW') {
     cleanCode = generateCoupleCode();
   }
+
+  // Sync with high-availability server store immediately
+  serverSaveCouple(cleanCode, { ...localCouple, code: cleanCode }).catch(() => {});
+
   try {
     const user = await ensureGuestUser();
     const coupleRef = doc(db, 'couples', cleanCode);
@@ -956,6 +1017,9 @@ export async function createCoupleInFirestore(
     isPinLocked: false,
   };
 
+  // Sync to high-availability server store
+  serverSaveCouple(code, newCouple).catch(() => {});
+
   try {
     const coupleData = cleanFirestoreData({
       ...newCouple,
@@ -1032,13 +1096,33 @@ export async function joinCoupleInFirestore(
     throw new Error('Ce code temporaire n\'est pas valide. Veuillez utiliser le code unique partagé par votre partenaire.');
   }
 
+  // 0. Primary High-Availability Engine: Server Join (Instant, zero quota error)
+  try {
+    const serverJoined = await serverJoinCouple(
+      code,
+      partnerName,
+      avatarUrl,
+      user.uid,
+      user.email || ''
+    );
+    if (serverJoined) {
+      console.log('[joinCouple] Successfully paired via High-Availability Server Engine:', serverJoined.code);
+      try {
+        const coupleRef = doc(db, 'couples', serverJoined.code || rawClean);
+        setDoc(coupleRef, serverJoined, { merge: true }).catch(() => {});
+      } catch {}
+      return serverJoined;
+    }
+  } catch (sErr) {
+    console.warn('[joinCouple] Server join notice:', sErr);
+  }
+
   const candidates = getCoupleCodeCandidates(code);
   let coupleRef: any = null;
   let snapData: any = null;
   let matchedDocId: string = candidates[0] || rawClean;
 
   // 1. Concurrent Lookup: Try SDK getDoc AND instant REST API fetch concurrently
-  // On iOS / Capacitor WKWebView, standard REST fetch succeeds in milliseconds even if WebChannel long-polling is stalled
   const restPromises = candidates.map(cand => restGetCoupleDoc(cand));
   const sdkPromises = candidates.map(cand => {
     const ref = doc(db, 'couples', cand);
@@ -1056,7 +1140,7 @@ export async function joinCoupleInFirestore(
       for (const rDoc of restResults) {
         if (rDoc && rDoc.code && rDoc.code !== 'LOVE-NEW') {
           snapData = rDoc;
-          matchedDocId = rDoc.code || rDoc.id || matchedDocId;
+          matchedDocId = rDoc.code || (rDoc as any).id || matchedDocId;
           coupleRef = doc(db, 'couples', matchedDocId);
           break;
         }
@@ -1078,7 +1162,7 @@ export async function joinCoupleInFirestore(
     console.warn('[joinCouple] Error during fast candidate lookup:', err);
   }
 
-  // 2. Query path if direct lookup didn't match (e.g. case or field differences)
+  // 2. Query path if direct lookup didn't match
   if (!snapData) {
     try {
       const qSnap = await withTimeout(
@@ -1096,38 +1180,6 @@ export async function joinCoupleInFirestore(
       }
     } catch (qErr) {
       console.warn('Targeted query for couple code notice:', qErr);
-    }
-  }
-
-  // 3. Fallback scan if direct getDoc & query didn't match
-  if (!snapData) {
-    try {
-      const allCouplesSnap = await withTimeout(getDocs(collection(db, 'couples')), 6000, null);
-      if (allCouplesSnap && typeof allCouplesSnap !== "string" && !allCouplesSnap.empty) {
-        const inputAlpha = rawClean.replace(/[^A-Z0-9]/g, '');
-        const inputCore = inputAlpha.startsWith('LM') ? inputAlpha.substring(2) : inputAlpha;
-
-        for (const docItem of allCouplesSnap.docs) {
-          if (docItem.id === 'LOVE-NEW') continue;
-          const docIdAlpha = docItem.id.replace(/[^A-Z0-9]/g, '');
-          const docIdCore = docIdAlpha.startsWith('LM') ? docIdAlpha.substring(2) : docIdAlpha;
-          const dataCode = String((docItem.data() as any).code || '').replace(/[^A-Z0-9]/g, '').toUpperCase();
-          const dataCore = dataCode.startsWith('LM') ? dataCode.substring(2) : dataCode;
-
-          if (
-            docIdAlpha === inputAlpha ||
-            dataCode === inputAlpha ||
-            (inputCore.length >= 6 && (docIdCore === inputCore || dataCore === inputCore))
-          ) {
-            coupleRef = docItem.ref;
-            snapData = docItem.data();
-            matchedDocId = docItem.id;
-            break;
-          }
-        }
-      }
-    } catch (scanErr) {
-      console.warn('Fallback couples scan notice:', scanErr);
     }
   }
 
@@ -1149,7 +1201,6 @@ export async function joinCoupleInFirestore(
   const existingMembers = existingData.memberUids || [existingData.ownerUid, existingData.partnerAUid].filter(Boolean) as string[];
   const memberUids = Array.from(new Set([...existingMembers, user.uid]));
   
-  // If user has same email as owner/partnerA, they are restoring their Partner A account on a new device
   if (user.email && (user.email === existingData.ownerEmail || user.email === existingData.partnerAEmail)) {
     const updatePayload = {
       partnerAUid: user.uid,
@@ -1157,7 +1208,6 @@ export async function joinCoupleInFirestore(
       updatedAt: serverTimestamp(),
     };
 
-    // Execute via SDK with REST fallback
     try {
       if (coupleRef) {
         await withTimeout(setDoc(coupleRef, updatePayload, { merge: true }), 4000, null);
@@ -1171,10 +1221,10 @@ export async function joinCoupleInFirestore(
       updatedAt: new Date().toISOString(),
     }, ['partnerAUid', 'memberUids', 'updatedAt']);
 
+    serverSaveCouple(matchedDocId, existingData).catch(() => {});
     return existingData;
   }
 
-  // Update partner B profile
   const partnerB: UserProfile = {
     id: 'partner_b',
     name: partnerName.trim() || user.displayName || (existingData.partnerB.name !== 'En attente...' ? existingData.partnerB.name : 'Partenaire 2'),
@@ -1196,30 +1246,21 @@ export async function joinCoupleInFirestore(
     updatedAt: serverTimestamp(),
   };
 
-  // Perform update with dual SDK + REST execution to guarantee instant completion on iOS
-  const restUpdatePromise = restPatchCoupleDoc(matchedDocId, {
+  serverSaveCouple(matchedDocId, updatedCouple).catch(() => {});
+
+  restPatchCoupleDoc(matchedDocId, {
     partnerB,
     partnerBUid: user.uid,
     partnerBEmail: user.email || '',
     memberUids,
     isCodeUsed: true,
     updatedAt: new Date().toISOString(),
-  }, ['partnerB', 'partnerBUid', 'partnerBEmail', 'memberUids', 'isCodeUsed', 'updatedAt']);
+  }, ['partnerB', 'partnerBUid', 'partnerBEmail', 'memberUids', 'isCodeUsed', 'updatedAt']).catch(() => {});
 
   if (coupleRef) {
     setDoc(coupleRef, bUpdatePayload, { merge: true }).catch((err) => {
-      console.warn('[joinCouple] SDK setDoc async notice (handled by REST):', err);
+      console.warn('[joinCouple] SDK setDoc async notice:', err);
     });
-  }
-
-  // Wait for REST update with 6s timeout so iOS never gets stuck
-  const restResult = await withTimeout(restUpdatePromise, 6000, null);
-  if (restResult) {
-    return {
-      ...updatedCouple,
-      ...restResult,
-      partnerB,
-    };
   }
 
   return updatedCouple;
@@ -1231,10 +1272,21 @@ export async function findUserCoupleInFirestore(
 ): Promise<{ couple: CouplePair; partnerId: PartnerId } | null> {
   if (!user || !user.uid) return null;
 
+  // 1. Check high-availability server store first
+  try {
+    const sUrl = getBackendApiUrl(`/api/couples/find-user/${user.uid}?email=${encodeURIComponent(user.email || '')}`);
+    const sRes = await fetch(sUrl);
+    if (sRes.ok) {
+      const sData = await sRes.json();
+      if (sData?.couple) {
+        return { couple: sData.couple as CouplePair, partnerId: sData.partnerId as PartnerId };
+      }
+    }
+  } catch {}
+
   try {
     const couplesRef = collection(db, 'couples');
     
-    // We will run queries in parallel: SDK + instant REST runQuery
     const queries: Promise<any>[] = [
       getDocs(query(couplesRef, where('memberUids', 'array-contains', user.uid))).catch(() => null),
       getDocs(query(couplesRef, where('ownerUid', '==', user.uid))).catch(() => null),
@@ -1253,7 +1305,6 @@ export async function findUserCoupleInFirestore(
       withTimeout(restSearchPromise, 5000, []),
     ]);
 
-    // Check REST results first
     if (Array.isArray(restCouples) && restCouples.length > 0) {
       const docData = restCouples[0];
       let partnerId: PartnerId = 'partner_a';
@@ -1282,7 +1333,7 @@ export async function findUserCoupleInFirestore(
     return null;
   } catch (err: any) {
     console.warn('Notice querying user couple from Firestore:', err);
-    throw err;
+    return null;
   }
 }
 
@@ -1290,6 +1341,10 @@ export async function findUserCoupleInFirestore(
 export async function updateCoupleInFirestore(code: string, updated: CouplePair) {
   if (!code) return;
   const cleanCode = code.trim().toUpperCase();
+
+  // Sync to server store
+  serverSaveCouple(cleanCode, updated).catch(() => {});
+
   const couplePayload = {
     anniversaryDate: updated.anniversaryDate || new Date().toISOString().split('T')[0],
     secretPin: updated.secretPin || '1234',
@@ -1300,12 +1355,10 @@ export async function updateCoupleInFirestore(code: string, updated: CouplePair)
     brokenBy: updated.brokenBy || null,
   };
 
-  // 1. Instant REST patch (bypasses iOS WebChannel/WebKit hang)
   restPatchCoupleDoc(cleanCode, couplePayload, Object.keys(couplePayload)).catch((err) => {
     console.warn('[updateCoupleInFirestore] REST patch notice:', err);
   });
 
-  // 2. Concurrently push via SDK
   try {
     await ensureGuestUser();
     const coupleRef = doc(db, 'couples', cleanCode);
@@ -1489,6 +1542,16 @@ export async function saveSpotToFirestore(code: string, spot: Spot) {
   if (!code) return;
   const cleanCode = code.trim().toUpperCase();
 
+  // 0. High-availability Server Engine sync
+  try {
+    const sUrl = getBackendApiUrl(`/api/couples/${encodeURIComponent(cleanCode)}/spots`);
+    fetch(sUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(spot),
+    }).catch(() => {});
+  } catch {}
+
   // 1. Update spot in couple document spots array via instant REST API
   try {
     const existingCouple = await restGetCoupleDoc(cleanCode);
@@ -1536,6 +1599,12 @@ export async function saveSpotToFirestore(code: string, spot: Spot) {
 export async function deleteSpotFromFirestore(code: string, spotId: string) {
   if (!code || !spotId) return;
   const cleanCode = code.trim().toUpperCase();
+
+  // 0. High-availability Server Engine sync
+  try {
+    const sUrl = getBackendApiUrl(`/api/couples/${encodeURIComponent(cleanCode)}/spots/${encodeURIComponent(spotId)}`);
+    fetch(sUrl, { method: 'DELETE' }).catch(() => {});
+  } catch {}
 
   // 1. Remove from couple document spots array via instant REST API
   try {
@@ -1609,20 +1678,20 @@ export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void
     }
   );
 
-  // 3. Fast REST Polling Fallback (every 2.5s) to guarantee real-time updates on iPhone
+  // 3. Fast Server / REST Polling Fallback (every 3s)
   const pollInterval = setInterval(() => {
     if (!isSubActive) return;
-    restGetCoupleDoc(cleanCode).then((coupleDoc) => {
+    serverGetCouple(cleanCode).then((coupleDoc) => {
       if (isSubActive && coupleDoc && Array.isArray(coupleDoc.spots)) {
         handleSpotsUpdate(coupleDoc.spots);
       }
     }).catch(() => {});
-  }, 2500);
+  }, 3000);
 
   // 4. Also poll immediately when window/app regains focus or visibility
   const handleVisibilityChange = () => {
     if (document.visibilityState === 'visible' && isSubActive) {
-      restGetCoupleDoc(cleanCode).then((coupleDoc) => {
+      serverGetCouple(cleanCode).then((coupleDoc) => {
         if (isSubActive && coupleDoc && Array.isArray(coupleDoc.spots)) {
           handleSpotsUpdate(coupleDoc.spots);
         }
@@ -1649,6 +1718,16 @@ export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void
 export async function saveNotificationToFirestore(code: string, notif: NotificationItem) {
   if (!code) return;
   const cleanCode = code.trim().toUpperCase();
+
+  // 0. High-availability Server Engine sync
+  try {
+    const sUrl = getBackendApiUrl(`/api/couples/${encodeURIComponent(cleanCode)}/notifications`);
+    fetch(sUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(notif),
+    }).catch(() => {});
+  } catch {}
 
   // 1. Update notification in couple document notifications array via instant REST API
   try {
@@ -1688,7 +1767,6 @@ export async function saveNotificationToFirestore(code: string, notif: Notificat
   }
 
   // 3. Dispatch external Push Notification to partner's device (Apple APNs / OneSignal)
-  // This delivers a real lock screen push on iPhone even if the partner has closed the app!
   try {
     const pushEndpoint = getBackendApiUrl('/api/push/send');
     fetch(pushEndpoint, {
@@ -1758,20 +1836,20 @@ export function subscribeToNotifications(code: string, callback: (notifs: Notifi
     }
   );
 
-  // 3. Fast REST Polling Fallback (every 2.5s) to guarantee real-time notifications on iPhone
+  // 3. Fast Server / REST Polling Fallback (every 3s)
   const pollInterval = setInterval(() => {
     if (!isSubActive) return;
-    restGetCoupleDoc(cleanCode).then((coupleDoc) => {
+    serverGetCouple(cleanCode).then((coupleDoc) => {
       if (isSubActive && coupleDoc && Array.isArray(coupleDoc.notifications)) {
         handleNotifsUpdate(coupleDoc.notifications);
       }
     }).catch(() => {});
-  }, 2500);
+  }, 3000);
 
   // 4. Also poll immediately when window/app regains focus or visibility
   const handleVisibilityChange = () => {
     if (document.visibilityState === 'visible' && isSubActive) {
-      restGetCoupleDoc(cleanCode).then((coupleDoc) => {
+      serverGetCouple(cleanCode).then((coupleDoc) => {
         if (isSubActive && coupleDoc && Array.isArray(coupleDoc.notifications)) {
           handleNotifsUpdate(coupleDoc.notifications);
         }

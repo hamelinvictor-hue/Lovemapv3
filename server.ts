@@ -1,5 +1,6 @@
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
 import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
 
@@ -162,6 +163,313 @@ app.post('/api/revenuecat/subscribers/:appUserId/revoke', async (req, res) => {
     console.error('RevenueCat revoke error:', error);
     return res.status(500).json({ error: error.message || 'Internal server error' });
   }
+});
+
+// ==========================================
+// COUPLE DUO SYNC & STORAGE SERVICE
+// (High-Availability Engine: Memory + Disk + Firestore Mirror)
+// ==========================================
+
+interface StoredCoupleRecord {
+  code: string;
+  partnerA: any;
+  partnerB: any;
+  anniversaryDate?: string;
+  secretPin?: string;
+  isPinLocked?: boolean;
+  ownerUid?: string;
+  ownerEmail?: string;
+  partnerAUid?: string;
+  partnerAEmail?: string;
+  partnerBUid?: string;
+  partnerBEmail?: string;
+  memberUids?: string[];
+  isCodeUsed?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+  spots?: any[];
+  notifications?: any[];
+}
+
+const COUPLES_DIR = path.join(process.cwd(), 'data');
+const COUPLES_FILE = path.join(COUPLES_DIR, 'couples_store.json');
+const couplesStore = new Map<string, StoredCoupleRecord>();
+
+function initCouplesStore() {
+  try {
+    if (!fs.existsSync(COUPLES_DIR)) {
+      fs.mkdirSync(COUPLES_DIR, { recursive: true });
+    }
+    if (fs.existsSync(COUPLES_FILE)) {
+      const raw = fs.readFileSync(COUPLES_FILE, 'utf8');
+      const parsed: Record<string, StoredCoupleRecord> = JSON.parse(raw);
+      for (const [key, val] of Object.entries(parsed)) {
+        couplesStore.set(key.toUpperCase(), val);
+      }
+      console.log(`[Couples Store] Loaded ${couplesStore.size} couple rooms from disk.`);
+    }
+  } catch (err) {
+    console.warn('[Couples Store] Initialization notice:', err);
+  }
+}
+
+function persistCouplesStore() {
+  try {
+    if (!fs.existsSync(COUPLES_DIR)) {
+      fs.mkdirSync(COUPLES_DIR, { recursive: true });
+    }
+    const obj: Record<string, StoredCoupleRecord> = {};
+    for (const [k, v] of couplesStore.entries()) {
+      obj[k] = v;
+    }
+    fs.writeFileSync(COUPLES_FILE, JSON.stringify(obj, null, 2), 'utf8');
+  } catch (err) {
+    console.warn('[Couples Store] Persistence error:', err);
+  }
+}
+
+initCouplesStore();
+
+// Normalize a couple code for fuzzy matching
+function normalizeCode(code: string): string {
+  return String(code || '').replace(/[^A-Z0-9]/gi, '').toUpperCase();
+}
+
+function findCoupleByCode(code: string): StoredCoupleRecord | null {
+  if (!code) return null;
+  const cleanUpper = code.trim().toUpperCase();
+  if (couplesStore.has(cleanUpper)) {
+    return couplesStore.get(cleanUpper)!;
+  }
+  const normInput = normalizeCode(cleanUpper);
+  const inputCore = normInput.startsWith('LM') ? normInput.substring(2) : normInput;
+
+  for (const [key, couple] of couplesStore.entries()) {
+    const normKey = normalizeCode(key);
+    const normDataCode = normalizeCode(couple.code || '');
+    const keyCore = normKey.startsWith('LM') ? normKey.substring(2) : normKey;
+    const dataCore = normDataCode.startsWith('LM') ? normDataCode.substring(2) : normDataCode;
+
+    if (
+      normKey === normInput ||
+      normDataCode === normInput ||
+      (inputCore.length >= 6 && (keyCore === inputCore || dataCore === inputCore))
+    ) {
+      return couple;
+    }
+  }
+  return null;
+}
+
+// Background Firestore Mirror (writes work with 200 OK even when reads are quota-limited)
+async function mirrorToFirestore(pathDoc: string, data: Record<string, any>) {
+  try {
+    const cfgPath = path.join(process.cwd(), 'firebase-applet-config.json');
+    if (!fs.existsSync(cfgPath)) return;
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    const dbId = cfg.firestoreDatabaseId || '(default)';
+    const url = `https://firestore.googleapis.com/v1/projects/${cfg.projectId}/databases/${dbId}/documents/${pathDoc}?key=${cfg.apiKey}`;
+
+    const encodeVal = (val: any): any => {
+      if (val === null || val === undefined) return { nullValue: null };
+      if (typeof val === 'boolean') return { booleanValue: val };
+      if (typeof val === 'number') return Number.isInteger(val) ? { integerValue: String(val) } : { doubleValue: val };
+      if (typeof val === 'string') return { stringValue: val };
+      if (Array.isArray(val)) return { arrayValue: { values: val.map(encodeVal) } };
+      if (typeof val === 'object') {
+        const fields: Record<string, any> = {};
+        for (const [k, v] of Object.entries(val)) {
+          if (v !== undefined) fields[k] = encodeVal(v);
+        }
+        return { mapValue: { fields } };
+      }
+      return { stringValue: String(val) };
+    };
+
+    const fields: Record<string, any> = {};
+    for (const [k, v] of Object.entries(data)) {
+      if (v !== undefined) fields[k] = encodeVal(v);
+    }
+
+    await fetch(url, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fields }),
+    }).catch(() => {});
+  } catch {
+    // Non-blocking mirror
+  }
+}
+
+// GET /api/couples/:code
+app.get('/api/couples/:code', (req, res) => {
+  const { code } = req.params;
+  const couple = findCoupleByCode(code);
+  if (!couple) {
+    return res.status(404).json({ error: 'Couple room not found' });
+  }
+  return res.json({ success: true, couple });
+});
+
+// POST /api/couples/:code (Create or save couple)
+app.post('/api/couples/:code', (req, res) => {
+  const { code } = req.params;
+  const body = req.body || {};
+  const cleanCode = String(body.code || code).trim().toUpperCase();
+
+  const existing = findCoupleByCode(cleanCode) || {} as any;
+  const record: StoredCoupleRecord = {
+    ...existing,
+    ...body,
+    code: cleanCode,
+    updatedAt: new Date().toISOString(),
+  };
+
+  couplesStore.set(cleanCode, record);
+  persistCouplesStore();
+  mirrorToFirestore(`couples/${cleanCode}`, record);
+
+  return res.json({ success: true, couple: record });
+});
+
+// POST /api/couples/:code/join (Partner B joining with code)
+app.post('/api/couples/:code/join', (req, res) => {
+  const { code } = req.params;
+  const { partnerName = 'Partenaire 2', avatarUrl, userUid, userEmail } = req.body || {};
+
+  console.log(`[Couples Store] Join requested for code: "${code}" by "${partnerName}" (${userUid})`);
+
+  let couple = findCoupleByCode(code);
+  if (!couple) {
+    // Check if maybe there's a couple stored in another casing or format
+    console.warn(`[Couples Store] Code not found in memory store. Registered codes:`, Array.from(couplesStore.keys()));
+    return res.status(404).json({
+      error: `Code de couple "${code}" introuvable. Vérifiez que votre partenaire a bien partagé ce code.`
+    });
+  }
+
+  const existingMembers = couple.memberUids || [];
+  const updatedMembers = userUid ? Array.from(new Set([...existingMembers, userUid])) : existingMembers;
+
+  const partnerB = {
+    id: 'partner_b',
+    name: partnerName.trim() || 'Partenaire 2',
+    avatar: avatarUrl || 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
+    role: 'Partenaire 2',
+  };
+
+  couple.partnerB = partnerB;
+  couple.partnerBUid = userUid || couple.partnerBUid || '';
+  couple.partnerBEmail = userEmail || couple.partnerBEmail || '';
+  couple.memberUids = updatedMembers;
+  couple.isCodeUsed = true;
+  couple.updatedAt = new Date().toISOString();
+
+  couplesStore.set(couple.code.toUpperCase(), couple);
+  persistCouplesStore();
+
+  mirrorToFirestore(`couples/${couple.code.toUpperCase()}`, {
+    partnerB,
+    partnerBUid: couple.partnerBUid,
+    partnerBEmail: couple.partnerBEmail,
+    memberUids: updatedMembers,
+    isCodeUsed: true,
+    updatedAt: couple.updatedAt,
+  });
+
+  console.log(`[Couples Store] Successfully joined couple: ${couple.code} as Partner B!`);
+  return res.json({ success: true, couple });
+});
+
+// GET /api/couples/:code/spots
+app.get('/api/couples/:code/spots', (req, res) => {
+  const { code } = req.params;
+  const couple = findCoupleByCode(code);
+  return res.json({ success: true, spots: couple?.spots || [] });
+});
+
+// POST /api/couples/:code/spots (Add or update spot)
+app.post('/api/couples/:code/spots', (req, res) => {
+  const { code } = req.params;
+  const spot = req.body || {};
+  if (!spot.id) return res.status(400).json({ error: 'Missing spot id' });
+
+  const couple = findCoupleByCode(code);
+  if (!couple) return res.status(404).json({ error: 'Couple not found' });
+
+  couple.spots = couple.spots || [];
+  const idx = couple.spots.findIndex((s: any) => s.id === spot.id);
+  if (idx >= 0) {
+    couple.spots[idx] = { ...couple.spots[idx], ...spot, updatedAt: new Date().toISOString() };
+  } else {
+    couple.spots.push({ ...spot, updatedAt: new Date().toISOString() });
+  }
+
+  couplesStore.set(couple.code.toUpperCase(), couple);
+  persistCouplesStore();
+  mirrorToFirestore(`couples/${couple.code.toUpperCase()}/spots/${spot.id}`, spot);
+
+  return res.json({ success: true, spots: couple.spots });
+});
+
+// DELETE /api/couples/:code/spots/:spotId
+app.delete('/api/couples/:code/spots/:spotId', (req, res) => {
+  const { code, spotId } = req.params;
+  const couple = findCoupleByCode(code);
+  if (!couple) return res.status(404).json({ error: 'Couple not found' });
+
+  couple.spots = (couple.spots || []).filter((s: any) => s.id !== spotId);
+  couplesStore.set(couple.code.toUpperCase(), couple);
+  persistCouplesStore();
+
+  return res.json({ success: true, spots: couple.spots });
+});
+
+// GET /api/couples/:code/notifications
+app.get('/api/couples/:code/notifications', (req, res) => {
+  const { code } = req.params;
+  const couple = findCoupleByCode(code);
+  return res.json({ success: true, notifications: couple?.notifications || [] });
+});
+
+// POST /api/couples/:code/notifications
+app.post('/api/couples/:code/notifications', (req, res) => {
+  const { code } = req.params;
+  const notif = req.body || {};
+  if (!notif.id) return res.status(400).json({ error: 'Missing notification id' });
+
+  const couple = findCoupleByCode(code);
+  if (!couple) return res.status(404).json({ error: 'Couple not found' });
+
+  couple.notifications = couple.notifications || [];
+  couple.notifications.unshift({ ...notif, createdAt: new Date().toISOString() });
+  if (couple.notifications.length > 50) {
+    couple.notifications = couple.notifications.slice(0, 50);
+  }
+
+  couplesStore.set(couple.code.toUpperCase(), couple);
+  persistCouplesStore();
+
+  return res.json({ success: true, notifications: couple.notifications });
+});
+
+// GET /api/couples/find-user/:uid
+app.get('/api/couples/find-user/:uid', (req, res) => {
+  const { uid } = req.params;
+  const { email } = req.query as { email?: string };
+
+  for (const couple of couplesStore.values()) {
+    const isMember = couple.memberUids?.includes(uid);
+    const isOwner = couple.ownerUid === uid || (email && couple.ownerEmail === email);
+    const isPartnerA = couple.partnerAUid === uid || (email && couple.partnerAEmail === email);
+    const isPartnerB = couple.partnerBUid === uid || (email && couple.partnerBEmail === email);
+
+    if (isMember || isOwner || isPartnerA || isPartnerB) {
+      const partnerId = isPartnerB ? 'partner_b' : 'partner_a';
+      return res.json({ success: true, couple, partnerId });
+    }
+  }
+  return res.status(404).json({ error: 'No couple found for user' });
 });
 
 // ==========================================
