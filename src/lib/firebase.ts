@@ -1116,10 +1116,24 @@ export async function joinCoupleInFirestore(
     );
     if (serverJoined) {
       console.log('[joinCouple] Successfully paired via High-Availability Server Engine:', serverJoined.code);
+      const cleanMatchedCode = serverJoined.code || rawClean;
+      
       try {
-        const coupleRef = doc(db, 'couples', serverJoined.code || rawClean);
+        const coupleRef = doc(db, 'couples', cleanMatchedCode);
         setDoc(coupleRef, serverJoined, { merge: true }).catch(() => {});
       } catch {}
+
+      // Ensure Firestore REST is updated for clients strictly polling Firestore
+      const memberUids = (serverJoined as any).memberUids || [user.uid];
+      restPatchCoupleDoc(cleanMatchedCode, {
+        partnerB: serverJoined.partnerB,
+        partnerBUid: user.uid,
+        partnerBEmail: user.email || '',
+        memberUids,
+        isCodeUsed: true,
+        updatedAt: new Date().toISOString(),
+      }, ['partnerB', 'partnerBUid', 'partnerBEmail', 'memberUids', 'isCodeUsed', 'updatedAt']).catch(() => {});
+
       return serverJoined;
     }
   } catch (sErr) {
@@ -1491,10 +1505,10 @@ export function subscribeToCouple(code: string, callback: (couple: CouplePair | 
     }
   };
 
-  // 1. Immediate REST fetch for instant initial data
-  restGetCoupleDoc(cleanCode).then((restDoc) => {
-    if (restDoc && isSubActive) {
-      handleCoupleUpdate(restDoc);
+  // 1. Immediate Server fetch for instant initial data
+  serverGetCouple(cleanCode).then((serverDoc) => {
+    if (serverDoc && isSubActive) {
+      handleCoupleUpdate(serverDoc);
     }
   }).catch(() => {});
 
@@ -1510,12 +1524,12 @@ export function subscribeToCouple(code: string, callback: (couple: CouplePair | 
     console.warn('Notice listening to couple:', err);
   });
 
-  // 3. Fast REST Polling Fallback (every 2.5s) to guarantee updates on iOS WKWebView
+  // 3. Fast Server / REST Polling Fallback (every 2.5s) to guarantee updates on iOS WKWebView
   const pollInterval = setInterval(() => {
     if (!isSubActive) return;
-    restGetCoupleDoc(cleanCode).then((restDoc) => {
-      if (restDoc && isSubActive) {
-        handleCoupleUpdate(restDoc);
+    serverGetCouple(cleanCode).then((serverDoc) => {
+      if (serverDoc && isSubActive) {
+        handleCoupleUpdate(serverDoc);
       }
     }).catch(() => {});
   }, 2500);
@@ -1523,9 +1537,9 @@ export function subscribeToCouple(code: string, callback: (couple: CouplePair | 
   // 4. Also poll immediately when window / app regains focus or visibility
   const handleVisibilityChange = () => {
     if (document.visibilityState === 'visible' && isSubActive) {
-      restGetCoupleDoc(cleanCode).then((restDoc) => {
-        if (restDoc && isSubActive) {
-          handleCoupleUpdate(restDoc);
+      serverGetCouple(cleanCode).then((serverDoc) => {
+        if (serverDoc && isSubActive) {
+          handleCoupleUpdate(serverDoc);
         }
       }).catch(() => {});
     }
@@ -1662,8 +1676,8 @@ export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void
     }
   };
 
-  // 1. Immediate REST check on mount
-  restGetCoupleDoc(cleanCode).then((coupleDoc) => {
+  // 1. Immediate Server check on mount
+  serverGetCouple(cleanCode).then((coupleDoc) => {
     if (isSubActive && coupleDoc && Array.isArray(coupleDoc.spots) && coupleDoc.spots.length > 0) {
       handleSpotsUpdate(coupleDoc.spots);
     }
@@ -1820,8 +1834,8 @@ export function subscribeToNotifications(code: string, callback: (notifs: Notifi
     }
   };
 
-  // 1. Immediate REST check on mount
-  restGetCoupleDoc(cleanCode).then((coupleDoc) => {
+  // 1. Immediate Server check on mount
+  serverGetCouple(cleanCode).then((coupleDoc) => {
     if (isSubActive && coupleDoc && Array.isArray(coupleDoc.notifications) && coupleDoc.notifications.length > 0) {
       handleNotifsUpdate(coupleDoc.notifications);
     }

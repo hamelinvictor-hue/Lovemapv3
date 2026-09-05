@@ -457,19 +457,19 @@ app.post('/api/couples/:code/join', async (req, res) => {
 });
 
 // GET /api/couples/:code/spots
-app.get('/api/couples/:code/spots', (req, res) => {
+app.get('/api/couples/:code/spots', async (req, res) => {
   const { code } = req.params;
-  const couple = findCoupleByCode(code);
+  const couple = await getOrFetchCouple(code);
   return res.json({ success: true, spots: couple?.spots || [] });
 });
 
 // POST /api/couples/:code/spots (Add or update spot)
-app.post('/api/couples/:code/spots', (req, res) => {
+app.post('/api/couples/:code/spots', async (req, res) => {
   const { code } = req.params;
   const spot = req.body || {};
   if (!spot.id) return res.status(400).json({ error: 'Missing spot id' });
 
-  const couple = findCoupleByCode(code);
+  const couple = await getOrFetchCouple(code);
   if (!couple) return res.status(404).json({ error: 'Couple not found' });
 
   couple.spots = couple.spots || [];
@@ -488,9 +488,9 @@ app.post('/api/couples/:code/spots', (req, res) => {
 });
 
 // DELETE /api/couples/:code/spots/:spotId
-app.delete('/api/couples/:code/spots/:spotId', (req, res) => {
+app.delete('/api/couples/:code/spots/:spotId', async (req, res) => {
   const { code, spotId } = req.params;
-  const couple = findCoupleByCode(code);
+  const couple = await getOrFetchCouple(code);
   if (!couple) return res.status(404).json({ error: 'Couple not found' });
 
   couple.spots = (couple.spots || []).filter((s: any) => s.id !== spotId);
@@ -501,19 +501,19 @@ app.delete('/api/couples/:code/spots/:spotId', (req, res) => {
 });
 
 // GET /api/couples/:code/notifications
-app.get('/api/couples/:code/notifications', (req, res) => {
+app.get('/api/couples/:code/notifications', async (req, res) => {
   const { code } = req.params;
-  const couple = findCoupleByCode(code);
+  const couple = await getOrFetchCouple(code);
   return res.json({ success: true, notifications: couple?.notifications || [] });
 });
 
 // POST /api/couples/:code/notifications
-app.post('/api/couples/:code/notifications', (req, res) => {
+app.post('/api/couples/:code/notifications', async (req, res) => {
   const { code } = req.params;
   const notif = req.body || {};
   if (!notif.id) return res.status(400).json({ error: 'Missing notification id' });
 
-  const couple = findCoupleByCode(code);
+  const couple = await getOrFetchCouple(code);
   if (!couple) return res.status(404).json({ error: 'Couple not found' });
 
   couple.notifications = couple.notifications || [];
