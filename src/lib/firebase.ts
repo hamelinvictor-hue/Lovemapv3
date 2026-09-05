@@ -41,7 +41,7 @@ import {
 } from 'firebase/firestore';
 import { Spot, CouplePair, NotificationItem, PartnerId, UserProfile } from '../types';
 import { INITIAL_SPOTS } from '../data/initialData';
-import { getStoredAuthUser, saveStoredAuthUser, StoredAuthUser } from './storage';
+import { getStoredAuthUser, saveStoredAuthUser, StoredAuthUser, getStoredSpots, saveSpots, getStoredNotifications, saveNotifications } from './storage';
 import { triggerNativeGoogleAuth, triggerNativeAppleAuth, triggerNativeSignOut, isMobileDevice, isCapacitorNative } from './nativePermissions';
 import firebaseConfig from '../../firebase-applet-config.json';
 
@@ -1289,6 +1289,22 @@ export async function findUserCoupleInFirestore(
 export async function updateCoupleInFirestore(code: string, updated: CouplePair) {
   if (!code) return;
   const cleanCode = code.trim().toUpperCase();
+  const couplePayload = {
+    anniversaryDate: updated.anniversaryDate || new Date().toISOString().split('T')[0],
+    secretPin: updated.secretPin || '1234',
+    isPinLocked: updated.isPinLocked || false,
+    partnerA: updated.partnerA,
+    partnerB: updated.partnerB,
+    status: updated.status || 'active',
+    brokenBy: updated.brokenBy || null,
+  };
+
+  // 1. Instant REST patch (bypasses iOS WebChannel/WebKit hang)
+  restPatchCoupleDoc(cleanCode, couplePayload, Object.keys(couplePayload)).catch((err) => {
+    console.warn('[updateCoupleInFirestore] REST patch notice:', err);
+  });
+
+  // 2. Concurrently push via SDK
   try {
     await ensureGuestUser();
     const coupleRef = doc(db, 'couples', cleanCode);
@@ -1296,13 +1312,7 @@ export async function updateCoupleInFirestore(code: string, updated: CouplePair)
       setDoc(
         coupleRef,
         cleanFirestoreData({
-          anniversaryDate: updated.anniversaryDate || new Date().toISOString().split('T')[0],
-          secretPin: updated.secretPin || '1234',
-          isPinLocked: updated.isPinLocked || false,
-          partnerA: updated.partnerA,
-          partnerB: updated.partnerB,
-          status: updated.status || 'active',
-          brokenBy: updated.brokenBy || null,
+          ...couplePayload,
           updatedAt: serverTimestamp(),
         }),
         { merge: true }
@@ -1319,6 +1329,22 @@ export async function updateCoupleInFirestore(code: string, updated: CouplePair)
 export async function breakCoupleInFirestore(code: string, breakerName: string) {
   if (!code) return;
   const cleanCode = code.trim().toUpperCase();
+  const brokenPayload = {
+    status: 'broken',
+    brokenBy: breakerName,
+    partnerB: {
+      id: 'partner_b',
+      name: 'En attente...',
+      avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
+      role: 'Partenaire 2',
+    },
+    spots: [],
+    notifications: [],
+  };
+
+  // 1. Instant REST update
+  restPatchCoupleDoc(cleanCode, brokenPayload, Object.keys(brokenPayload)).catch(console.warn);
+
   try {
     await ensureGuestUser();
     const coupleRef = doc(db, 'couples', cleanCode);
@@ -1336,14 +1362,7 @@ export async function breakCoupleInFirestore(code: string, breakerName: string) 
       setDoc(
         coupleRef,
         cleanFirestoreData({
-          status: 'broken',
-          brokenBy: breakerName,
-          partnerB: {
-            id: 'partner_b',
-            name: 'En attente...',
-            avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
-            role: 'Partenaire 2',
-          },
+          ...brokenPayload,
           updatedAt: serverTimestamp(),
         }),
         { merge: true }
@@ -1356,26 +1375,112 @@ export async function breakCoupleInFirestore(code: string, breakerName: string) 
   }
 }
 
-// Subscribe to couple data real-time changes
+// Subscribe to couple data real-time changes (Hybrid: SDK onSnapshot + fast REST polling fallback for iOS)
 export function subscribeToCouple(code: string, callback: (couple: CouplePair | null) => void) {
   if (!code) return () => {};
   const cleanCode = code.trim().toUpperCase();
+  let isSubActive = true;
+  let lastCoupleJson = '';
+
+  const handleCoupleUpdate = (coupleData: CouplePair | null) => {
+    if (!isSubActive || !coupleData) return;
+    const currentJson = JSON.stringify({
+      status: coupleData.status,
+      brokenBy: coupleData.brokenBy,
+      pA: coupleData.partnerA,
+      pB: coupleData.partnerB,
+      anniv: coupleData.anniversaryDate,
+      pin: coupleData.secretPin,
+      locked: coupleData.isPinLocked,
+    });
+    if (currentJson !== lastCoupleJson) {
+      lastCoupleJson = currentJson;
+      callback(coupleData);
+    }
+  };
+
+  // 1. Immediate REST fetch for instant initial data
+  restGetCoupleDoc(cleanCode).then((restDoc) => {
+    if (restDoc && isSubActive) {
+      handleCoupleUpdate(restDoc);
+    }
+  }).catch(() => {});
+
+  // 2. Standard Firestore onSnapshot listener
   const coupleRef = doc(db, 'couples', cleanCode);
-  return onSnapshot(coupleRef, (docSnap) => {
+  const unsubSnapshot = onSnapshot(coupleRef, (docSnap) => {
     if (docSnap.exists()) {
-      callback(docSnap.data() as CouplePair);
+      handleCoupleUpdate(docSnap.data() as CouplePair);
     } else {
       callback(null);
     }
   }, (err) => {
     console.warn('Notice listening to couple:', err);
   });
+
+  // 3. Fast REST Polling Fallback (every 2.5s) to guarantee updates on iOS WKWebView
+  const pollInterval = setInterval(() => {
+    if (!isSubActive) return;
+    restGetCoupleDoc(cleanCode).then((restDoc) => {
+      if (restDoc && isSubActive) {
+        handleCoupleUpdate(restDoc);
+      }
+    }).catch(() => {});
+  }, 2500);
+
+  // 4. Also poll immediately when window / app regains focus or visibility
+  const handleVisibilityChange = () => {
+    if (document.visibilityState === 'visible' && isSubActive) {
+      restGetCoupleDoc(cleanCode).then((restDoc) => {
+        if (restDoc && isSubActive) {
+          handleCoupleUpdate(restDoc);
+        }
+      }).catch(() => {});
+    }
+  };
+  window.addEventListener('visibilitychange', handleVisibilityChange);
+  window.addEventListener('focus', handleVisibilityChange);
+
+  return () => {
+    isSubActive = false;
+    clearInterval(pollInterval);
+    window.removeEventListener('visibilitychange', handleVisibilityChange);
+    window.removeEventListener('focus', handleVisibilityChange);
+    try {
+      unsubSnapshot();
+    } catch {
+      // Ignore
+    }
+  };
 }
 
-// Save spot to Firestore under couple's subcollection
+// Save spot to Firestore (Saves to both couple.spots array via REST and subcollection via SDK)
 export async function saveSpotToFirestore(code: string, spot: Spot) {
   if (!code) return;
   const cleanCode = code.trim().toUpperCase();
+
+  // 1. Update spot in couple document spots array via instant REST API
+  try {
+    const existingCouple = await restGetCoupleDoc(cleanCode);
+    const existingSpots: Spot[] = Array.isArray(existingCouple?.spots)
+      ? [...existingCouple!.spots]
+      : getStoredSpots();
+    
+    const index = existingSpots.findIndex(s => s.id === spot.id);
+    if (index >= 0) {
+      existingSpots[index] = spot;
+    } else {
+      existingSpots.unshift(spot);
+    }
+
+    restPatchCoupleDoc(cleanCode, { spots: existingSpots }, ['spots']).catch((e) => {
+      console.warn('[saveSpotToFirestore] REST patch spots notice:', e);
+    });
+  } catch (err) {
+    console.warn('[saveSpotToFirestore] REST spots sync error:', err);
+  }
+
+  // 2. Concurrently write to Firestore subcollection via SDK
   try {
     await ensureGuestUser();
     const spotRef = doc(db, 'couples', cleanCode, 'spots', spot.id);
@@ -1397,10 +1502,23 @@ export async function saveSpotToFirestore(code: string, spot: Spot) {
   }
 }
 
-// Delete spot from Firestore
+// Delete spot from Firestore (Deletes from both couple.spots array and subcollection)
 export async function deleteSpotFromFirestore(code: string, spotId: string) {
   if (!code || !spotId) return;
   const cleanCode = code.trim().toUpperCase();
+
+  // 1. Remove from couple document spots array via instant REST API
+  try {
+    const existingCouple = await restGetCoupleDoc(cleanCode);
+    if (existingCouple && Array.isArray(existingCouple.spots)) {
+      const remainingSpots = existingCouple.spots.filter(s => s.id !== spotId);
+      restPatchCoupleDoc(cleanCode, { spots: remainingSpots }, ['spots']).catch(console.warn);
+    }
+  } catch (e) {
+    console.warn('[deleteSpotFromFirestore] REST delete spot error:', e);
+  }
+
+  // 2. Delete from subcollection via SDK
   try {
     await ensureGuestUser();
     const spotRef = doc(db, 'couples', cleanCode, 'spots', spotId);
@@ -1410,31 +1528,120 @@ export async function deleteSpotFromFirestore(code: string, spotId: string) {
   }
 }
 
-// Subscribe to spots real-time changes
+// Subscribe to spots real-time changes (Hybrid: SDK onSnapshot + REST couple.spots polling for iOS)
 export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void) {
   if (!code) return () => {};
   const cleanCode = code.trim().toUpperCase();
+  let isSubActive = true;
+  let lastSpotsSignature = '';
+
+  const handleSpotsUpdate = (spotsList: Spot[]) => {
+    if (!isSubActive || !Array.isArray(spotsList)) return;
+    const sorted = [...spotsList].sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+    const signature = JSON.stringify(sorted.map(s => ({
+      id: s.id,
+      title: s.title,
+      status: s.status,
+      ratings: s.ratings,
+      isSolo: s.isSolo,
+      categoryId: s.categoryId,
+      createdAt: s.createdAt,
+    })));
+
+    if (signature !== lastSpotsSignature) {
+      lastSpotsSignature = signature;
+      callback(sorted);
+    }
+  };
+
+  // 1. Immediate REST check on mount
+  restGetCoupleDoc(cleanCode).then((coupleDoc) => {
+    if (isSubActive && coupleDoc && Array.isArray(coupleDoc.spots) && coupleDoc.spots.length > 0) {
+      handleSpotsUpdate(coupleDoc.spots);
+    }
+  }).catch(() => {});
+
+  // 2. Standard SDK onSnapshot listener on subcollection
   const spotsCol = collection(db, 'couples', cleanCode, 'spots');
-  return onSnapshot(
+  const unsubSnapshot = onSnapshot(
     spotsCol,
     (snapshot) => {
       const spotsList: Spot[] = [];
       snapshot.forEach((docSnap) => {
         spotsList.push(docSnap.data() as Spot);
       });
-      spotsList.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
-      callback(spotsList);
+      if (spotsList.length > 0) {
+        handleSpotsUpdate(spotsList);
+      }
     },
     (err) => {
       console.warn('Notice subscribing to spots:', err);
     }
   );
+
+  // 3. Fast REST Polling Fallback (every 2.5s) to guarantee real-time updates on iPhone
+  const pollInterval = setInterval(() => {
+    if (!isSubActive) return;
+    restGetCoupleDoc(cleanCode).then((coupleDoc) => {
+      if (isSubActive && coupleDoc && Array.isArray(coupleDoc.spots)) {
+        handleSpotsUpdate(coupleDoc.spots);
+      }
+    }).catch(() => {});
+  }, 2500);
+
+  // 4. Also poll immediately when window/app regains focus or visibility
+  const handleVisibilityChange = () => {
+    if (document.visibilityState === 'visible' && isSubActive) {
+      restGetCoupleDoc(cleanCode).then((coupleDoc) => {
+        if (isSubActive && coupleDoc && Array.isArray(coupleDoc.spots)) {
+          handleSpotsUpdate(coupleDoc.spots);
+        }
+      }).catch(() => {});
+    }
+  };
+  window.addEventListener('visibilitychange', handleVisibilityChange);
+  window.addEventListener('focus', handleVisibilityChange);
+
+  return () => {
+    isSubActive = false;
+    clearInterval(pollInterval);
+    window.removeEventListener('visibilitychange', handleVisibilityChange);
+    window.removeEventListener('focus', handleVisibilityChange);
+    try {
+      unsubSnapshot();
+    } catch {
+      // Ignore
+    }
+  };
 }
 
-// Save notification to Firestore
+// Save notification to Firestore (Saves to both couple.notifications array via REST and subcollection via SDK)
 export async function saveNotificationToFirestore(code: string, notif: NotificationItem) {
   if (!code) return;
   const cleanCode = code.trim().toUpperCase();
+
+  // 1. Update notification in couple document notifications array via instant REST API
+  try {
+    const existingCouple = await restGetCoupleDoc(cleanCode);
+    const existingNotifs: NotificationItem[] = Array.isArray(existingCouple?.notifications)
+      ? [...existingCouple!.notifications]
+      : getStoredNotifications();
+
+    const index = existingNotifs.findIndex(n => n.id === notif.id);
+    if (index >= 0) {
+      existingNotifs[index] = notif;
+    } else {
+      existingNotifs.unshift(notif);
+    }
+    // Keep max 50 recent notifications
+    const trimmedNotifs = existingNotifs.slice(0, 50);
+
+    restPatchCoupleDoc(cleanCode, { notifications: trimmedNotifs }, ['notifications']).catch(console.warn);
+  } catch (err) {
+    console.warn('[saveNotificationToFirestore] REST notifications sync error:', err);
+  }
+
+  // 2. Concurrently save to subcollection via SDK
   try {
     await ensureGuestUser();
     const notifRef = doc(db, 'couples', cleanCode, 'notifications', notif.id);
@@ -1451,25 +1658,88 @@ export async function saveNotificationToFirestore(code: string, notif: Notificat
   }
 }
 
-// Subscribe to notifications real-time changes
+// Subscribe to notifications real-time changes (Hybrid: SDK onSnapshot + REST couple.notifications polling for iOS)
 export function subscribeToNotifications(code: string, callback: (notifs: NotificationItem[]) => void) {
   if (!code) return () => {};
   const cleanCode = code.trim().toUpperCase();
+  let isSubActive = true;
+  let lastNotifsSignature = '';
+
+  const handleNotifsUpdate = (notifsList: NotificationItem[]) => {
+    if (!isSubActive || !Array.isArray(notifsList)) return;
+    const sorted = [...notifsList].sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime());
+    const signature = JSON.stringify(sorted.map(n => ({
+      id: n.id,
+      title: n.title,
+      isRead: n.isRead,
+      timestamp: n.timestamp,
+    })));
+
+    if (signature !== lastNotifsSignature) {
+      lastNotifsSignature = signature;
+      callback(sorted);
+    }
+  };
+
+  // 1. Immediate REST check on mount
+  restGetCoupleDoc(cleanCode).then((coupleDoc) => {
+    if (isSubActive && coupleDoc && Array.isArray(coupleDoc.notifications) && coupleDoc.notifications.length > 0) {
+      handleNotifsUpdate(coupleDoc.notifications);
+    }
+  }).catch(() => {});
+
+  // 2. Standard SDK onSnapshot listener on subcollection
   const notifsCol = collection(db, 'couples', cleanCode, 'notifications');
-  return onSnapshot(
+  const unsubSnapshot = onSnapshot(
     notifsCol,
     (snapshot) => {
       const list: NotificationItem[] = [];
       snapshot.forEach((docSnap) => {
         list.push(docSnap.data() as NotificationItem);
       });
-      list.sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime());
-      callback(list);
+      if (list.length > 0) {
+        handleNotifsUpdate(list);
+      }
     },
     (err) => {
       console.warn('Notice subscribing to notifications:', err);
     }
   );
+
+  // 3. Fast REST Polling Fallback (every 2.5s) to guarantee real-time notifications on iPhone
+  const pollInterval = setInterval(() => {
+    if (!isSubActive) return;
+    restGetCoupleDoc(cleanCode).then((coupleDoc) => {
+      if (isSubActive && coupleDoc && Array.isArray(coupleDoc.notifications)) {
+        handleNotifsUpdate(coupleDoc.notifications);
+      }
+    }).catch(() => {});
+  }, 2500);
+
+  // 4. Also poll immediately when window/app regains focus or visibility
+  const handleVisibilityChange = () => {
+    if (document.visibilityState === 'visible' && isSubActive) {
+      restGetCoupleDoc(cleanCode).then((coupleDoc) => {
+        if (isSubActive && coupleDoc && Array.isArray(coupleDoc.notifications)) {
+          handleNotifsUpdate(coupleDoc.notifications);
+        }
+      }).catch(() => {});
+    }
+  };
+  window.addEventListener('visibilitychange', handleVisibilityChange);
+  window.addEventListener('focus', handleVisibilityChange);
+
+  return () => {
+    isSubActive = false;
+    clearInterval(pollInterval);
+    window.removeEventListener('visibilitychange', handleVisibilityChange);
+    window.removeEventListener('focus', handleVisibilityChange);
+    try {
+      unsubSnapshot();
+    } catch {
+      // Ignore
+    }
+  };
 }
 
 // Purge all created accounts, couples, spots and notifications in Firestore DB

@@ -106,6 +106,8 @@ export interface CouplePair {
   isPinLocked?: boolean;
   status?: 'active' | 'broken';
   brokenBy?: string;
+  spots?: Spot[];
+  notifications?: NotificationItem[];
 }
 
 export interface GlobalCriteriaStats {
