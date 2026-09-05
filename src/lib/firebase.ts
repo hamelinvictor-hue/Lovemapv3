@@ -203,6 +203,30 @@ export async function serverGetCouple(code: string): Promise<CouplePair | null> 
   }
 }
 
+export async function serverGetSpots(code: string): Promise<Spot[]> {
+  try {
+    const url = getBackendApiUrl(`/api/couples/${encodeURIComponent(code)}/spots`);
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data?.spots || [];
+  } catch {
+    return [];
+  }
+}
+
+export async function serverGetNotifications(code: string): Promise<NotificationItem[]> {
+  try {
+    const url = getBackendApiUrl(`/api/couples/${encodeURIComponent(code)}/notifications`);
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data?.notifications || [];
+  } catch {
+    return [];
+  }
+}
+
 export async function serverSaveCouple(code: string, couple: any): Promise<boolean> {
   try {
     const url = getBackendApiUrl(`/api/couples/${encodeURIComponent(code)}`);
@@ -240,7 +264,11 @@ export async function serverJoinCouple(
 }
 
 export async function restGetCoupleDoc(code: string): Promise<CouplePair | null> {
-  // 1. Try Firestore REST directly
+  // 1. Fast Server fetch first (zero Firestore read, instant response)
+  const serverCouple = await serverGetCouple(code);
+  if (serverCouple) return serverCouple;
+
+  // 2. Try Firestore REST directly
   try {
     const dbId = (firebaseConfig as any).firestoreDatabaseId || '(default)';
     const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${dbId}/documents/couples/${encodeURIComponent(code)}?key=${firebaseConfig.apiKey}`;
@@ -316,30 +344,44 @@ export async function restPatchCoupleDoc(code: string, data: Record<string, any>
 }
 
 export async function restGetSpots(code: string): Promise<Spot[]> {
+  // 1. Try high-performance server in-memory store first
+  const serverSpots = await serverGetSpots(code);
+  if (Array.isArray(serverSpots) && serverSpots.length > 0) {
+    return serverSpots;
+  }
+
+  // 2. Fallback to direct Firestore REST
   try {
     const dbId = (firebaseConfig as any).firestoreDatabaseId || '(default)';
     const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${dbId}/documents/couples/${encodeURIComponent(code)}/spots?key=${firebaseConfig.apiKey}`;
     const res = await fetch(url);
-    if (!res.ok) return [];
+    if (!res.ok) return serverSpots || [];
     const json = await res.json();
-    if (!json.documents) return [];
+    if (!json.documents) return serverSpots || [];
     return json.documents.map((doc: any) => decodeFirestoreRestDoc(doc) as Spot);
   } catch (e) {
-    return [];
+    return serverSpots || [];
   }
 }
 
 export async function restGetNotifications(code: string): Promise<NotificationItem[]> {
+  // 1. Try high-performance server in-memory store first
+  const serverNotifs = await serverGetNotifications(code);
+  if (Array.isArray(serverNotifs) && serverNotifs.length > 0) {
+    return serverNotifs;
+  }
+
+  // 2. Fallback to direct Firestore REST
   try {
     const dbId = (firebaseConfig as any).firestoreDatabaseId || '(default)';
     const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${dbId}/documents/couples/${encodeURIComponent(code)}/notifications?key=${firebaseConfig.apiKey}`;
     const res = await fetch(url);
-    if (!res.ok) return [];
+    if (!res.ok) return serverNotifs || [];
     const json = await res.json();
-    if (!json.documents) return [];
+    if (!json.documents) return serverNotifs || [];
     return json.documents.map((doc: any) => decodeFirestoreRestDoc(doc) as NotificationItem);
   } catch (e) {
-    return [];
+    return serverNotifs || [];
   }
 }
 
@@ -1525,6 +1567,20 @@ export function subscribeToCoupleEvents(code: string, handler: CoupleEventHandle
   const cleanCode = code.trim().toUpperCase();
   eventHandlers.add(handler);
 
+  // Immediately push cached/in-memory server state
+  serverGetCouple(cleanCode).then((couple) => {
+    if (couple) {
+      try {
+        handler({
+          type: 'init',
+          couple,
+          spots: couple.spots || [],
+          notifications: couple.notifications || [],
+        });
+      } catch {}
+    }
+  }).catch(() => {});
+
   if (activeEventSourceCode !== cleanCode || !activeEventSource || activeEventSource.readyState === EventSource.CLOSED) {
     if (activeEventSource) {
       try { activeEventSource.close(); } catch {}
@@ -1534,24 +1590,29 @@ export function subscribeToCoupleEvents(code: string, handler: CoupleEventHandle
 
     try {
       const sseUrl = getBackendApiUrl(`/api/couples/${encodeURIComponent(cleanCode)}/stream`);
+      console.log('[SSE Live] Connecting to stream:', sseUrl);
       const es = new EventSource(sseUrl);
       activeEventSource = es;
 
+      es.onopen = () => {
+        console.log('[SSE Live] Stream connected for room:', cleanCode);
+      };
+
       es.onmessage = (event) => {
         try {
-          if (!event.data || event.data.trim() === 'ping') return;
+          if (!event.data || event.data.trim() === 'ping' || event.data.trim() === ': ping') return;
           const payload: CoupleSsePayload = JSON.parse(event.data);
           eventHandlers.forEach((h) => {
-            try { h(payload); } catch (e) { console.warn('[SSE] Event handler notice:', e); }
+            try { h(payload); } catch (e) { console.warn('[SSE Live] Event handler notice:', e); }
           });
         } catch {}
       };
 
       es.onerror = () => {
-        // Built-in EventSource reconnects automatically
+        // Built-in EventSource auto-reconnects
       };
     } catch (e) {
-      console.warn('[SSE] Could not initialize EventSource:', e);
+      console.warn('[SSE Live] Could not initialize EventSource:', e);
     }
   }
 

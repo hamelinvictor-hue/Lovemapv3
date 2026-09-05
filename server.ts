@@ -382,10 +382,17 @@ async function mirrorToFirestore(pathDoc: string, data: Record<string, any>) {
 // ==========================================
 const sseRoomClients = new Map<string, Set<express.Response>>();
 
+function getRoomKey(code: string): string {
+  if (!code) return '';
+  const clean = String(code).trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const core = clean.startsWith('LM') ? clean.substring(2) : clean;
+  return core || clean;
+}
+
 function broadcastCoupleEvent(code: string, payload: { type: string; [key: string]: any }) {
   if (!code) return;
-  const cleanCode = code.trim().toUpperCase();
-  const clients = sseRoomClients.get(cleanCode);
+  const roomKey = getRoomKey(code);
+  const clients = sseRoomClients.get(roomKey);
   if (!clients || clients.size === 0) return;
 
   const dataStr = `data: ${JSON.stringify(payload)}\n\n`;
@@ -398,10 +405,46 @@ function broadcastCoupleEvent(code: string, payload: { type: string; [key: strin
   }
 }
 
+function getOrCreateCoupleInMemory(code: string): StoredCoupleRecord {
+  const roomKey = getRoomKey(code);
+  for (const [k, v] of couplesStore.entries()) {
+    if (getRoomKey(k) === roomKey || getRoomKey(v.code || '') === roomKey) {
+      return v;
+    }
+  }
+  const cleanCode = code.trim().toUpperCase();
+  const newRecord: StoredCoupleRecord = {
+    code: cleanCode,
+    partnerA: {
+      id: 'partner_a',
+      name: 'Partenaire 1',
+      avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+      role: 'Partenaire 1',
+    },
+    partnerB: {
+      id: 'partner_b',
+      name: 'En attente...',
+      avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
+      role: 'Partenaire 2',
+    },
+    spots: [],
+    notifications: [],
+    isCodeUsed: false,
+    anniversaryDate: new Date().toISOString().split('T')[0],
+    secretPin: '1234',
+    isPinLocked: false,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  couplesStore.set(cleanCode, newRecord);
+  persistCouplesStore();
+  return newRecord;
+}
+
 // GET /api/couples/:code/stream (SSE stream for live couple sync)
 app.get('/api/couples/:code/stream', async (req, res) => {
   const { code } = req.params;
-  const cleanCode = code.trim().toUpperCase();
+  const roomKey = getRoomKey(code);
 
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -413,24 +456,22 @@ app.get('/api/couples/:code/stream', async (req, res) => {
     (res as any).flushHeaders();
   }
 
-  if (!sseRoomClients.has(cleanCode)) {
-    sseRoomClients.set(cleanCode, new Set());
+  if (!sseRoomClients.has(roomKey)) {
+    sseRoomClients.set(roomKey, new Set());
   }
-  const room = sseRoomClients.get(cleanCode)!;
+  const room = sseRoomClients.get(roomKey)!;
   room.add(res);
 
   // Send immediate current room snapshot
-  const couple = await getOrFetchCouple(cleanCode);
-  if (couple) {
-    res.write(`data: ${JSON.stringify({
-      type: 'init',
-      couple,
-      spots: couple.spots || [],
-      notifications: couple.notifications || [],
-    })}\n\n`);
-  }
+  const couple = (await getOrFetchCouple(code)) || getOrCreateCoupleInMemory(code);
+  res.write(`data: ${JSON.stringify({
+    type: 'init',
+    couple,
+    spots: couple.spots || [],
+    notifications: couple.notifications || [],
+  })}\n\n`);
 
-  // Heartbeat ping every 20s to maintain connection alive across NAT/WiFi/mobile
+  // Heartbeat ping every 10s to maintain connection alive across NAT/WiFi/mobile
   const heartbeat = setInterval(() => {
     try {
       res.write(': ping\n\n');
@@ -438,13 +479,13 @@ app.get('/api/couples/:code/stream', async (req, res) => {
       clearInterval(heartbeat);
       room.delete(res);
     }
-  }, 20000);
+  }, 10000);
 
   req.on('close', () => {
     clearInterval(heartbeat);
     room.delete(res);
     if (room.size === 0) {
-      sseRoomClients.delete(cleanCode);
+      sseRoomClients.delete(roomKey);
     }
   });
 });
@@ -452,10 +493,7 @@ app.get('/api/couples/:code/stream', async (req, res) => {
 // GET /api/couples/:code
 app.get('/api/couples/:code', async (req, res) => {
   const { code } = req.params;
-  const couple = await getOrFetchCouple(code);
-  if (!couple) {
-    return res.status(404).json({ error: 'Couple room not found' });
-  }
+  const couple = (await getOrFetchCouple(code)) || getOrCreateCoupleInMemory(code);
   return res.json({ success: true, couple });
 });
 
@@ -465,7 +503,7 @@ app.post('/api/couples/:code', async (req, res) => {
   const body = req.body || {};
   const cleanCode = String(body.code || code).trim().toUpperCase();
 
-  const existing = (await getOrFetchCouple(cleanCode)) || {} as any;
+  const existing = (await getOrFetchCouple(cleanCode)) || getOrCreateCoupleInMemory(cleanCode);
   const record: StoredCoupleRecord = {
     ...existing,
     ...body,
@@ -495,13 +533,7 @@ app.post('/api/couples/:code/join', async (req, res) => {
 
   console.log(`[Couples Store] Join requested for code: "${code}" by "${partnerName}" (${userUid})`);
 
-  let couple = await getOrFetchCouple(code);
-  if (!couple) {
-    console.warn(`[Couples Store] Code not found in memory store or Firestore REST. Registered codes:`, Array.from(couplesStore.keys()));
-    return res.status(404).json({
-      error: `Code de couple "${code}" introuvable. Vérifiez que votre partenaire a bien partagé ce code.`
-    });
-  }
+  let couple = (await getOrFetchCouple(code)) || getOrCreateCoupleInMemory(code);
 
   const existingMembers = couple.memberUids || [];
   const updatedMembers = userUid ? Array.from(new Set([...existingMembers, userUid])) : existingMembers;
@@ -550,7 +582,7 @@ app.post('/api/couples/:code/break', async (req, res) => {
   const { breakerName = 'Partenaire' } = req.body || {};
   const cleanCode = code.trim().toUpperCase();
 
-  let couple = await getOrFetchCouple(cleanCode);
+  let couple = (await getOrFetchCouple(cleanCode)) || getOrCreateCoupleInMemory(cleanCode);
   if (couple) {
     couple.status = 'broken' as any;
     (couple as any).brokenBy = breakerName;
@@ -575,7 +607,7 @@ app.post('/api/couples/:code/break', async (req, res) => {
 // GET /api/couples/:code/spots
 app.get('/api/couples/:code/spots', async (req, res) => {
   const { code } = req.params;
-  const couple = await getOrFetchCouple(code);
+  const couple = (await getOrFetchCouple(code)) || getOrCreateCoupleInMemory(code);
   return res.json({ success: true, spots: couple?.spots || [] });
 });
 
@@ -585,8 +617,7 @@ app.post('/api/couples/:code/spots', async (req, res) => {
   const spot = req.body || {};
   if (!spot.id) return res.status(400).json({ error: 'Missing spot id' });
 
-  const couple = await getOrFetchCouple(code);
-  if (!couple) return res.status(404).json({ error: 'Couple not found' });
+  const couple = (await getOrFetchCouple(code)) || getOrCreateCoupleInMemory(code);
 
   couple.spots = couple.spots || [];
   const idx = couple.spots.findIndex((s: any) => s.id === spot.id);
@@ -614,8 +645,7 @@ app.post('/api/couples/:code/spots', async (req, res) => {
 // DELETE /api/couples/:code/spots/:spotId
 app.delete('/api/couples/:code/spots/:spotId', async (req, res) => {
   const { code, spotId } = req.params;
-  const couple = await getOrFetchCouple(code);
-  if (!couple) return res.status(404).json({ error: 'Couple not found' });
+  const couple = (await getOrFetchCouple(code)) || getOrCreateCoupleInMemory(code);
 
   couple.spots = (couple.spots || []).filter((s: any) => s.id !== spotId);
   couplesStore.set(couple.code.toUpperCase(), couple);
@@ -635,7 +665,7 @@ app.delete('/api/couples/:code/spots/:spotId', async (req, res) => {
 // GET /api/couples/:code/notifications
 app.get('/api/couples/:code/notifications', async (req, res) => {
   const { code } = req.params;
-  const couple = await getOrFetchCouple(code);
+  const couple = (await getOrFetchCouple(code)) || getOrCreateCoupleInMemory(code);
   return res.json({ success: true, notifications: couple?.notifications || [] });
 });
 
@@ -645,11 +675,15 @@ app.post('/api/couples/:code/notifications', async (req, res) => {
   const notif = req.body || {};
   if (!notif.id) return res.status(400).json({ error: 'Missing notification id' });
 
-  const couple = await getOrFetchCouple(code);
-  if (!couple) return res.status(404).json({ error: 'Couple not found' });
+  const couple = (await getOrFetchCouple(code)) || getOrCreateCoupleInMemory(code);
 
   couple.notifications = couple.notifications || [];
-  couple.notifications.unshift({ ...notif, createdAt: new Date().toISOString() });
+  const idx = couple.notifications.findIndex((n: any) => n.id === notif.id);
+  if (idx >= 0) {
+    couple.notifications[idx] = { ...couple.notifications[idx], ...notif };
+  } else {
+    couple.notifications.unshift({ ...notif, createdAt: new Date().toISOString() });
+  }
   if (couple.notifications.length > 50) {
     couple.notifications = couple.notifications.slice(0, 50);
   }
