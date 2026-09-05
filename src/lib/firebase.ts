@@ -23,6 +23,8 @@ import {
 } from 'firebase/auth';
 import {
   initializeFirestore,
+  persistentLocalCache,
+  persistentSingleTabManager,
   getFirestore,
   doc,
   collection,
@@ -37,7 +39,6 @@ import {
   orderBy,
   serverTimestamp,
   deleteDoc, writeBatch,
-  memoryLocalCache,
 } from 'firebase/firestore';
 import { Spot, CouplePair, NotificationItem, PartnerId, UserProfile } from '../types';
 import { INITIAL_SPOTS } from '../data/initialData';
@@ -63,14 +64,15 @@ try {
 }
 export const auth = authInstance;
 
-// Initialize Firestore with clean in-memory cache and forced long polling for iOS WKWebView
+// Initialize Firestore with persistent IndexedDB cache for instant local response on iOS & Web
 let firestoreInstance;
 try {
   firestoreInstance = initializeFirestore(
     app,
     {
-      localCache: memoryLocalCache(),
-      experimentalForceLongPolling: true,
+      localCache: persistentLocalCache({
+        tabManager: persistentSingleTabManager({}),
+      }),
     },
     firebaseConfig.firestoreDatabaseId || undefined
   );
@@ -984,7 +986,7 @@ export async function findUserCoupleInFirestore(
       getDocs(query(couplesRef, where('partnerBUid', '==', user.uid))).catch(() => null),
     ];
 
-    const sdkResults = await withTimeout(Promise.all(queries), 5000, null);
+    const sdkResults = await withTimeout(Promise.all(queries), 2500, null);
 
     if (sdkResults) {
       for (const snap of sdkResults) {
