@@ -130,6 +130,198 @@ export async function withTimeout<T, F = T>(promise: Promise<T>, timeoutMs: numb
   }
 }
 
+// ---------------------------------------------------------------------------
+// High-Speed REST Fallback for Firestore on iOS WKWebView / Capacitor
+// Standard HTTP fetch completely bypasses WKWebView gRPC/WebChannel stalls
+// ---------------------------------------------------------------------------
+function decodeFirestoreRestValue(v: any): any {
+  if (!v) return null;
+  if (v.stringValue !== undefined) return v.stringValue;
+  if (v.booleanValue !== undefined) return v.booleanValue;
+  if (v.integerValue !== undefined) return parseInt(v.integerValue, 10);
+  if (v.doubleValue !== undefined) return parseFloat(v.doubleValue);
+  if (v.timestampValue !== undefined) return v.timestampValue;
+  if (v.nullValue !== undefined) return null;
+  if (v.mapValue !== undefined) {
+    const res: Record<string, any> = {};
+    for (const [k, val] of Object.entries(v.mapValue.fields || {})) {
+      res[k] = decodeFirestoreRestValue(val);
+    }
+    return res;
+  }
+  if (v.arrayValue !== undefined) {
+    return (v.arrayValue.values || []).map(decodeFirestoreRestValue);
+  }
+  return null;
+}
+
+function decodeFirestoreRestDoc(docData: any): any {
+  if (!docData || !docData.fields) return null;
+  const res: Record<string, any> = {
+    id: (docData.name || '').split('/').pop(),
+  };
+  for (const [k, val] of Object.entries(docData.fields || {})) {
+    res[k] = decodeFirestoreRestValue(val);
+  }
+  return res;
+}
+
+function encodeFirestoreRestValue(val: any): any {
+  if (val === null || val === undefined) return { nullValue: null };
+  if (typeof val === 'boolean') return { booleanValue: val };
+  if (typeof val === 'number') {
+    return Number.isInteger(val) ? { integerValue: val.toString() } : { doubleValue: val };
+  }
+  if (typeof val === 'string') return { stringValue: val };
+  if (Array.isArray(val)) {
+    return { arrayValue: { values: val.map(encodeFirestoreRestValue) } };
+  }
+  if (typeof val === 'object') {
+    // If it's a serverTimestamp placeholder
+    if (val._methodName === 'serverTimestamp') {
+      return { timestampValue: new Date().toISOString() };
+    }
+    const fields: Record<string, any> = {};
+    for (const [k, v] of Object.entries(val)) {
+      if (v !== undefined) fields[k] = encodeFirestoreRestValue(v);
+    }
+    return { mapValue: { fields } };
+  }
+  return { stringValue: String(val) };
+}
+
+export async function restGetCoupleDoc(code: string): Promise<CouplePair | null> {
+  try {
+    const dbId = (firebaseConfig as any).firestoreDatabaseId || '(default)';
+    const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${dbId}/documents/couples/${encodeURIComponent(code)}?key=${firebaseConfig.apiKey}`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const json = await res.json();
+    return decodeFirestoreRestDoc(json) as CouplePair;
+  } catch (e) {
+    console.warn('[REST Firestore] restGetCoupleDoc error:', e);
+    return null;
+  }
+}
+
+export async function restSetCoupleDoc(code: string, data: Record<string, any>): Promise<CouplePair | null> {
+  try {
+    const dbId = (firebaseConfig as any).firestoreDatabaseId || '(default)';
+    const fields = Object.keys(data);
+    const mask = fields.map(f => `updateMask.fieldPaths=${encodeURIComponent(f)}`).join('&');
+    const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${dbId}/documents/couples/${encodeURIComponent(code)}?${mask}&key=${firebaseConfig.apiKey}`;
+
+    const encodedFields: Record<string, any> = {};
+    for (const f of fields) {
+      if (data[f] !== undefined) {
+        encodedFields[f] = encodeFirestoreRestValue(data[f]);
+      }
+    }
+
+    const res = await fetch(url, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fields: encodedFields })
+    });
+
+    if (!res.ok) return null;
+    const json = await res.json();
+    return decodeFirestoreRestDoc(json) as CouplePair;
+  } catch (e) {
+    console.warn('[REST Firestore] restSetCoupleDoc error:', e);
+    return null;
+  }
+}
+
+export async function restPatchCoupleDoc(code: string, data: Record<string, any>, fieldsToUpdate: string[]): Promise<CouplePair | null> {
+  try {
+    const dbId = (firebaseConfig as any).firestoreDatabaseId || '(default)';
+    const mask = fieldsToUpdate.map(f => `updateMask.fieldPaths=${encodeURIComponent(f)}`).join('&');
+    const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${dbId}/documents/couples/${encodeURIComponent(code)}?${mask}&key=${firebaseConfig.apiKey}`;
+    
+    const fields: Record<string, any> = {};
+    for (const f of fieldsToUpdate) {
+      if (data[f] !== undefined) {
+        fields[f] = encodeFirestoreRestValue(data[f]);
+      }
+    }
+
+    const res = await fetch(url, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fields })
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      console.warn('[REST Firestore] restPatchCoupleDoc HTTP fail:', res.status, errText);
+      return null;
+    }
+    const json = await res.json();
+    return decodeFirestoreRestDoc(json) as CouplePair;
+  } catch (e) {
+    console.warn('[REST Firestore] restPatchCoupleDoc exception:', e);
+    return null;
+  }
+}
+
+export async function restFindUserCouples(uid?: string, email?: string): Promise<CouplePair[]> {
+  const dbId = (firebaseConfig as any).firestoreDatabaseId || '(default)';
+  const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${dbId}/documents:runQuery?key=${firebaseConfig.apiKey}`;
+  const found: CouplePair[] = [];
+
+  const runQueryFilter = async (fieldPath: string, op: string, val: string) => {
+    try {
+      const body = {
+        structuredQuery: {
+          from: [{ collectionId: 'couples' }],
+          where: {
+            fieldFilter: {
+              field: { fieldPath },
+              op,
+              value: { stringValue: val }
+            }
+          },
+          limit: 5
+        }
+      };
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (res.ok) {
+        const json = await res.json();
+        for (const item of json) {
+          if (item?.document) {
+            const decoded = decodeFirestoreRestDoc(item.document) as CouplePair;
+            if (decoded && decoded.code && decoded.code !== 'LOVE-NEW') {
+              found.push(decoded);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[REST Firestore] runQueryFilter error for', fieldPath, e);
+    }
+  };
+
+  const queries: Promise<void>[] = [];
+  if (uid) {
+    queries.push(runQueryFilter('memberUids', 'ARRAY_CONTAINS', uid));
+    queries.push(runQueryFilter('ownerUid', 'EQUAL', uid));
+    queries.push(runQueryFilter('partnerAUid', 'EQUAL', uid));
+    queries.push(runQueryFilter('partnerBUid', 'EQUAL', uid));
+  }
+  if (email) {
+    queries.push(runQueryFilter('ownerEmail', 'EQUAL', email));
+    queries.push(runQueryFilter('partnerBEmail', 'EQUAL', email));
+  }
+
+  await withTimeout(Promise.all(queries), 4500, null);
+  return found;
+}
+
 // Convert a stored auth user to a User-like object
 export function buildSyntheticUser(data: StoredAuthUser): User {
   return {
@@ -660,9 +852,14 @@ export async function ensureCoupleRoomInFirestore(
         );
       }
       
-      const writeResult = await withTimeout(batch.commit(), 15000, 'TIMEOUT');
+      const writeResult = await withTimeout(batch.commit(), 8000, 'TIMEOUT');
       if (writeResult === 'TIMEOUT') {
-        throw new Error("Délai d'attente dépassé lors de la création du salon.");
+        console.warn('[ensureCoupleRoom] Batch commit timeout, writing room via REST API...');
+        await restSetCoupleDoc(cleanCode, {
+          ...newRoom,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
       }
       return { ...localCouple, code: cleanCode };
     } else {
@@ -836,40 +1033,64 @@ export async function joinCoupleInFirestore(
 
   const candidates = getCoupleCodeCandidates(code);
   let coupleRef: any = null;
-  let snap: any = null;
+  let snapData: any = null;
+  let matchedDocId: string = candidates[0] || rawClean;
 
-  // 1. Fast path: try candidates by exact document ID concurrently
-  const candidatePromises = candidates.map(cand => {
+  // 1. Concurrent Lookup: Try SDK getDoc AND instant REST API fetch concurrently
+  // On iOS / Capacitor WKWebView, standard REST fetch succeeds in milliseconds even if WebChannel long-polling is stalled
+  const restPromises = candidates.map(cand => restGetCoupleDoc(cand));
+  const sdkPromises = candidates.map(cand => {
     const ref = doc(db, 'couples', cand);
     return getDoc(ref).then(s => ({ ref, s })).catch(() => null);
   });
-  
-  const results = await withTimeout(Promise.all(candidatePromises), 10000, "TIMEOUT");
-  if (results === "TIMEOUT") throw new Error(`Délai d'attente dépassé. Impossible de vérifier le code "${code}". Veuillez vérifier votre connexion.`);
-  
-  if (Array.isArray(results)) {
-    for (const res of results) {
-      if (res && res.s && res.s.exists() && res.s.id !== 'LOVE-NEW') {
-        coupleRef = res.ref;
-        snap = res.s;
-        break;
+
+  try {
+    const [sdkResults, restResults] = await Promise.all([
+      withTimeout(Promise.all(sdkPromises), 5000, null),
+      withTimeout(Promise.all(restPromises), 5000, null),
+    ]);
+
+    // Check REST results first
+    if (Array.isArray(restResults)) {
+      for (const rDoc of restResults) {
+        if (rDoc && rDoc.code && rDoc.code !== 'LOVE-NEW') {
+          snapData = rDoc;
+          matchedDocId = rDoc.code || rDoc.id || matchedDocId;
+          coupleRef = doc(db, 'couples', matchedDocId);
+          break;
+        }
       }
     }
+
+    // Check SDK results if REST didn't already find it
+    if (!snapData && Array.isArray(sdkResults)) {
+      for (const res of sdkResults) {
+        if (res && res.s && res.s.exists() && res.s.id !== 'LOVE-NEW') {
+          coupleRef = res.ref;
+          snapData = res.s.data();
+          matchedDocId = res.s.id;
+          break;
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[joinCouple] Error during fast candidate lookup:', err);
   }
 
-  // 2. Query path if direct getDoc didn't match (e.g., case or field storage differences)
-  if (!snap || !snap.exists()) {
+  // 2. Query path if direct lookup didn't match (e.g. case or field differences)
+  if (!snapData) {
     try {
       const qSnap = await withTimeout(
         getDocs(query(collection(db, 'couples'), where('code', 'in', candidates))),
-        6000,
+        5000,
         null
       );
       if (qSnap && !qSnap.empty) {
         const found = qSnap.docs.find(d => d.id !== 'LOVE-NEW');
         if (found) {
           coupleRef = found.ref;
-          snap = found;
+          snapData = found.data();
+          matchedDocId = found.id;
         }
       }
     } catch (qErr) {
@@ -878,9 +1099,9 @@ export async function joinCoupleInFirestore(
   }
 
   // 3. Fallback scan if direct getDoc & query didn't match
-  if (!snap || !snap.exists()) {
+  if (!snapData) {
     try {
-      const allCouplesSnap = await withTimeout(getDocs(collection(db, 'couples')), 8000, null);
+      const allCouplesSnap = await withTimeout(getDocs(collection(db, 'couples')), 6000, null);
       if (allCouplesSnap && typeof allCouplesSnap !== "string" && !allCouplesSnap.empty) {
         const inputAlpha = rawClean.replace(/[^A-Z0-9]/g, '');
         const inputCore = inputAlpha.startsWith('LM') ? inputAlpha.substring(2) : inputAlpha;
@@ -898,7 +1119,8 @@ export async function joinCoupleInFirestore(
             (inputCore.length >= 6 && (docIdCore === inputCore || dataCore === inputCore))
           ) {
             coupleRef = docItem.ref;
-            snap = docItem;
+            snapData = docItem.data();
+            matchedDocId = docItem.id;
             break;
           }
         }
@@ -908,11 +1130,11 @@ export async function joinCoupleInFirestore(
     }
   }
 
-  if (!snap || !snap.exists() || !coupleRef) {
+  if (!snapData) {
     throw new Error(`Code de couple "${code.trim().toUpperCase()}" introuvable. Vérifiez que votre partenaire vous a bien partagé son code (ex: LM-XXXX-XXXX).`);
   }
 
-  const existingData = snap.data() as CouplePair & {
+  const existingData = snapData as CouplePair & {
     ownerUid?: string;
     ownerEmail?: string;
     partnerAUid?: string;
@@ -928,14 +1150,26 @@ export async function joinCoupleInFirestore(
   
   // If user has same email as owner/partnerA, they are restoring their Partner A account on a new device
   if (user.email && (user.email === existingData.ownerEmail || user.email === existingData.partnerAEmail)) {
-    await withTimeout(
-      setDoc(coupleRef, {
-        partnerAUid: user.uid,
-        memberUids,
-        updatedAt: serverTimestamp(),
-      }, { merge: true }),
-      12000, null
-    );
+    const updatePayload = {
+      partnerAUid: user.uid,
+      memberUids,
+      updatedAt: serverTimestamp(),
+    };
+
+    // Execute via SDK with REST fallback
+    try {
+      if (coupleRef) {
+        await withTimeout(setDoc(coupleRef, updatePayload, { merge: true }), 4000, null);
+      }
+    } catch (e) {
+      console.warn('[joinCouple] SDK setDoc partnerA notice, applying REST patch:', e);
+    }
+    await restPatchCoupleDoc(matchedDocId, {
+      partnerAUid: user.uid,
+      memberUids,
+      updatedAt: new Date().toISOString(),
+    }, ['partnerAUid', 'memberUids', 'updatedAt']);
+
     return existingData;
   }
 
@@ -952,22 +1186,40 @@ export async function joinCoupleInFirestore(
     partnerB,
   };
 
-  await withTimeout(
-    setDoc(
-      coupleRef,
-      {
-        partnerB,
-        partnerBUid: user.uid,
-        partnerBEmail: user.email || '',
-        memberUids,
-        isCodeUsed: true,
-        updatedAt: serverTimestamp(),
-      },
-      { merge: true }
-    ),
-    12000,
-    null
-  );
+  const bUpdatePayload = {
+    partnerB,
+    partnerBUid: user.uid,
+    partnerBEmail: user.email || '',
+    memberUids,
+    isCodeUsed: true,
+    updatedAt: serverTimestamp(),
+  };
+
+  // Perform update with dual SDK + REST execution to guarantee instant completion on iOS
+  const restUpdatePromise = restPatchCoupleDoc(matchedDocId, {
+    partnerB,
+    partnerBUid: user.uid,
+    partnerBEmail: user.email || '',
+    memberUids,
+    isCodeUsed: true,
+    updatedAt: new Date().toISOString(),
+  }, ['partnerB', 'partnerBUid', 'partnerBEmail', 'memberUids', 'isCodeUsed', 'updatedAt']);
+
+  if (coupleRef) {
+    setDoc(coupleRef, bUpdatePayload, { merge: true }).catch((err) => {
+      console.warn('[joinCouple] SDK setDoc async notice (handled by REST):', err);
+    });
+  }
+
+  // Wait for REST update with 6s timeout so iOS never gets stuck
+  const restResult = await withTimeout(restUpdatePromise, 6000, null);
+  if (restResult) {
+    return {
+      ...updatedCouple,
+      ...restResult,
+      partnerB,
+    };
+  }
 
   return updatedCouple;
 }
@@ -981,7 +1233,7 @@ export async function findUserCoupleInFirestore(
   try {
     const couplesRef = collection(db, 'couples');
     
-    // We will run queries in parallel to make this extremely fast
+    // We will run queries in parallel: SDK + instant REST runQuery
     const queries: Promise<any>[] = [
       getDocs(query(couplesRef, where('memberUids', 'array-contains', user.uid))).catch(() => null),
       getDocs(query(couplesRef, where('ownerUid', '==', user.uid))).catch(() => null),
@@ -993,20 +1245,35 @@ export async function findUserCoupleInFirestore(
       queries.push(getDocs(query(couplesRef, where('ownerEmail', '==', user.email))).catch(() => null));
     }
 
-    // Wait up to 6 seconds for any of these to resolve
-    const results = await withTimeout(Promise.all(queries), 6000, null);
-    if (!results) return null;
+    const restSearchPromise = restFindUserCouples(user.uid, user.email || undefined).catch(() => []);
 
-    for (const snap of results) {
-      if (snap && !snap.empty) {
-        const validDoc = snap.docs.find((d: any) => d.id !== 'LOVE-NEW' && (d.data() as any).code !== 'LOVE-NEW');
-        if (validDoc) {
-          const docData = validDoc.data() as CouplePair & { partnerBUid?: string; partnerBEmail?: string };
-          let partnerId: PartnerId = 'partner_a';
-          if (docData.partnerBUid === user.uid || (user.email && docData.partnerBEmail === user.email)) {
-            partnerId = 'partner_b';
+    const [sdkResults, restCouples] = await Promise.all([
+      withTimeout(Promise.all(queries), 5000, null),
+      withTimeout(restSearchPromise, 5000, []),
+    ]);
+
+    // Check REST results first
+    if (Array.isArray(restCouples) && restCouples.length > 0) {
+      const docData = restCouples[0];
+      let partnerId: PartnerId = 'partner_a';
+      if ((docData as any).partnerBUid === user.uid || (user.email && (docData as any).partnerBEmail === user.email)) {
+        partnerId = 'partner_b';
+      }
+      return { couple: docData, partnerId };
+    }
+
+    if (sdkResults) {
+      for (const snap of sdkResults) {
+        if (snap && !snap.empty) {
+          const validDoc = snap.docs.find((d: any) => d.id !== 'LOVE-NEW' && (d.data() as any).code !== 'LOVE-NEW');
+          if (validDoc) {
+            const docData = validDoc.data() as CouplePair & { partnerBUid?: string; partnerBEmail?: string };
+            let partnerId: PartnerId = 'partner_a';
+            if (docData.partnerBUid === user.uid || (user.email && docData.partnerBEmail === user.email)) {
+              partnerId = 'partner_b';
+            }
+            return { couple: docData, partnerId };
           }
-          return { couple: docData, partnerId };
         }
       }
     }
