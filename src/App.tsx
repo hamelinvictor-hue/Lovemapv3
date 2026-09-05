@@ -57,6 +57,7 @@ import {
   getEffectiveUser,
 } from './lib/firebase';
 import type { User } from 'firebase/auth';
+import { getBackendApiUrl } from './lib/apiConfig';
 import {
   getDuoPremiumState,
   hasTrialOfferStarted,
@@ -176,7 +177,6 @@ export default function App() {
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isLocked, setIsLocked] = useState(() => Boolean(couple.isPinLocked && getDuoPremiumState(couple, getActivePartner()).isPremium));
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [showDuoCodeModal, setShowDuoCodeModal] = useState<string | null>(null);
   const [brokenDuoNotice, setBrokenDuoNotice] = useState<string | null>(null);
 
@@ -323,13 +323,30 @@ export default function App() {
       },
       onPushToken: (token) => {
         if (couple?.code && activePartnerId) {
-          savePushTokenToFirestore(couple.code, activePartnerId, token).catch(console.warn);
-          // Register with server push engine (OneSignal / APNs delivery when app is closed)
-          fetch('/api/push/register-token', {
+          const cleanCode = couple.code.trim().toUpperCase();
+          const targetKey = `${cleanCode}_${activePartnerId}`;
+
+          savePushTokenToFirestore(cleanCode, activePartnerId, token).catch(console.warn);
+
+          // 1. Direct registration with OneSignal REST API (CORS enabled, works seamlessly inside iOS WKWebView)
+          fetch('https://onesignal.com/api/v1/players', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              code: couple.code,
+              app_id: '6bbd3278-e98f-4ddc-bfe5-a417960d8aac',
+              device_type: 0, // 0 = iOS APNs
+              identifier: token,
+              external_user_id: targetKey,
+              language: 'fr',
+            }),
+          }).catch((e) => console.warn('[OneSignal Direct Player Reg] Notice:', e));
+
+          // 2. Register with server push engine
+          fetch(getBackendApiUrl('/api/push/register-token'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              code: cleanCode,
               partnerId: activePartnerId,
               pushToken: token,
               platform: 'ios',
@@ -628,12 +645,9 @@ export default function App() {
     saveNotifications(notifications);
   }, [notifications]);
 
-  // Show quick toast notification
-  const showToast = (msg: string) => {
-    setToastMessage(msg);
-    setTimeout(() => {
-      setToastMessage(null);
-    }, 4000);
+  // Quick toast notifications silenced (removed top popup banner on action)
+  const showToast = (_msg: string) => {
+    // Suppressed per user request: no intrusive banner at the top of the screen
   };
 
   // Switch Partner Persona Simulator
@@ -1115,14 +1129,6 @@ export default function App() {
           theme={theme}
           onToggleTheme={handleToggleTheme}
         />
-
-        {/* Floating Toast Notification Banner */}
-        {toastMessage && (
-          <div className="fixed top-14 sm:top-16 left-1/2 -translate-x-1/2 z-[100000] w-[92%] sm:w-auto max-w-md bg-white/95 dark:bg-slate-900/95 border border-pink-200 dark:border-pink-900/60 text-pink-600 dark:text-pink-400 px-4 py-2.5 rounded-2xl shadow-2xl backdrop-blur-md text-xs sm:text-sm font-bold flex items-center justify-center text-center gap-2.5 animate-bounce pointer-events-none">
-            <Sparkles className="w-4 h-4 text-pink-500 shrink-0" />
-            <span className="leading-snug">{toastMessage}</span>
-          </div>
-        )}
 
         {/* Tab Content Router */}
         <main className="relative flex-1 w-full min-h-0 overflow-hidden flex flex-col">

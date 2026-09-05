@@ -711,8 +711,12 @@ export const MapView: React.FC<MapViewProps> = ({
     triggerHaptic('medium');
     setIsLocating(true);
 
+    // Zoom équilibré quartier (13.5) : permet de voir sa position et les spots environnants sans être collé au toit
+    const balancedZoom = 13.5;
+
+    // Recentrage immédiat sur la position connue
     if (userCoords && mapInstanceRef.current) {
-      mapInstanceRef.current.flyTo([userCoords.lat, userCoords.lng], 16, { duration: 1 });
+      mapInstanceRef.current.flyTo([userCoords.lat, userCoords.lng], balancedZoom, { duration: 0.6 });
     }
 
     try {
@@ -720,7 +724,7 @@ export const MapView: React.FC<MapViewProps> = ({
       if (pos) {
         saveLocationPermissionStatus('granted');
         setUserCoords({ lat: pos.latitude, lng: pos.longitude, accuracy: pos.accuracy });
-        mapInstanceRef.current?.flyTo([pos.latitude, pos.longitude], 16, { duration: 1 });
+        mapInstanceRef.current?.flyTo([pos.latitude, pos.longitude], balancedZoom, { duration: 0.6 });
       } else {
         const granted = await triggerNativeGeolocation();
         if (granted) {
@@ -728,7 +732,7 @@ export const MapView: React.FC<MapViewProps> = ({
           const secondPos = await getNativeCurrentPosition();
           if (secondPos) {
             setUserCoords({ lat: secondPos.latitude, lng: secondPos.longitude, accuracy: secondPos.accuracy });
-            mapInstanceRef.current?.flyTo([secondPos.latitude, secondPos.longitude], 16, { duration: 1 });
+            mapInstanceRef.current?.flyTo([secondPos.latitude, secondPos.longitude], balancedZoom, { duration: 0.6 });
           }
         }
       }

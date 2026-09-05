@@ -43,6 +43,7 @@ import { Spot, CouplePair, NotificationItem, PartnerId, UserProfile } from '../t
 import { INITIAL_SPOTS } from '../data/initialData';
 import { getStoredAuthUser, saveStoredAuthUser, StoredAuthUser, getStoredSpots, saveSpots, getStoredNotifications, saveNotifications } from './storage';
 import { triggerNativeGoogleAuth, triggerNativeAppleAuth, triggerNativeSignOut, isMobileDevice, isCapacitorNative } from './nativePermissions';
+import { getBackendApiUrl } from './apiConfig';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
@@ -1689,7 +1690,8 @@ export async function saveNotificationToFirestore(code: string, notif: Notificat
   // 3. Dispatch external Push Notification to partner's device (Apple APNs / OneSignal)
   // This delivers a real lock screen push on iPhone even if the partner has closed the app!
   try {
-    fetch('/api/push/send', {
+    const pushEndpoint = getBackendApiUrl('/api/push/send');
+    fetch(pushEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

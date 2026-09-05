@@ -8,6 +8,17 @@ dotenv.config();
 const app = express();
 const PORT = 3000;
 
+// CORS headers for Capacitor mobile apps and external webviews
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 app.use(express.json());
 
 const REVENUECAT_SECRET_KEY = process.env.REVENUECAT_SECRET_KEY || 'sk_sAuopEcrYtQsWZWKjiSLEGzgNWlXy';
@@ -266,6 +277,7 @@ app.post('/api/push/send', async (req, res) => {
         include_aliases: {
           external_id: [targetKey],
         },
+        include_external_user_ids: [targetKey],
         headings: { en: title, fr: title },
         contents: { en: message, fr: message },
         data: {
@@ -277,6 +289,8 @@ app.post('/api/push/send', async (req, res) => {
         ios_sound: 'beep.wav',
         ios_badgeType: 'Increase',
         ios_badgeCount: 1,
+        content_available: true,
+        priority: 10,
       };
 
       const osResp = await fetch(`${ONESIGNAL_BASE_URL}/notifications`, {
