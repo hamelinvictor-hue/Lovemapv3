@@ -18,6 +18,7 @@ import {
   updateProfile,
   signOut,
   onAuthStateChanged,
+  setPersistence,
   User,
 } from 'firebase/auth';
 import {
@@ -112,9 +113,9 @@ appleProvider.setCustomParameters({
 });
 
 // Utility to ensure async calls never hang indefinitely (e.g. in iOS Simulator WKWebView)
-export async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
+export async function withTimeout<T, F = T>(promise: Promise<T>, timeoutMs: number, fallback: F): Promise<T | F> {
   let timer: any;
-  const timeoutPromise = new Promise<T>((resolve) => {
+  const timeoutPromise = new Promise<F>((resolve) => {
     timer = setTimeout(() => resolve(fallback), timeoutMs);
   });
   try {
@@ -122,9 +123,8 @@ export async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fal
     clearTimeout(timer);
     return res;
   } catch (err) {
-    console.warn('Firebase operation error/timeout:', err);
     clearTimeout(timer);
-    return fallback;
+    throw err;
   }
 }
 
@@ -194,7 +194,8 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
 
         let user: User | null = null;
         try {
-          const res = await withTimeout(signInWithCredential(auth, credential), 7000, null);
+          // Fast check with Firebase credential, but don't hang UI if Apple provider is unconfigured in Firebase Console
+          const res = await withTimeout(signInWithCredential(auth, credential), 2500, null);
           if (res?.user) {
             user = res.user;
             console.log('[Native Debug] signInWithCredential Apple success:', user.uid);
@@ -400,7 +401,37 @@ export async function loginWithGoogle(preferredDisplayName?: string): Promise<Us
     return user;
   } catch (popupErr: any) {
     console.warn('Google Popup error on web:', popupErr?.message || popupErr);
-    if (popupErr?.code === 'auth/popup-blocked' || popupErr?.code === 'auth/operation-not-supported-in-this-environment' || popupErr?.code === 'auth/internal-error') {
+    const errText = String(popupErr?.message || '') + String(popupErr?.code || '');
+    const isDbClosing = errText.toLowerCase().includes('database') && errText.toLowerCase().includes('closing');
+
+    if (isDbClosing) {
+      try {
+        console.log('[Auth] Recovering from Database closing via browserLocalPersistence...');
+        await setPersistence(auth, browserLocalPersistence);
+        const retryRes = await signInWithPopup(auth, googleProvider, browserPopupRedirectResolver);
+        if (retryRes?.user) {
+          const user = retryRes.user;
+          saveStoredAuthUser({
+            uid: user.uid,
+            displayName: user.displayName || preferredDisplayName || 'Utilisateur Google',
+            email: user.email || null,
+            photoURL: user.photoURL || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150',
+            providerId: 'google.com',
+            isAnonymous: false,
+          });
+          return user;
+        }
+      } catch (retryErr) {
+        console.warn('[Auth] Retry after DB closing notice:', retryErr);
+      }
+    }
+
+    if (
+      popupErr?.code === 'auth/popup-blocked' ||
+      popupErr?.code === 'auth/operation-not-supported-in-this-environment' ||
+      popupErr?.code === 'auth/internal-error' ||
+      isDbClosing
+    ) {
       await signInWithRedirect(auth, googleProvider, browserPopupRedirectResolver);
       return null as any;
     }
@@ -627,7 +658,10 @@ export async function ensureCoupleRoomInFirestore(
         );
       }
       
-      await withTimeout(batch.commit(), 12000, null);
+      const writeResult = await withTimeout(batch.commit(), 15000, 'TIMEOUT');
+      if (writeResult === 'TIMEOUT') {
+        throw new Error("Délai d'attente dépassé lors de la création du salon.");
+      }
       return { ...localCouple, code: cleanCode };
     } else {
       const data = snap.data() as CouplePair & { memberUids?: string[] };
@@ -640,11 +674,14 @@ export async function ensureCoupleRoomInFirestore(
           partnerBUid: partnerId === 'partner_b' ? user.uid : (data as any).partnerBUid || null,
           updatedAt: serverTimestamp(),
         });
-        await withTimeout(
+        const updateResult = await withTimeout(
           setDoc(coupleRef, updatePayload, { merge: true }),
-          12000,
-          null
+          15000,
+          'TIMEOUT'
         );
+        if (updateResult === 'TIMEOUT') {
+          throw new Error("Délai d'attente dépassé lors de la mise à jour du salon.");
+        }
       }
       return {
         ...localCouple,
@@ -664,31 +701,33 @@ export async function createCoupleInFirestore(
   partnerName: string = 'Alex',
   avatarUrl?: string
 ): Promise<{ couple: CouplePair; isExisting?: boolean }> {
-  // Check if this user account already has an active room in DB
-  try {
-    const existing = await findUserCoupleInFirestore(user);
-    if (existing) {
-      const cleanName = partnerName.trim();
-      if (cleanName && cleanName !== 'Alex' && cleanName !== 'Partenaire 1') {
-        const isPartnerA = existing.partnerId === 'partner_a';
-        const currentProfile = isPartnerA ? existing.couple.partnerA : existing.couple.partnerB;
-        const updatedProfile = {
-          ...currentProfile,
-          name: cleanName,
-          avatar: avatarUrl || currentProfile.avatar,
-        };
-        const updatedCouple: CouplePair = {
-          ...existing.couple,
-          partnerA: isPartnerA ? updatedProfile : existing.couple.partnerA,
-          partnerB: !isPartnerA ? updatedProfile : existing.couple.partnerB,
-        };
-        await updateCoupleInFirestore(existing.couple.code, updatedCouple);
-        return { couple: updatedCouple, isExisting: true };
+  // Check if this user account already has an active room in DB (only for non-guest users with real email)
+  if (user.email && !user.isAnonymous && !user.uid.startsWith('guest_')) {
+    try {
+      const existing = await findUserCoupleInFirestore(user);
+      if (existing) {
+        const cleanName = partnerName.trim();
+        if (cleanName && cleanName !== 'Alex' && cleanName !== 'Partenaire 1') {
+          const isPartnerA = existing.partnerId === 'partner_a';
+          const currentProfile = isPartnerA ? existing.couple.partnerA : existing.couple.partnerB;
+          const updatedProfile = {
+            ...currentProfile,
+            name: cleanName,
+            avatar: avatarUrl || currentProfile.avatar,
+          };
+          const updatedCouple: CouplePair = {
+            ...existing.couple,
+            partnerA: isPartnerA ? updatedProfile : existing.couple.partnerA,
+            partnerB: !isPartnerA ? updatedProfile : existing.couple.partnerB,
+          };
+          await updateCoupleInFirestore(existing.couple.code, updatedCouple);
+          return { couple: updatedCouple, isExisting: true };
+        }
+        return { couple: existing.couple, isExisting: true };
       }
-      return { couple: existing.couple, isExisting: true };
+    } catch (e) {
+      console.warn('findUserCoupleInFirestore skipped:', e);
     }
-  } catch (e) {
-    console.warn('findUserCoupleInFirestore skipped:', e);
   }
 
   const code = generateCoupleCode();
@@ -718,33 +757,28 @@ export async function createCoupleInFirestore(
   };
 
   try {
-    const batch = writeBatch(db);
-    batch.set(
-      coupleRef,
-      cleanFirestoreData({
-        ...newCouple,
-        ownerUid: user.uid,
-        ownerEmail: user.email || '',
-        partnerAUid: user.uid,
-        memberUids: [user.uid],
-        isCodeUsed: false,
-        createdAt: serverTimestamp(),
-      })
-    );
+    const coupleData = cleanFirestoreData({
+      ...newCouple,
+      ownerUid: user.uid,
+      ownerEmail: user.email || '',
+      partnerAUid: user.uid,
+      memberUids: [user.uid],
+      isCodeUsed: false,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
 
-    // Seed initial spots into Firestore
-    for (const s of INITIAL_SPOTS) {
-      const spotRef = doc(db, 'couples', code, 'spots', s.id);
-      const sanitizedSpot = cleanFirestoreData(JSON.parse(JSON.stringify(s)));
-      batch.set(spotRef, {
-        ...sanitizedSpot,
-        updatedAt: serverTimestamp(),
-      }, { merge: true });
+    const writeResult = await withTimeout(
+      setDoc(coupleRef, coupleData),
+      10000,
+      'TIMEOUT'
+    );
+    if (writeResult === 'TIMEOUT') {
+      throw new Error("Délai d'attente dépassé lors de l'enregistrement de votre espace Duo. Veuillez réessayer.");
     }
-    
-    await withTimeout(batch.commit(), 12000, null);
-  } catch (e) {
-    console.warn('Firestore setDoc notice (proceeding locally):', e);
+  } catch (e: any) {
+    console.error('Firestore creation error:', e);
+    throw new Error(e.message || "Erreur lors de la création de l'espace Duo.");
   }
 
   return { couple: newCouple, isExisting: false };
@@ -806,21 +840,44 @@ export async function joinCoupleInFirestore(
     return getDoc(ref).then(s => ({ ref, s })).catch(() => null);
   });
   
-  const results = await withTimeout(Promise.all(candidatePromises), 8000, []);
+  const results = await withTimeout(Promise.all(candidatePromises), 10000, "TIMEOUT");
+  if (results === "TIMEOUT") throw new Error(`Délai d'attente dépassé. Impossible de vérifier le code "${code}". Veuillez vérifier votre connexion.`);
   
-  for (const res of results) {
-    if (res && res.s && res.s.exists() && res.s.id !== 'LOVE-NEW') {
-      coupleRef = res.ref;
-      snap = res.s;
-      break;
+  if (Array.isArray(results)) {
+    for (const res of results) {
+      if (res && res.s && res.s.exists() && res.s.id !== 'LOVE-NEW') {
+        coupleRef = res.ref;
+        snap = res.s;
+        break;
+      }
     }
   }
 
-  // 2. Fallback scan if direct getDoc didn't match (e.g., formatting differences)
+  // 2. Query path if direct getDoc didn't match (e.g., case or field storage differences)
+  if (!snap || !snap.exists()) {
+    try {
+      const qSnap = await withTimeout(
+        getDocs(query(collection(db, 'couples'), where('code', 'in', candidates))),
+        6000,
+        null
+      );
+      if (qSnap && !qSnap.empty) {
+        const found = qSnap.docs.find(d => d.id !== 'LOVE-NEW');
+        if (found) {
+          coupleRef = found.ref;
+          snap = found;
+        }
+      }
+    } catch (qErr) {
+      console.warn('Targeted query for couple code notice:', qErr);
+    }
+  }
+
+  // 3. Fallback scan if direct getDoc & query didn't match
   if (!snap || !snap.exists()) {
     try {
       const allCouplesSnap = await withTimeout(getDocs(collection(db, 'couples')), 8000, null);
-      if (allCouplesSnap && !allCouplesSnap.empty) {
+      if (allCouplesSnap && typeof allCouplesSnap !== "string" && !allCouplesSnap.empty) {
         const inputAlpha = rawClean.replace(/[^A-Z0-9]/g, '');
         const inputCore = inputAlpha.startsWith('LM') ? inputAlpha.substring(2) : inputAlpha;
 
@@ -930,10 +987,9 @@ export async function findUserCoupleInFirestore(
       queries.push(getDocs(query(couplesRef, where('ownerEmail', '==', user.email))).catch(() => null));
     }
 
-    // Wait up to 15 seconds for any of these to resolve
-    const results = await withTimeout(Promise.all(queries), 15000, null);
-    
-    if (results === null) throw new Error('Erreur de connexion (délai dépassé)');
+    // Wait up to 6 seconds for any of these to resolve
+    const results = await withTimeout(Promise.all(queries), 6000, null);
+    if (!results) return null;
 
     for (const snap of results) {
       if (snap && !snap.empty) {

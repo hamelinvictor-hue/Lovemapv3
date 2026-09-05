@@ -287,31 +287,9 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
         onComplete('solo', soloCouple, 'partner_a');
       }
     } catch (err: any) {
-      console.warn('Network / Cloud sync notice, proceeding with local room:', err);
-      // Fallback local couple so user is NEVER blocked from entering the app
-      const cleanName = userName.trim() || 'Alex';
-      const fallbackCode = 'LM-' + Math.random().toString(36).substring(2, 6).toUpperCase() + '-' + Math.random().toString(36).substring(2, 6).toUpperCase();
-      const fallbackCouple: CouplePair = {
-        code: fallbackCode,
-        partnerA: {
-          id: 'partner_a',
-          name: cleanName,
-          avatar: activeAvatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
-          role: selectedMode === 'solo' ? 'Jardinier Secret' : 'Créateur du journal',
-        },
-        partnerB: {
-          id: 'partner_b',
-          name: 'En attente...',
-          avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
-          role: 'Partenaire 2',
-        },
-        anniversaryDate: new Date().toISOString().split('T')[0],
-        secretPin: '1234',
-        isPinLocked: false,
-      };
-
-      onToast(`Bienvenue ${cleanName} ! Votre espace LoveMap est prêt 💖`);
-      onComplete(selectedMode, fallbackCouple, 'partner_a');
+      console.error('Erreur lors de la configuration du compte/Duo:', err);
+      const errorMessage = err?.message || 'Erreur de synchronisation avec le serveur. Veuillez vérifier votre connexion et réessayer.';
+      setError(errorMessage);
     } finally {
       setLoading(false);
     }
