@@ -760,8 +760,18 @@ app.post('/api/push/register-token', async (req, res) => {
   }
 
   const cleanCode = String(code).trim().toUpperCase();
+  const roomKey = getRoomKey(cleanCode);
   const regKey = `${cleanCode}_${partnerId}`;
+  const canonicalKey = `${roomKey}_${partnerId}`;
+
   devicePushRegistry.set(regKey, {
+    code: cleanCode,
+    partnerId,
+    pushToken,
+    platform,
+    updatedAt: new Date().toISOString(),
+  });
+  devicePushRegistry.set(canonicalKey, {
     code: cleanCode,
     partnerId,
     pushToken,
@@ -793,7 +803,7 @@ app.post('/api/push/register-token', async (req, res) => {
       const osData = await osResp.json();
       console.log(`[Push Server] OneSignal player sync result for ${regKey}:`, osData?.id || osData);
     } catch (osErr) {
-      console.warn('[Push Server] OneSignal player registration warning:', osErr);
+      console.warn('[Push Server] OneSignal player registration notice:', osErr);
     }
   }
 
@@ -817,12 +827,23 @@ app.post('/api/push/send', async (req, res) => {
   }
 
   const cleanCode = String(code).trim().toUpperCase();
+  const roomKey = getRoomKey(cleanCode);
   // Target partner is the other partner by default
   const resolvedTargetPartner = targetPartnerId || (senderPartnerId === 'partner_a' ? 'partner_b' : 'partner_a');
   const targetKey = `${cleanCode}_${resolvedTargetPartner}`;
-  const registeredTarget = devicePushRegistry.get(targetKey);
+  const canonicalTargetKey = `${roomKey}_${resolvedTargetPartner}`;
+  const unhyphenatedKey = `${cleanCode.replace(/[^A-Z0-9]/g, '')}_${resolvedTargetPartner}`;
 
-  console.log(`[Push Server] Preparing push for ${targetKey}. Title: "${title}", Msg: "${message}"`);
+  const possibleTargetKeys = Array.from(new Set([
+    targetKey,
+    canonicalTargetKey,
+    unhyphenatedKey,
+    `LM-${roomKey}_${resolvedTargetPartner}`,
+  ]));
+
+  const registeredTarget = devicePushRegistry.get(targetKey) || devicePushRegistry.get(canonicalTargetKey);
+
+  console.log(`[Push Server] Preparing push for ${targetKey} (aliases: ${possibleTargetKeys.join(', ')}). Title: "${title}", Msg: "${message}"`);
 
   // 1. OneSignal Dispatch (Sends real push to Apple APNs even if app is completely closed)
   if (ONESIGNAL_APP_ID && ONESIGNAL_REST_API_KEY) {
@@ -831,9 +852,9 @@ app.post('/api/push/send', async (req, res) => {
         app_id: ONESIGNAL_APP_ID,
         target_channel: 'push',
         include_aliases: {
-          external_id: [targetKey],
+          external_id: possibleTargetKeys,
         },
-        include_external_user_ids: [targetKey],
+        include_external_user_ids: possibleTargetKeys,
         headings: { en: title, fr: title },
         contents: { en: message, fr: message },
         data: {
@@ -860,30 +881,40 @@ app.post('/api/push/send', async (req, res) => {
       });
 
       const osResult = await osResp.json();
-      console.log(`[Push Server] OneSignal push sent for ${targetKey}:`, osResult);
+      
+      const hasErrors = Array.isArray(osResult?.errors) && osResult.errors.length > 0;
+      const isNotSubscribed = hasErrors && osResult.errors.some((e: string) => typeof e === 'string' && e.includes('not subscribed'));
+
+      if (isNotSubscribed) {
+        console.log(`[Push Server] Notice: Target partner (${targetKey}) has not yet registered an active APNs push subscription on OneSignal. In-app live sync is active.`);
+      } else if (hasErrors) {
+        console.warn(`[Push Server] OneSignal push notice for ${targetKey}:`, osResult.errors);
+      } else {
+        console.log(`[Push Server] OneSignal push dispatched successfully for ${targetKey}:`, osResult?.id || 'OK');
+      }
 
       return res.json({
         success: true,
-        dispatched: true,
+        dispatched: !hasErrors,
         provider: 'OneSignal',
         result: osResult,
       });
     } catch (osErr: any) {
-      console.error('[Push Server] OneSignal push error:', osErr);
-      return res.status(500).json({ error: osErr.message || 'OneSignal dispatch error' });
+      console.warn('[Push Server] OneSignal push dispatch notice:', osErr?.message || osErr);
+      return res.status(200).json({ success: false, error: osErr.message || 'OneSignal dispatch notice' });
     }
   }
 
   // 2. Diagnostic fallback when keys not yet provided
   console.log(
-    `[Push Server] Notice: ONESIGNAL_APP_ID / ONESIGNAL_REST_API_KEY not configured. Notification recorded. Target device registered: ${Boolean(registeredTarget)}`
+    `[Push Server] Notice: ONESIGNAL_APP_ID / ONESIGNAL_REST_API_KEY not configured. Target device registered: ${Boolean(registeredTarget)}`
   );
 
   return res.json({
     success: true,
     dispatched: false,
     provider: 'local_fallback',
-    message: 'Notification queued. Configure OneSignal in environment variables to deliver lock-screen pushes when the app is closed.',
+    message: 'Notification recorded. Real-time in-app stream active.',
     target: targetKey,
     hasToken: Boolean(registeredTarget?.pushToken),
   });
