@@ -240,15 +240,7 @@ export async function serverJoinCouple(
 }
 
 export async function restGetCoupleDoc(code: string): Promise<CouplePair | null> {
-  // 1. Try server engine first (ultra-fast, zero quota cost)
-  try {
-    const serverDoc = await serverGetCouple(code);
-    if (serverDoc) return serverDoc;
-  } catch {
-    // Continue
-  }
-
-  // 2. Try Firestore REST
+  // 1. Try Firestore REST directly
   try {
     const dbId = (firebaseConfig as any).firestoreDatabaseId || '(default)';
     const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${dbId}/documents/couples/${encodeURIComponent(code)}?key=${firebaseConfig.apiKey}`;
@@ -320,6 +312,34 @@ export async function restPatchCoupleDoc(code: string, data: Record<string, any>
   } catch (e) {
     console.warn('[REST Firestore] restPatchCoupleDoc exception:', e);
     return null;
+  }
+}
+
+export async function restGetSpots(code: string): Promise<Spot[]> {
+  try {
+    const dbId = (firebaseConfig as any).firestoreDatabaseId || '(default)';
+    const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${dbId}/documents/couples/${encodeURIComponent(code)}/spots?key=${firebaseConfig.apiKey}`;
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const json = await res.json();
+    if (!json.documents) return [];
+    return json.documents.map((doc: any) => decodeFirestoreRestDoc(doc) as Spot);
+  } catch (e) {
+    return [];
+  }
+}
+
+export async function restGetNotifications(code: string): Promise<NotificationItem[]> {
+  try {
+    const dbId = (firebaseConfig as any).firestoreDatabaseId || '(default)';
+    const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${dbId}/documents/couples/${encodeURIComponent(code)}/notifications?key=${firebaseConfig.apiKey}`;
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const json = await res.json();
+    if (!json.documents) return [];
+    return json.documents.map((doc: any) => decodeFirestoreRestDoc(doc) as NotificationItem);
+  } catch (e) {
+    return [];
   }
 }
 
@@ -1506,7 +1526,7 @@ export function subscribeToCouple(code: string, callback: (couple: CouplePair | 
   };
 
   // 1. Immediate Server fetch for instant initial data
-  serverGetCouple(cleanCode).then((serverDoc) => {
+  restGetCoupleDoc(cleanCode).then((serverDoc) => {
     if (serverDoc && isSubActive) {
       handleCoupleUpdate(serverDoc);
     }
@@ -1524,20 +1544,14 @@ export function subscribeToCouple(code: string, callback: (couple: CouplePair | 
     console.warn('Notice listening to couple:', err);
   });
 
-  // 3. Fast Server / REST Polling Fallback (every 2.5s) to guarantee updates on iOS WKWebView
-  const pollInterval = setInterval(() => {
-    if (!isSubActive) return;
-    serverGetCouple(cleanCode).then((serverDoc) => {
-      if (serverDoc && isSubActive) {
-        handleCoupleUpdate(serverDoc);
-      }
-    }).catch(() => {});
-  }, 2500);
-
+  // 3. Fast Server / REST Polling Fallback to guarantee updates on iOS WKWebView
+  // Interval polling removed to prevent Firebase quota / Rate Exceeded errors.
+  // We rely exclusively on onSnapshot and visibilitychange events now.
+  
   // 4. Also poll immediately when window / app regains focus or visibility
   const handleVisibilityChange = () => {
     if (document.visibilityState === 'visible' && isSubActive) {
-      serverGetCouple(cleanCode).then((serverDoc) => {
+      restGetCoupleDoc(cleanCode).then((serverDoc) => {
         if (serverDoc && isSubActive) {
           handleCoupleUpdate(serverDoc);
         }
@@ -1549,7 +1563,7 @@ export function subscribeToCouple(code: string, callback: (couple: CouplePair | 
 
   return () => {
     isSubActive = false;
-    clearInterval(pollInterval);
+
     window.removeEventListener('visibilitychange', handleVisibilityChange);
     window.removeEventListener('focus', handleVisibilityChange);
     try {
@@ -1676,10 +1690,10 @@ export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void
     }
   };
 
-  // 1. Immediate Server check on mount
-  serverGetCouple(cleanCode).then((coupleDoc) => {
-    if (isSubActive && coupleDoc && Array.isArray(coupleDoc.spots) && coupleDoc.spots.length > 0) {
-      handleSpotsUpdate(coupleDoc.spots);
+  // 1. Immediate REST check on mount
+  restGetSpots(cleanCode).then((spots) => {
+    if (isSubActive && spots.length > 0) {
+      handleSpotsUpdate(spots);
     }
   }).catch(() => {});
 
@@ -1701,22 +1715,15 @@ export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void
     }
   );
 
-  // 3. Fast Server / REST Polling Fallback (every 3s)
-  const pollInterval = setInterval(() => {
-    if (!isSubActive) return;
-    serverGetCouple(cleanCode).then((coupleDoc) => {
-      if (isSubActive && coupleDoc && Array.isArray(coupleDoc.spots)) {
-        handleSpotsUpdate(coupleDoc.spots);
-      }
-    }).catch(() => {});
-  }, 3000);
-
+  // 3. Fast Server / REST Polling Fallback
+  // Interval polling removed to prevent rate limits.
+  
   // 4. Also poll immediately when window/app regains focus or visibility
   const handleVisibilityChange = () => {
     if (document.visibilityState === 'visible' && isSubActive) {
-      serverGetCouple(cleanCode).then((coupleDoc) => {
-        if (isSubActive && coupleDoc && Array.isArray(coupleDoc.spots)) {
-          handleSpotsUpdate(coupleDoc.spots);
+      restGetSpots(cleanCode).then((spots) => {
+        if (isSubActive && spots.length > 0) {
+          handleSpotsUpdate(spots);
         }
       }).catch(() => {});
     }
@@ -1726,7 +1733,7 @@ export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void
 
   return () => {
     isSubActive = false;
-    clearInterval(pollInterval);
+
     window.removeEventListener('visibilitychange', handleVisibilityChange);
     window.removeEventListener('focus', handleVisibilityChange);
     try {
@@ -1834,10 +1841,10 @@ export function subscribeToNotifications(code: string, callback: (notifs: Notifi
     }
   };
 
-  // 1. Immediate Server check on mount
-  serverGetCouple(cleanCode).then((coupleDoc) => {
-    if (isSubActive && coupleDoc && Array.isArray(coupleDoc.notifications) && coupleDoc.notifications.length > 0) {
-      handleNotifsUpdate(coupleDoc.notifications);
+  // 1. Immediate REST check on mount
+  restGetNotifications(cleanCode).then((notifs) => {
+    if (isSubActive && notifs.length > 0) {
+      handleNotifsUpdate(notifs);
     }
   }).catch(() => {});
 
@@ -1859,22 +1866,15 @@ export function subscribeToNotifications(code: string, callback: (notifs: Notifi
     }
   );
 
-  // 3. Fast Server / REST Polling Fallback (every 3s)
-  const pollInterval = setInterval(() => {
-    if (!isSubActive) return;
-    serverGetCouple(cleanCode).then((coupleDoc) => {
-      if (isSubActive && coupleDoc && Array.isArray(coupleDoc.notifications)) {
-        handleNotifsUpdate(coupleDoc.notifications);
-      }
-    }).catch(() => {});
-  }, 3000);
-
+  // 3. Fast Server / REST Polling Fallback
+  // Interval polling removed to prevent rate limits.
+  
   // 4. Also poll immediately when window/app regains focus or visibility
   const handleVisibilityChange = () => {
     if (document.visibilityState === 'visible' && isSubActive) {
-      serverGetCouple(cleanCode).then((coupleDoc) => {
-        if (isSubActive && coupleDoc && Array.isArray(coupleDoc.notifications)) {
-          handleNotifsUpdate(coupleDoc.notifications);
+      restGetNotifications(cleanCode).then((notifs) => {
+        if (isSubActive && notifs.length > 0) {
+          handleNotifsUpdate(notifs);
         }
       }).catch(() => {});
     }
@@ -1884,7 +1884,7 @@ export function subscribeToNotifications(code: string, callback: (notifs: Notifi
 
   return () => {
     isSubActive = false;
-    clearInterval(pollInterval);
+
     window.removeEventListener('visibilitychange', handleVisibilityChange);
     window.removeEventListener('focus', handleVisibilityChange);
     try {

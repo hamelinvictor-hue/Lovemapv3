@@ -119,10 +119,17 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   const handleGoogleLogin = async () => {
     triggerHaptic('medium');
+    
+    if (mode === 'register' && !displayName.trim()) {
+      setError('Veuillez renseigner votre prénom pour créer un compte.');
+      triggerHaptic('error');
+      return;
+    }
+
     setLoading(true);
     setError(null);
     try {
-      const preferredName = displayName.trim() || couple.partnerA.name || 'Utilisateur Google';
+      const preferredName = displayName.trim() || 'Utilisateur Google';
       const u = await loginWithGoogle(preferredName);
 
       // If user is in register mode and provided a partner code to join
@@ -162,10 +169,17 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   const handleAppleLogin = async () => {
     triggerHaptic('medium');
+
+    if (mode === 'register' && !displayName.trim()) {
+      setError('Veuillez renseigner votre prénom pour créer un compte.');
+      triggerHaptic('error');
+      return;
+    }
+
     setLoading(true);
     setError(null);
     try {
-      const preferredName = displayName.trim() || couple.partnerA.name || 'Utilisateur Apple';
+      const preferredName = displayName.trim() || 'Utilisateur Apple';
       const u = await loginWithApple(preferredName);
 
       // If user is in register mode and provided a partner code to join
@@ -339,13 +353,17 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   <div className="space-y-1">
                     <label className="text-[11px] font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
                       <UserIcon className="w-3.5 h-3.5 text-rose-500" />
-                      <span>Votre prénom (optionnel)</span>
+                      <span>Votre prénom (requis)</span>
                     </label>
                     <input
                       type="text"
                       value={displayName}
-                      onChange={(e) => setDisplayName(e.target.value)}
+                      onChange={(e) => {
+                        setDisplayName(e.target.value);
+                        if (e.target.value.trim()) setError(null);
+                      }}
                       placeholder="Ex : Camille"
+                      required
                       className="w-full px-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-xs placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-rose-500"
                     />
                   </div>
