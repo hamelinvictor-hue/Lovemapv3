@@ -271,58 +271,50 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
           fullName = `${nativeApple.givenName || ''} ${nativeApple.familyName || ''}`.trim() || label;
         }
 
-        console.log('[Native Debug] Creating Apple credential with idToken and rawNonce...');
+        console.log('[Native Debug] Native Apple auth token received. Establishing instant user session...');
+        const jwtPayload = decodeJwtPayload(nativeApple.identityToken);
+        const rawUid = nativeApple.appleUserId || jwtPayload?.sub || `apple_${Date.now()}`;
+        const finalUid = rawUid.startsWith('apple_') ? rawUid : `apple_${rawUid}`;
+        const finalEmail = nativeApple.email || jwtPayload?.email || null;
+
+        const user = buildSyntheticUser({
+          uid: finalUid,
+          displayName: fullName,
+          email: finalEmail,
+          photoURL: defaultPhoto,
+          providerId: 'apple.com',
+          isAnonymous: false,
+        });
+
+        saveStoredAuthUser({
+          uid: user.uid,
+          displayName: user.displayName || fullName,
+          email: user.email || nativeApple.email || null,
+          photoURL: user.photoURL || defaultPhoto,
+          providerId: 'apple.com',
+          isAnonymous: false,
+        });
+
+        // Background Firebase Auth credential synchronization (non-blocking, zero UI delay)
         const credOptions: any = { idToken: nativeApple.identityToken };
         if (nativeApple.rawNonce) {
           credOptions.rawNonce = nativeApple.rawNonce;
         }
         const credential = appleProvider.credential(credOptions);
-        console.log('[Native Debug] Calling signInWithCredential for Apple...');
-
-        let user: User | null = null;
-        try {
-          // Standard resilient timeout (6000ms) for Apple token exchange with Firebase Auth
-          const res = await withTimeout(signInWithCredential(auth, credential), 6000, null);
-          if (res?.user) {
-            user = res.user;
-            console.log('[Native Debug] signInWithCredential Apple success:', user.uid);
-          }
-        } catch (authErr: any) {
-          console.warn('[Native Debug] Firebase signInWithCredential notice for Apple:', authErr);
-        }
-
-        // Fast fallback to Apple Native verified identity from token payload if Firebase is unreachable
-        if (!user) {
-          console.log('[Native Debug] Using verified Apple Native session as authenticated user');
-          const jwtPayload = decodeJwtPayload(nativeApple.identityToken);
-          const rawUid = nativeApple.appleUserId || jwtPayload?.sub || `apple_${Date.now()}`;
-          const finalUid = rawUid.startsWith('apple_') ? rawUid : `apple_${rawUid}`;
-          const finalEmail = nativeApple.email || jwtPayload?.email || null;
-          user = buildSyntheticUser({
-            uid: finalUid,
-            displayName: fullName,
-            email: finalEmail,
-            photoURL: defaultPhoto,
-            providerId: 'apple.com',
-            isAnonymous: false,
+        signInWithCredential(auth, credential)
+          .then((res) => {
+            if (res?.user) {
+              console.log('[Native Debug] Background signInWithCredential Apple success:', res.user.uid);
+              if (nativeApple.givenName || nativeApple.familyName) {
+                updateProfile(res.user, { displayName: fullName }).catch(() => {});
+              }
+            }
+          })
+          .catch((authErr) => {
+            console.warn('[Native Debug] Notice during background Apple credential sync:', authErr);
           });
-        }
 
-        if (user) {
-          if (nativeApple.givenName || nativeApple.familyName) {
-            updateProfile(user, { displayName: fullName }).catch(() => {});
-          }
-          saveStoredAuthUser({
-            uid: user.uid,
-            displayName: user.displayName || fullName,
-            email: user.email || nativeApple.email || null,
-            photoURL: user.photoURL || defaultPhoto,
-            providerId,
-            isAnonymous: false,
-          });
-          return user;
-        }
-        throw new Error('La connexion avec Apple n\'a pas retourné d\'utilisateur.');
+        return user;
       }
     } else {
       const nativeGoogle = await triggerNativeGoogleAuth();
@@ -332,46 +324,41 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
           fullName = nativeGoogle.displayName;
         }
 
-        console.log('[Native Debug] Creating Google credential...');
+        console.log('[Native Debug] Native Google auth token received. Establishing instant user session...');
+        const jwtPayload = decodeJwtPayload(nativeGoogle.idToken);
+        const googleSub = (nativeGoogle as any).id || jwtPayload?.sub || Date.now();
+
+        const user = buildSyntheticUser({
+          uid: `google_${googleSub}`,
+          displayName: fullName,
+          email: nativeGoogle.email || null,
+          photoURL: defaultPhoto,
+          providerId: 'google.com',
+          isAnonymous: false,
+        });
+
+        saveStoredAuthUser({
+          uid: user.uid,
+          displayName: user.displayName || fullName,
+          email: user.email || nativeGoogle.email || null,
+          photoURL: user.photoURL || defaultPhoto,
+          providerId: 'google.com',
+          isAnonymous: false,
+        });
+
+        // Background Firebase Auth credential synchronization (non-blocking)
         const credential = GoogleAuthProvider.credential(nativeGoogle.idToken);
-        console.log('[Native Debug] Calling signInWithCredential for Google...');
-
-        let user: User | null = null;
-        try {
-          const res = await withTimeout(signInWithCredential(auth, credential), 6000, null);
-          if (res?.user) {
-            user = res.user;
-            console.log('[Native Debug] signInWithCredential Google success:', user.uid);
-          }
-        } catch (gErr) {
-          console.warn('[Native Debug] Google signInWithCredential notice:', gErr);
-        }
-
-        if (!user) {
-          const jwtPayload = decodeJwtPayload(nativeGoogle.idToken);
-          const googleSub = (nativeGoogle as any).id || jwtPayload?.sub || Date.now();
-          user = buildSyntheticUser({
-            uid: `google_${googleSub}`,
-            displayName: fullName,
-            email: nativeGoogle.email || null,
-            photoURL: defaultPhoto,
-            providerId: 'google.com',
-            isAnonymous: false,
+        signInWithCredential(auth, credential)
+          .then((res) => {
+            if (res?.user) {
+              console.log('[Native Debug] Background signInWithCredential Google success:', res.user.uid);
+            }
+          })
+          .catch((gErr) => {
+            console.warn('[Native Debug] Notice during background Google credential sync:', gErr);
           });
-        }
 
-        if (user) {
-          saveStoredAuthUser({
-            uid: user.uid,
-            displayName: user.displayName || fullName,
-            email: user.email || nativeGoogle.email || null,
-            photoURL: user.photoURL || defaultPhoto,
-            providerId,
-            isAnonymous: false,
-          });
-          return user;
-        }
-        throw new Error('La connexion avec Google n\'a pas retourné d\'utilisateur.');
+        return user;
       }
     }
   } catch (nativeErr: any) {
@@ -871,13 +858,10 @@ export async function createCoupleInFirestore(
     updatedAt: new Date().toISOString(),
   });
 
-  // Non-blocking write to Firestore: wait up to 3500ms for network ack, otherwise proceed locally while write completes in background
-  try {
-    await withTimeout(setDoc(coupleRef, coupleData), 3500, null);
-  } catch (err) {
-    console.warn('[createCouple] setDoc notice (proceeding locally):', err);
-    setDoc(coupleRef, coupleData).catch(console.warn);
-  }
+  // Instant non-blocking write to Firestore: write continues in background while local UI is immediate
+  setDoc(coupleRef, coupleData).catch((err) => {
+    console.warn('[createCouple] Background setDoc notice:', err);
+  });
   
   return { couple: newCouple };
 }
