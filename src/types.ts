@@ -69,6 +69,7 @@ export interface Category {
 }
 
 export interface NotificationItem {
+  createdAt?: string;
   id: string;
   type: 'new_spot_proposed' | 'spot_validated' | 'questionnaire_completed' | 'spot_declined' | 'premium_offer_urgency' | 'premium_activated';
   spotId: string;

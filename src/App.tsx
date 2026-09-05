@@ -706,9 +706,35 @@ export default function App() {
         message: `${creatorUser.name} a placé un nouveau lieu : "${fullSpot.title}". Validez le spot et répondez au questionnaire !`,
         timestamp: `${dateStr} à ${timeStr}`,
         isRead: false,
+        createdAt: new Date().toISOString(),
       };
 
       saveNotificationToFirestore(couple.code, newNotif).catch(console.error);
+          import('./lib/apiConfig').then(({ sendPushNotification }) => {
+            sendPushNotification({
+              code: couple.code,
+              senderPartnerId: activePartnerId,
+              targetPartnerId: (activePartnerId === "partner_a" ? "partner_b" : "partner_a"),
+              title: newNotif.title,
+              message: newNotif.message,
+              spotId,
+              type: newNotif.type,
+            });
+          });
+
+      // Trigger OneSignal Push Notification via API backend!
+      import('./lib/apiConfig').then(({ sendPushNotification }) => {
+        sendPushNotification({
+          code: couple.code,
+          senderPartnerId: activePartnerId,
+          targetPartnerId,
+          title: newNotif.title,
+          message: newNotif.message,
+          spotId,
+          type: newNotif.type,
+        });
+      });
+
       showToast(`💌 Spot proposé à ${partnerUser.name} !`);
     }
 
@@ -804,6 +830,17 @@ export default function App() {
             isRead: false,
           };
           saveNotificationToFirestore(couple.code, validationNotif).catch(console.error);
+          import('./lib/apiConfig').then(({ sendPushNotification }) => {
+            sendPushNotification({
+              code: couple.code,
+              senderPartnerId: partnerId,
+              targetPartnerId,
+              title: validationNotif.title,
+              message: validationNotif.message,
+              spotId: finalSpot.id,
+              type: validationNotif.type,
+            });
+          });
         } else {
           showToast(`✨ Vos notes ont été enregistrées !`);
           const ratingNotif: NotificationItem = {
@@ -818,6 +855,17 @@ export default function App() {
             isRead: false,
           };
           saveNotificationToFirestore(couple.code, ratingNotif).catch(console.error);
+          import('./lib/apiConfig').then(({ sendPushNotification }) => {
+            sendPushNotification({
+              code: couple.code,
+              senderPartnerId: partnerId,
+              targetPartnerId,
+              title: ratingNotif.title,
+              message: ratingNotif.message,
+              spotId: finalSpot.id,
+              type: ratingNotif.type,
+            });
+          });
         }
 
         return finalSpot;
@@ -896,6 +944,17 @@ export default function App() {
           };
 
           saveNotificationToFirestore(couple.code, newNotif).catch(console.error);
+          import('./lib/apiConfig').then(({ sendPushNotification }) => {
+            sendPushNotification({
+              code: couple.code,
+              senderPartnerId: activePartnerId,
+              targetPartnerId: (activePartnerId === "partner_a" ? "partner_b" : "partner_a"),
+              title: newNotif.title,
+              message: newNotif.message,
+              spotId,
+              type: newNotif.type,
+            });
+          });
           showToast(`✏️ Notation modifiée ! Re-validation demandée à ${partnerUser.name}.`);
         } else {
           showToast(`✏️ Spot "${updatedData.title || spot.title}" mis à jour !`);

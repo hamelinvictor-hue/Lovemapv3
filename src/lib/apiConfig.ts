@@ -20,3 +20,28 @@ export function getBackendApiUrl(endpoint: string): string {
   // On Web / desktop browser, relative paths are routed by Vite or Express reverse proxy
   return cleanEndpoint;
 }
+
+export async function sendPushNotification(payload: {
+  code: string;
+  senderPartnerId: string;
+  targetPartnerId?: string;
+  title?: string;
+  message?: string;
+  spotId?: string;
+  type?: string;
+}) {
+  try {
+    const url = getBackendApiUrl('/api/push/send');
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+    return await res.json();
+  } catch (err) {
+    console.warn('[Push] Error sending push notification:', err);
+    return null;
+  }
+}

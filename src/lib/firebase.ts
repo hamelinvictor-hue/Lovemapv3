@@ -191,263 +191,27 @@ function encodeFirestoreRestValue(val: any): any {
   return { stringValue: String(val) };
 }
 
-export async function serverGetCouple(code: string): Promise<CouplePair | null> {
-  try {
-    const url = getBackendApiUrl(`/api/couples/${encodeURIComponent(code)}`);
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data?.couple || null;
-  } catch {
-    return null;
-  }
-}
 
-export async function serverGetSpots(code: string): Promise<Spot[]> {
-  try {
-    const url = getBackendApiUrl(`/api/couples/${encodeURIComponent(code)}/spots`);
-    const res = await fetch(url);
-    if (!res.ok) return [];
-    const data = await res.json();
-    return data?.spots || [];
-  } catch {
-    return [];
-  }
-}
 
-export async function serverGetNotifications(code: string): Promise<NotificationItem[]> {
-  try {
-    const url = getBackendApiUrl(`/api/couples/${encodeURIComponent(code)}/notifications`);
-    const res = await fetch(url);
-    if (!res.ok) return [];
-    const data = await res.json();
-    return data?.notifications || [];
-  } catch {
-    return [];
-  }
-}
 
-export async function serverSaveCouple(code: string, couple: any): Promise<boolean> {
-  try {
-    const url = getBackendApiUrl(`/api/couples/${encodeURIComponent(code)}`);
-    await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(couple),
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
 
-export async function serverJoinCouple(
-  code: string,
-  partnerName: string,
-  avatarUrl?: string,
-  userUid?: string,
-  userEmail?: string
-): Promise<{ couple: CouplePair; spots: Spot[]; notifications: NotificationItem[] } | null> {
-  try {
-    const url = getBackendApiUrl(`/api/couples/${encodeURIComponent(code)}/join`);
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ partnerName, avatarUrl, userUid, userEmail }),
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    if (data?.success && data?.couple) {
-      return {
-        couple: data.couple as CouplePair,
-        spots: Array.isArray(data.spots) ? data.spots : ((data.couple as any).spots || []),
-        notifications: Array.isArray(data.notifications) ? data.notifications : ((data.couple as any).notifications || []),
-      };
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
 
-export async function restGetCoupleDoc(code: string): Promise<CouplePair | null> {
-  // 1. Fast Server fetch first (zero Firestore read, instant response)
-  const serverCouple = await serverGetCouple(code);
-  if (serverCouple) return serverCouple;
 
-  // 2. Try Firestore REST directly
-  try {
-    const dbId = (firebaseConfig as any).firestoreDatabaseId || '(default)';
-    const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${dbId}/documents/couples/${encodeURIComponent(code)}?key=${firebaseConfig.apiKey}`;
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    const json = await res.json();
-    return decodeFirestoreRestDoc(json) as CouplePair;
-  } catch (e) {
-    console.warn('[REST Firestore] restGetCoupleDoc error:', e);
-    return null;
-  }
-}
 
-export async function restSetCoupleDoc(code: string, data: Record<string, any>): Promise<CouplePair | null> {
-  try {
-    const dbId = (firebaseConfig as any).firestoreDatabaseId || '(default)';
-    const fields = Object.keys(data);
-    const mask = fields.map(f => `updateMask.fieldPaths=${encodeURIComponent(f)}`).join('&');
-    const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${dbId}/documents/couples/${encodeURIComponent(code)}?${mask}&key=${firebaseConfig.apiKey}`;
 
-    const encodedFields: Record<string, any> = {};
-    for (const f of fields) {
-      if (data[f] !== undefined) {
-        encodedFields[f] = encodeFirestoreRestValue(data[f]);
-      }
-    }
 
-    const res = await fetch(url, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fields: encodedFields })
-    });
 
-    if (!res.ok) return null;
-    const json = await res.json();
-    return decodeFirestoreRestDoc(json) as CouplePair;
-  } catch (e) {
-    console.warn('[REST Firestore] restSetCoupleDoc error:', e);
-    return null;
-  }
-}
 
-export async function restPatchCoupleDoc(code: string, data: Record<string, any>, fieldsToUpdate: string[]): Promise<CouplePair | null> {
-  try {
-    const dbId = (firebaseConfig as any).firestoreDatabaseId || '(default)';
-    const mask = fieldsToUpdate.map(f => `updateMask.fieldPaths=${encodeURIComponent(f)}`).join('&');
-    const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${dbId}/documents/couples/${encodeURIComponent(code)}?${mask}&key=${firebaseConfig.apiKey}`;
-    
-    const fields: Record<string, any> = {};
-    for (const f of fieldsToUpdate) {
-      if (data[f] !== undefined) {
-        fields[f] = encodeFirestoreRestValue(data[f]);
-      }
-    }
 
-    const res = await fetch(url, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fields })
-    });
 
-    if (!res.ok) {
-      const errText = await res.text();
-      console.warn('[REST Firestore] restPatchCoupleDoc HTTP fail:', res.status, errText);
-      return null;
-    }
-    const json = await res.json();
-    return decodeFirestoreRestDoc(json) as CouplePair;
-  } catch (e) {
-    console.warn('[REST Firestore] restPatchCoupleDoc exception:', e);
-    return null;
-  }
-}
 
-export async function restGetSpots(code: string): Promise<Spot[]> {
-  // 1. Try high-performance server in-memory store first
-  const serverSpots = await serverGetSpots(code);
-  if (Array.isArray(serverSpots) && serverSpots.length > 0) {
-    return serverSpots;
-  }
 
-  // 2. Fallback to direct Firestore REST
-  try {
-    const dbId = (firebaseConfig as any).firestoreDatabaseId || '(default)';
-    const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${dbId}/documents/couples/${encodeURIComponent(code)}/spots?key=${firebaseConfig.apiKey}`;
-    const res = await fetch(url);
-    if (!res.ok) return serverSpots || [];
-    const json = await res.json();
-    if (!json.documents) return serverSpots || [];
-    return json.documents.map((doc: any) => decodeFirestoreRestDoc(doc) as Spot);
-  } catch (e) {
-    return serverSpots || [];
-  }
-}
 
-export async function restGetNotifications(code: string): Promise<NotificationItem[]> {
-  // 1. Try high-performance server in-memory store first
-  const serverNotifs = await serverGetNotifications(code);
-  if (Array.isArray(serverNotifs) && serverNotifs.length > 0) {
-    return serverNotifs;
-  }
 
-  // 2. Fallback to direct Firestore REST
-  try {
-    const dbId = (firebaseConfig as any).firestoreDatabaseId || '(default)';
-    const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${dbId}/documents/couples/${encodeURIComponent(code)}/notifications?key=${firebaseConfig.apiKey}`;
-    const res = await fetch(url);
-    if (!res.ok) return serverNotifs || [];
-    const json = await res.json();
-    if (!json.documents) return serverNotifs || [];
-    return json.documents.map((doc: any) => decodeFirestoreRestDoc(doc) as NotificationItem);
-  } catch (e) {
-    return serverNotifs || [];
-  }
-}
 
-export async function restFindUserCouples(uid?: string, email?: string): Promise<CouplePair[]> {
-  const dbId = (firebaseConfig as any).firestoreDatabaseId || '(default)';
-  const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${dbId}/documents:runQuery?key=${firebaseConfig.apiKey}`;
-  const found: CouplePair[] = [];
 
-  const runQueryFilter = async (fieldPath: string, op: string, val: string) => {
-    try {
-      const body = {
-        structuredQuery: {
-          from: [{ collectionId: 'couples' }],
-          where: {
-            fieldFilter: {
-              field: { fieldPath },
-              op,
-              value: { stringValue: val }
-            }
-          },
-          limit: 5
-        }
-      };
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      });
-      if (res.ok) {
-        const json = await res.json();
-        for (const item of json) {
-          if (item?.document) {
-            const decoded = decodeFirestoreRestDoc(item.document) as CouplePair;
-            if (decoded && decoded.code && decoded.code !== 'LOVE-NEW') {
-              found.push(decoded);
-            }
-          }
-        }
-      }
-    } catch (e) {
-      console.warn('[REST Firestore] runQueryFilter error for', fieldPath, e);
-    }
-  };
 
-  const queries: Promise<void>[] = [];
-  if (uid) {
-    queries.push(runQueryFilter('memberUids', 'ARRAY_CONTAINS', uid));
-    queries.push(runQueryFilter('ownerUid', 'EQUAL', uid));
-    queries.push(runQueryFilter('partnerAUid', 'EQUAL', uid));
-    queries.push(runQueryFilter('partnerBUid', 'EQUAL', uid));
-  }
-  if (email) {
-    queries.push(runQueryFilter('ownerEmail', 'EQUAL', email));
-    queries.push(runQueryFilter('partnerBEmail', 'EQUAL', email));
-  }
 
-  await withTimeout(Promise.all(queries), 4500, null);
-  return found;
-}
 
 // Convert a stored auth user to a User-like object
 export function buildSyntheticUser(data: StoredAuthUser): User {
@@ -969,7 +733,7 @@ export async function ensureCoupleRoomInFirestore(
   };
 
   // 1. Instant save to Server store (High Availability, zero delay)
-  serverSaveCouple(cleanCode, coupleWithCleanCode).catch(() => {});
+  
 
   try {
     const user = await ensureGuestUser();
@@ -978,7 +742,7 @@ export async function ensureCoupleRoomInFirestore(
     // 2. Fast check via REST/SDK
     let existingDoc: CouplePair | null = null;
     try {
-      existingDoc = await withTimeout(restGetCoupleDoc(cleanCode), 2500, null);
+      existingDoc = null;
     } catch {}
 
     if (!existingDoc) {
@@ -997,11 +761,7 @@ export async function ensureCoupleRoomInFirestore(
       });
 
       // Write via direct REST immediately (150ms)
-      restSetCoupleDoc(cleanCode, {
-        ...newRoom,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      }).catch(() => {});
+      
 
       // Background non-blocking SDK write
       setDoc(coupleRef, newRoom, { merge: true }).catch(() => {});
@@ -1019,12 +779,7 @@ export async function ensureCoupleRoomInFirestore(
           updatedAt: serverTimestamp(),
         });
 
-        restPatchCoupleDoc(cleanCode, {
-          memberUids: updatedMembers,
-          partnerAUid: partnerId === 'partner_a' ? user.uid : (data as any).partnerAUid || null,
-          partnerBUid: partnerId === 'partner_b' ? user.uid : (data as any).partnerBUid || null,
-          updatedAt: new Date().toISOString(),
-        }, ['memberUids', 'partnerAUid', 'partnerBUid', 'updatedAt']).catch(() => {});
+        
 
         setDoc(coupleRef, updatePayload, { merge: true }).catch(() => {});
       }
@@ -1099,33 +854,24 @@ export async function createCoupleInFirestore(
     anniversaryDate: new Date().toISOString().split('T')[0],
     secretPin: '1234',
     isPinLocked: false,
+    status: 'active',
   };
-
-  // Sync to high-availability server store immediately
-  serverSaveCouple(code, newCouple).catch(() => {});
 
   const coupleData = cleanFirestoreData({
     ...newCouple,
     ownerUid: user.uid,
     ownerEmail: user.email || '',
     partnerAUid: user.uid,
+    partnerAEmail: user.email || '',
     memberUids: [user.uid],
     isCodeUsed: false,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-  });
-
-  // Direct REST write immediately
-  restSetCoupleDoc(code, {
-    ...coupleData,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
-  }).catch(() => {});
+  });
 
-  // Background non-blocking SDK write
-  setDoc(coupleRef, coupleData).catch(() => {});
-
-  return { couple: newCouple, isExisting: false };
+  await setDoc(coupleRef, coupleData);
+  
+  return { couple: newCouple };
 }
 
 // Helper to generate candidate codes for room matching
@@ -1174,198 +920,47 @@ export async function joinCoupleInFirestore(
     throw new Error('Ce code temporaire n\'est pas valide. Veuillez utiliser le code unique partagé par votre partenaire.');
   }
 
-  // 0. Primary High-Availability Engine: Server Join (Instant, zero quota error)
-  try {
-    const serverJoined = await serverJoinCouple(
-      code,
-      partnerName,
-      avatarUrl,
-      user.uid,
-      user.email || ''
-    );
-    if (serverJoined && serverJoined.couple) {
-      console.log('[joinCouple] Successfully paired via High-Availability Server Engine:', serverJoined.couple.code);
-      const cleanMatchedCode = serverJoined.couple.code || rawClean;
-      
-      try {
-        const coupleRef = doc(db, 'couples', cleanMatchedCode);
-        setDoc(coupleRef, serverJoined.couple, { merge: true }).catch(() => {});
-      } catch {}
+  const coupleRef = doc(db, 'couples', rawClean);
+  const snap = await getDoc(coupleRef);
 
-      // Ensure Firestore REST is updated for clients strictly polling Firestore
-      const memberUids = (serverJoined.couple as any).memberUids || [user.uid];
-      restPatchCoupleDoc(cleanMatchedCode, {
-        partnerB: serverJoined.couple.partnerB,
-        partnerBUid: user.uid,
-        partnerBEmail: user.email || '',
-        memberUids,
-        isCodeUsed: true,
-        updatedAt: new Date().toISOString(),
-      }, ['partnerB', 'partnerBUid', 'partnerBEmail', 'memberUids', 'isCodeUsed', 'updatedAt']).catch(() => {});
-
-      return serverJoined;
-    }
-  } catch (sErr) {
-    console.warn('[joinCouple] Server join notice:', sErr);
+  if (!snap.exists()) {
+    throw new Error('Code de duo introuvable ou incorrect.');
   }
 
-  const candidates = getCoupleCodeCandidates(code);
-  let coupleRef: any = null;
-  let snapData: any = null;
-  let matchedDocId: string = candidates[0] || rawClean;
+  const data = snap.data();
+  const existingMembers = data.memberUids || [];
+  const updatedMembers = user.uid ? Array.from(new Set([...existingMembers, user.uid])) : existingMembers;
 
-  // 1. Concurrent Lookup: Try SDK getDoc AND instant REST API fetch concurrently
-  const restPromises = candidates.map(cand => restGetCoupleDoc(cand));
-  const sdkPromises = candidates.map(cand => {
-    const ref = doc(db, 'couples', cand);
-    return getDoc(ref).then(s => ({ ref, s })).catch(() => null);
-  });
-
-  try {
-    const [sdkResults, restResults] = await Promise.all([
-      withTimeout(Promise.all(sdkPromises), 5000, null),
-      withTimeout(Promise.all(restPromises), 5000, null),
-    ]);
-
-    // Check REST results first
-    if (Array.isArray(restResults)) {
-      for (const rDoc of restResults) {
-        if (rDoc && rDoc.code && rDoc.code !== 'LOVE-NEW') {
-          snapData = rDoc;
-          matchedDocId = rDoc.code || (rDoc as any).id || matchedDocId;
-          coupleRef = doc(db, 'couples', matchedDocId);
-          break;
-        }
-      }
-    }
-
-    // Check SDK results if REST didn't already find it
-    if (!snapData && Array.isArray(sdkResults)) {
-      for (const res of sdkResults) {
-        if (res && res.s && res.s.exists() && res.s.id !== 'LOVE-NEW') {
-          coupleRef = res.ref;
-          snapData = res.s.data();
-          matchedDocId = res.s.id;
-          break;
-        }
-      }
-    }
-  } catch (err) {
-    console.warn('[joinCouple] Error during fast candidate lookup:', err);
-  }
-
-  // 2. Query path if direct lookup didn't match
-  if (!snapData) {
-    try {
-      const qSnap = await withTimeout(
-        getDocs(query(collection(db, 'couples'), where('code', 'in', candidates))),
-        5000,
-        null
-      );
-      if (qSnap && !qSnap.empty) {
-        const found = qSnap.docs.find(d => d.id !== 'LOVE-NEW');
-        if (found) {
-          coupleRef = found.ref;
-          snapData = found.data();
-          matchedDocId = found.id;
-        }
-      }
-    } catch (qErr) {
-      console.warn('Targeted query for couple code notice:', qErr);
-    }
-  }
-
-  if (!snapData) {
-    throw new Error(`Code de couple "${code.trim().toUpperCase()}" introuvable. Vérifiez que votre partenaire vous a bien partagé son code (ex: LM-XXXX-XXXX).`);
-  }
-
-  const existingData = snapData as CouplePair & {
-    ownerUid?: string;
-    ownerEmail?: string;
-    partnerAUid?: string;
-    partnerAEmail?: string;
-    partnerBUid?: string;
-    partnerBEmail?: string;
-    memberUids?: string[];
-    isCodeUsed?: boolean;
-    spots?: Spot[];
-    notifications?: NotificationItem[];
-  };
-
-  const existingMembers = existingData.memberUids || [existingData.ownerUid, existingData.partnerAUid].filter(Boolean) as string[];
-  const memberUids = Array.from(new Set([...existingMembers, user.uid]));
-  
-  if (user.email && (user.email === existingData.ownerEmail || user.email === existingData.partnerAEmail)) {
-    const updatePayload = {
-      partnerAUid: user.uid,
-      memberUids,
-      updatedAt: serverTimestamp(),
-    };
-
-    try {
-      if (coupleRef) {
-        await withTimeout(setDoc(coupleRef, updatePayload, { merge: true }), 4000, null);
-      }
-    } catch (e) {
-      console.warn('[joinCouple] SDK setDoc partnerA notice, applying REST patch:', e);
-    }
-    await restPatchCoupleDoc(matchedDocId, {
-      partnerAUid: user.uid,
-      memberUids,
-      updatedAt: new Date().toISOString(),
-    }, ['partnerAUid', 'memberUids', 'updatedAt']);
-
-    serverSaveCouple(matchedDocId, existingData).catch(() => {});
-    return {
-      couple: existingData,
-      spots: existingData.spots || [],
-      notifications: existingData.notifications || [],
-    };
-  }
-
-  const partnerB: UserProfile = {
+  const partnerB = {
     id: 'partner_b',
-    name: partnerName.trim() || user.displayName || (existingData.partnerB.name !== 'En attente...' ? existingData.partnerB.name : 'Partenaire 2'),
-    avatar: avatarUrl || user.photoURL || existingData.partnerB.avatar || 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
+    name: partnerName.trim() || 'Partenaire 2',
+    avatar: avatarUrl || data.partnerB?.avatar || 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
     role: 'Partenaire 2',
   };
 
-  const updatedCouple: CouplePair = {
-    ...existingData,
-    partnerB,
-  };
-
-  const bUpdatePayload = {
+  const updateData = {
     partnerB,
     partnerBUid: user.uid,
     partnerBEmail: user.email || '',
-    memberUids,
-    isCodeUsed: true,
-    updatedAt: serverTimestamp(),
-  };
-
-  serverSaveCouple(matchedDocId, updatedCouple).catch(() => {});
-
-  restPatchCoupleDoc(matchedDocId, {
-    partnerB,
-    partnerBUid: user.uid,
-    partnerBEmail: user.email || '',
-    memberUids,
+    memberUids: updatedMembers,
     isCodeUsed: true,
     updatedAt: new Date().toISOString(),
-  }, ['partnerB', 'partnerBUid', 'partnerBEmail', 'memberUids', 'isCodeUsed', 'updatedAt']).catch(() => {});
-
-  if (coupleRef) {
-    setDoc(coupleRef, bUpdatePayload, { merge: true }).catch((err) => {
-      console.warn('[joinCouple] SDK setDoc async notice:', err);
-    });
-  }
-
-  return {
-    couple: updatedCouple,
-    spots: existingData.spots || [],
-    notifications: existingData.notifications || [],
   };
+
+  await setDoc(coupleRef, updateData, { merge: true });
+
+  const updatedSnap = await getDoc(coupleRef);
+  const couple = updatedSnap.data() as CouplePair;
+
+  // Also fetch spots and notifs
+  const spotsSnap = await getDocs(collection(db, 'couples', rawClean, 'spots')).catch(() => null);
+  const spots = spotsSnap ? spotsSnap.docs.map(d => d.data() as Spot) : [];
+
+  const notifsSnap = await getDocs(collection(db, 'couples', rawClean, 'notifications')).catch(() => null);
+  const notifications = notifsSnap ? notifsSnap.docs.map(d => d.data() as NotificationItem) : [];
+
+  console.log('[joinCouple] Successfully paired:', couple.code);
+  return { couple, spots, notifications };
 }
 
 // Search Firestore to automatically restore an existing user's couple room upon re-login
@@ -1374,110 +969,49 @@ export async function findUserCoupleInFirestore(
 ): Promise<{ couple: CouplePair; partnerId: PartnerId } | null> {
   if (!user || !user.uid) return null;
 
-  // 1. Check high-availability server store first
-  try {
-    const sUrl = getBackendApiUrl(`/api/couples/find-user/${user.uid}?email=${encodeURIComponent(user.email || '')}`);
-    const sRes = await fetch(sUrl);
-    if (sRes.ok) {
-      const sData = await sRes.json();
-      if (sData?.couple) {
-        return { couple: sData.couple as CouplePair, partnerId: sData.partnerId as PartnerId };
-      }
-    }
-  } catch {}
-
   try {
     const couplesRef = collection(db, 'couples');
     
-    const queries: Promise<any>[] = [
+    const queries = [
       getDocs(query(couplesRef, where('memberUids', 'array-contains', user.uid))).catch(() => null),
-      getDocs(query(couplesRef, where('ownerUid', '==', user.uid))).catch(() => null),
       getDocs(query(couplesRef, where('partnerAUid', '==', user.uid))).catch(() => null),
       getDocs(query(couplesRef, where('partnerBUid', '==', user.uid))).catch(() => null),
     ];
 
-    if (user.email) {
-      queries.push(getDocs(query(couplesRef, where('ownerEmail', '==', user.email))).catch(() => null));
-    }
-
-    const restSearchPromise = restFindUserCouples(user.uid, user.email || undefined).catch(() => []);
-
-    const [sdkResults, restCouples] = await Promise.all([
-      withTimeout(Promise.all(queries), 5000, null),
-      withTimeout(restSearchPromise, 5000, []),
-    ]);
-
-    if (Array.isArray(restCouples) && restCouples.length > 0) {
-      const docData = restCouples[0];
-      let partnerId: PartnerId = 'partner_a';
-      if ((docData as any).partnerBUid === user.uid || (user.email && (docData as any).partnerBEmail === user.email)) {
-        partnerId = 'partner_b';
-      }
-      return { couple: docData, partnerId };
-    }
+    const sdkResults = await withTimeout(Promise.all(queries), 5000, null);
 
     if (sdkResults) {
       for (const snap of sdkResults) {
         if (snap && !snap.empty) {
-          const validDoc = snap.docs.find((d: any) => d.id !== 'LOVE-NEW' && (d.data() as any).code !== 'LOVE-NEW');
-          if (validDoc) {
-            const docData = validDoc.data() as CouplePair & { partnerBUid?: string; partnerBEmail?: string };
-            let partnerId: PartnerId = 'partner_a';
-            if (docData.partnerBUid === user.uid || (user.email && docData.partnerBEmail === user.email)) {
-              partnerId = 'partner_b';
-            }
-            return { couple: docData, partnerId };
-          }
+          const docData = snap.docs[0].data();
+          let partnerId: PartnerId = 'partner_a';
+          if (docData.partnerBUid === user.uid) partnerId = 'partner_b';
+          
+          return {
+            couple: docData as CouplePair,
+            partnerId,
+          };
         }
       }
     }
-
-    return null;
-  } catch (err: any) {
-    console.warn('Notice querying user couple from Firestore:', err);
-    return null;
+  } catch (err) {
+    console.error('Error in findUserCoupleInFirestore:', err);
   }
+
+  return null;
 }
 
 // Update couple configuration (e.g. names, pin, anniversary)
 export async function updateCoupleInFirestore(code: string, updated: CouplePair) {
-  if (!code) return;
-  const cleanCode = code.trim().toUpperCase();
-
-  // Sync to server store
-  serverSaveCouple(cleanCode, updated).catch(() => {});
-
-  const couplePayload = {
-    anniversaryDate: updated.anniversaryDate || new Date().toISOString().split('T')[0],
-    secretPin: updated.secretPin || '1234',
-    isPinLocked: updated.isPinLocked || false,
-    partnerA: updated.partnerA,
-    partnerB: updated.partnerB,
-    status: updated.status || 'active',
-    brokenBy: updated.brokenBy || null,
-  };
-
-  restPatchCoupleDoc(cleanCode, couplePayload, Object.keys(couplePayload)).catch((err) => {
-    console.warn('[updateCoupleInFirestore] REST patch notice:', err);
-  });
-
   try {
-    await ensureGuestUser();
-    const coupleRef = doc(db, 'couples', cleanCode);
-    await withTimeout(
-      setDoc(
-        coupleRef,
-        cleanFirestoreData({
-          ...couplePayload,
-          updatedAt: serverTimestamp(),
-        }),
-        { merge: true }
-      ),
-      3000,
-      null
-    );
-  } catch (e) {
-    console.warn('Notice updating couple in Firestore:', e);
+    const cleanCode = code.trim().toUpperCase();
+    const docRef = doc(db, 'couples', cleanCode);
+    const { spots, notifications, ...coreCouple } = updated;
+    await setDoc(docRef, { ...coreCouple, updatedAt: new Date().toISOString() }, { merge: true });
+    console.log('[Firebase] Couple updated successfully');
+  } catch (err) {
+    console.error('[Firebase] Failed to update couple:', err);
+    throw err;
   }
 }
 
@@ -1488,7 +1022,7 @@ export async function savePushTokenToFirestore(code: string, partnerId: PartnerI
   const partnerKey = partnerId === 'partner_a' ? 'partnerA.pushToken' : 'partnerB.pushToken';
   
   // REST patch
-  restPatchCoupleDoc(cleanCode, { [partnerKey]: token }, [partnerKey]).catch(() => {});
+  
 
   // SDK update
   try {
@@ -1528,7 +1062,7 @@ export async function breakCoupleInFirestore(code: string, breakerName: string) 
   };
 
   // 1. Instant REST update
-  restPatchCoupleDoc(cleanCode, brokenPayload, Object.keys(brokenPayload)).catch(console.warn);
+  Promise.resolve().catch(console.warn);
 
   try {
     await ensureGuestUser();
@@ -1579,260 +1113,48 @@ let activeEventSource: EventSource | null = null;
 let activeEventSourceCode: string = '';
 const eventHandlers = new Set<CoupleEventHandler>();
 
-export function subscribeToCoupleEvents(code: string, handler: CoupleEventHandler): () => void {
-  if (!code) return () => {};
-  const cleanCode = code.trim().toUpperCase();
-  eventHandlers.add(handler);
 
-  // Immediately push cached/in-memory server state
-  serverGetCouple(cleanCode).then((couple) => {
-    if (couple) {
-      try {
-        handler({
-          type: 'init',
-          couple,
-          spots: couple.spots || [],
-          notifications: couple.notifications || [],
-        });
-      } catch {}
-    }
-  }).catch(() => {});
-
-  if (activeEventSourceCode !== cleanCode || !activeEventSource || activeEventSource.readyState === EventSource.CLOSED) {
-    if (activeEventSource) {
-      try { activeEventSource.close(); } catch {}
-      activeEventSource = null;
-    }
-    activeEventSourceCode = cleanCode;
-
-    try {
-      const sseUrl = getBackendApiUrl(`/api/couples/${encodeURIComponent(cleanCode)}/stream`);
-      console.log('[SSE Live] Connecting to stream:', sseUrl);
-      const es = new EventSource(sseUrl);
-      activeEventSource = es;
-
-      es.onopen = () => {
-        console.log('[SSE Live] Stream connected for room:', cleanCode);
-      };
-
-      es.onmessage = (event) => {
-        try {
-          if (!event.data || event.data.trim() === 'ping' || event.data.trim() === ': ping') return;
-          const payload: CoupleSsePayload = JSON.parse(event.data);
-          eventHandlers.forEach((h) => {
-            try { h(payload); } catch (e) { console.warn('[SSE Live] Event handler notice:', e); }
-          });
-        } catch {}
-      };
-
-      es.onerror = () => {
-        // Built-in EventSource auto-reconnects
-      };
-
-      // iOS Native Fallback: Polling every 15s in case EventSource silently dies in background
-      const fallbackPoll = setInterval(() => {
-        if (activeEventSourceCode === cleanCode) {
-          serverGetCouple(cleanCode).then((coupleData) => {
-            if (coupleData) {
-              eventHandlers.forEach((h) => {
-                try {
-                  h({
-                    type: 'poll_sync',
-                    couple: coupleData,
-                    spots: coupleData.spots || [],
-                    notifications: coupleData.notifications || [],
-                  });
-                } catch (e) {}
-              });
-            }
-          }).catch(() => {});
-        } else {
-          clearInterval(fallbackPoll);
-        }
-      }, 15000);
-
-      (es as any)._fallbackPoll = fallbackPoll;
-    } catch (e) {
-      console.warn('[SSE Live] Could not initialize EventSource:', e);
-    }
-  }
-
-  return () => {
-    eventHandlers.delete(handler);
-    if (eventHandlers.size === 0 && activeEventSource) {
-      if ((activeEventSource as any)._fallbackPoll) {
-        clearInterval((activeEventSource as any)._fallbackPoll);
-      }
-      try { activeEventSource.close(); } catch {}
-      activeEventSource = null;
-      activeEventSourceCode = '';
-    }
-  };
-}
 
 // Subscribe to couple data real-time changes (Hybrid: SSE Live Stream + SDK onSnapshot fallback)
 export function subscribeToCouple(code: string, callback: (couple: CouplePair | null) => void) {
   if (!code) return () => {};
   const cleanCode = code.trim().toUpperCase();
-  let isSubActive = true;
-  let lastCoupleJson = '';
-
-  const handleCoupleUpdate = (coupleData: CouplePair | null) => {
-    if (!isSubActive || !coupleData) return;
-    const currentJson = JSON.stringify({
-      status: coupleData.status,
-      brokenBy: coupleData.brokenBy,
-      pA: coupleData.partnerA,
-      pB: coupleData.partnerB,
-      anniv: coupleData.anniversaryDate,
-      pin: coupleData.secretPin,
-      locked: coupleData.isPinLocked,
-    });
-    if (currentJson !== lastCoupleJson) {
-      lastCoupleJson = currentJson;
-      callback(coupleData);
-    }
-  };
-
-  // 1. Live SSE Stream (<50ms real-time event updates, 0 Firestore reads)
-  const unsubSse = subscribeToCoupleEvents(cleanCode, (payload) => {
-    if (payload.couple) {
-      handleCoupleUpdate(payload.couple);
-    }
-  });
-
-  // 2. Immediate Server fetch for instant initial data
-  restGetCoupleDoc(cleanCode).then((serverDoc) => {
-    if (serverDoc && isSubActive) {
-      handleCoupleUpdate(serverDoc);
-    }
-  }).catch(() => {});
-
-  // 3. Standard Firestore onSnapshot listener as background backup
   const coupleRef = doc(db, 'couples', cleanCode);
-  const unsubSnapshot = onSnapshot(coupleRef, (docSnap) => {
+  return onSnapshot(coupleRef, (docSnap) => {
     if (docSnap.exists()) {
-      handleCoupleUpdate(docSnap.data() as CouplePair);
+      callback(docSnap.data() as CouplePair);
     } else {
       callback(null);
     }
   }, (err) => {
-    console.warn('Notice listening to couple via SDK:', err);
+    console.error('[Firebase] Error listening to couple:', err);
   });
-
-  // 4. Fast Server fetch when window / app regains focus or visibility
-  const handleVisibilityChange = () => {
-    if (document.visibilityState === 'visible' && isSubActive) {
-      restGetCoupleDoc(cleanCode).then((serverDoc) => {
-        if (serverDoc && isSubActive) {
-          handleCoupleUpdate(serverDoc);
-        }
-      }).catch(() => {});
-    }
-  };
-  window.addEventListener('visibilitychange', handleVisibilityChange);
-  window.addEventListener('focus', handleVisibilityChange);
-
-  return () => {
-    isSubActive = false;
-    unsubSse();
-    window.removeEventListener('visibilitychange', handleVisibilityChange);
-    window.removeEventListener('focus', handleVisibilityChange);
-    try {
-      unsubSnapshot();
-    } catch {
-      // Ignore
-    }
-  };
 }
 
 // Save spot to Firestore (Saves to both couple.spots array via REST and subcollection via SDK)
 export async function saveSpotToFirestore(code: string, spot: Spot) {
-  if (!code) return;
-  const cleanCode = code.trim().toUpperCase();
-
-  // 0. High-availability Server Engine sync
   try {
-    const sUrl = getBackendApiUrl(`/api/couples/${encodeURIComponent(cleanCode)}/spots`);
-    fetch(sUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(spot),
-    }).catch(() => {});
-  } catch {}
-
-  // 1. Update spot in couple document spots array via instant REST API
-  try {
-    const existingCouple = await restGetCoupleDoc(cleanCode);
-    const existingSpots: Spot[] = Array.isArray(existingCouple?.spots)
-      ? [...existingCouple!.spots]
-      : getStoredSpots();
-    
-    const index = existingSpots.findIndex(s => s.id === spot.id);
-    if (index >= 0) {
-      existingSpots[index] = spot;
-    } else {
-      existingSpots.unshift(spot);
-    }
-
-    restPatchCoupleDoc(cleanCode, { spots: existingSpots }, ['spots']).catch((e) => {
-      console.warn('[saveSpotToFirestore] REST patch spots notice:', e);
-    });
+    const cleanCode = code.trim().toUpperCase();
+    const docRef = doc(db, 'couples', cleanCode, 'spots', spot.id);
+    await setDoc(docRef, spot, { merge: true });
+    console.log('[Firebase] Spot saved successfully:', spot.id);
+    return true;
   } catch (err) {
-    console.warn('[saveSpotToFirestore] REST spots sync error:', err);
-  }
-
-  // 2. Concurrently write to Firestore subcollection via SDK
-  try {
-    await ensureGuestUser();
-    const spotRef = doc(db, 'couples', cleanCode, 'spots', spot.id);
-    const cleanSpot = cleanFirestoreData(JSON.parse(JSON.stringify(spot)));
-    await withTimeout(
-      setDoc(
-        spotRef,
-        {
-          ...cleanSpot,
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true }
-      ),
-      3000,
-      null
-    );
-  } catch (err) {
-    console.warn('Notice saving spot to Firestore (saved locally):', err);
+    console.error('[Firebase] Failed to save spot:', err);
+    throw err;
   }
 }
 
 // Delete spot from Firestore (Deletes from both couple.spots array and subcollection)
 export async function deleteSpotFromFirestore(code: string, spotId: string) {
-  if (!code || !spotId) return;
-  const cleanCode = code.trim().toUpperCase();
-
-  // 0. High-availability Server Engine sync
   try {
-    const sUrl = getBackendApiUrl(`/api/couples/${encodeURIComponent(cleanCode)}/spots/${encodeURIComponent(spotId)}`);
-    fetch(sUrl, { method: 'DELETE' }).catch(() => {});
-  } catch {}
-
-  // 1. Remove from couple document spots array via instant REST API
-  try {
-    const existingCouple = await restGetCoupleDoc(cleanCode);
-    if (existingCouple && Array.isArray(existingCouple.spots)) {
-      const remainingSpots = existingCouple.spots.filter(s => s.id !== spotId);
-      restPatchCoupleDoc(cleanCode, { spots: remainingSpots }, ['spots']).catch(console.warn);
-    }
-  } catch (e) {
-    console.warn('[deleteSpotFromFirestore] REST delete spot error:', e);
-  }
-
-  // 2. Delete from subcollection via SDK
-  try {
-    await ensureGuestUser();
-    const spotRef = doc(db, 'couples', cleanCode, 'spots', spotId);
-    await withTimeout(deleteDoc(spotRef), 3000, null);
+    const cleanCode = code.trim().toUpperCase();
+    await deleteDoc(doc(db, 'couples', cleanCode, 'spots', spotId));
+    console.log('[Firebase] Spot deleted successfully:', spotId);
+    return true;
   } catch (err) {
-    console.warn('Notice deleting spot from Firestore:', err);
+    console.error('[Firebase] Failed to delete spot:', err);
+    throw err;
   }
 }
 
@@ -1840,157 +1162,25 @@ export async function deleteSpotFromFirestore(code: string, spotId: string) {
 export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void) {
   if (!code) return () => {};
   const cleanCode = code.trim().toUpperCase();
-  let isSubActive = true;
-  let lastSpotsSignature = '';
-
-  const handleSpotsUpdate = (spotsList: Spot[]) => {
-    if (!isSubActive || !Array.isArray(spotsList)) return;
-    const sorted = [...spotsList].sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
-    const signature = JSON.stringify(sorted.map(s => ({
-      id: s.id,
-      title: s.title,
-      status: s.status,
-      ratings: s.ratings,
-      isSolo: s.isSolo,
-      categoryId: s.categoryId,
-      createdAt: s.createdAt,
-    })));
-
-    if (signature !== lastSpotsSignature) {
-      lastSpotsSignature = signature;
-      callback(sorted);
-    }
-  };
-
-  // 1. Live SSE Stream (<50ms real-time event updates, 0 Firestore reads)
-  const unsubSse = subscribeToCoupleEvents(cleanCode, (payload) => {
-    if (Array.isArray(payload.spots)) {
-      handleSpotsUpdate(payload.spots);
-    }
+  const spotsRef = collection(db, 'couples', cleanCode, 'spots');
+  return onSnapshot(spotsRef, (snapshot) => {
+    const spots = snapshot.docs.map(d => d.data() as Spot);
+    callback(spots);
+  }, (err) => {
+    console.error('[Firebase] Error listening to spots:', err);
   });
-
-  // 2. Immediate REST check on mount
-  restGetSpots(cleanCode).then((spots) => {
-    if (isSubActive && spots.length > 0) {
-      handleSpotsUpdate(spots);
-    }
-  }).catch(() => {});
-
-  // 3. Standard SDK onSnapshot listener on subcollection as backup
-  const spotsCol = collection(db, 'couples', cleanCode, 'spots');
-  const unsubSnapshot = onSnapshot(
-    spotsCol,
-    (snapshot) => {
-      const spotsList: Spot[] = [];
-      snapshot.forEach((docSnap) => {
-        spotsList.push(docSnap.data() as Spot);
-      });
-      if (spotsList.length > 0) {
-        handleSpotsUpdate(spotsList);
-      }
-    },
-    (err) => {
-      console.warn('Notice subscribing to spots via SDK:', err);
-    }
-  );
-
-  // 4. Server fetch on app focus / visibility change
-  const handleVisibilityChange = () => {
-    if (document.visibilityState === 'visible' && isSubActive) {
-      restGetSpots(cleanCode).then((spots) => {
-        if (isSubActive && spots.length > 0) {
-          handleSpotsUpdate(spots);
-        }
-      }).catch(() => {});
-    }
-  };
-  window.addEventListener('visibilitychange', handleVisibilityChange);
-  window.addEventListener('focus', handleVisibilityChange);
-
-  return () => {
-    isSubActive = false;
-    unsubSse();
-    window.removeEventListener('visibilitychange', handleVisibilityChange);
-    window.removeEventListener('focus', handleVisibilityChange);
-    try {
-      unsubSnapshot();
-    } catch {
-      // Ignore
-    }
-  };
 }
 
 // Save notification to Firestore (Saves to both couple.notifications array via REST and subcollection via SDK)
 export async function saveNotificationToFirestore(code: string, notif: NotificationItem) {
-  if (!code) return;
-  const cleanCode = code.trim().toUpperCase();
-
-  // 0. High-availability Server Engine sync
   try {
-    const sUrl = getBackendApiUrl(`/api/couples/${encodeURIComponent(cleanCode)}/notifications`);
-    fetch(sUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(notif),
-    }).catch(() => {});
-  } catch {}
-
-  // 1. Update notification in couple document notifications array via instant REST API
-  try {
-    const existingCouple = await restGetCoupleDoc(cleanCode);
-    const existingNotifs: NotificationItem[] = Array.isArray(existingCouple?.notifications)
-      ? [...existingCouple!.notifications]
-      : getStoredNotifications();
-
-    const index = existingNotifs.findIndex(n => n.id === notif.id);
-    if (index >= 0) {
-      existingNotifs[index] = notif;
-    } else {
-      existingNotifs.unshift(notif);
-    }
-    // Keep max 50 recent notifications
-    const trimmedNotifs = existingNotifs.slice(0, 50);
-
-    restPatchCoupleDoc(cleanCode, { notifications: trimmedNotifs }, ['notifications']).catch(console.warn);
+    const cleanCode = code.trim().toUpperCase();
+    const docRef = doc(db, 'couples', cleanCode, 'notifications', notif.id);
+    await setDoc(docRef, notif, { merge: true });
+    return true;
   } catch (err) {
-    console.warn('[saveNotificationToFirestore] REST notifications sync error:', err);
-  }
-
-  // 2. Concurrently save to subcollection via SDK
-  try {
-    await ensureGuestUser();
-    const notifRef = doc(db, 'couples', cleanCode, 'notifications', notif.id);
-    await withTimeout(
-      setDoc(notifRef, {
-        ...notif,
-        createdAt: serverTimestamp(),
-      }),
-      3000,
-      null
-    );
-  } catch (err) {
-    console.warn('Notice saving notification to Firestore:', err);
-  }
-
-  // 3. Dispatch external Push Notification to partner's device (Apple APNs / OneSignal)
-  try {
-    const pushEndpoint = getBackendApiUrl('/api/push/send');
-    fetch(pushEndpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        code: cleanCode,
-        senderPartnerId: notif.senderId,
-        title: notif.title,
-        message: notif.message,
-        spotId: notif.spotId,
-        type: notif.type,
-      }),
-    }).catch((pushErr) => {
-      console.warn('[saveNotificationToFirestore] Notice dispatching external push:', pushErr);
-    });
-  } catch (pushErr) {
-    // Non-blocking
+    console.error('[Firebase] Failed to save notification:', err);
+    throw err;
   }
 }
 
@@ -1998,81 +1188,15 @@ export async function saveNotificationToFirestore(code: string, notif: Notificat
 export function subscribeToNotifications(code: string, callback: (notifs: NotificationItem[]) => void) {
   if (!code) return () => {};
   const cleanCode = code.trim().toUpperCase();
-  let isSubActive = true;
-  let lastNotifsSignature = '';
-
-  const handleNotifsUpdate = (notifsList: NotificationItem[]) => {
-    if (!isSubActive || !Array.isArray(notifsList)) return;
-    const sorted = [...notifsList].sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime());
-    const signature = JSON.stringify(sorted.map(n => ({
-      id: n.id,
-      title: n.title,
-      isRead: n.isRead,
-      timestamp: n.timestamp,
-    })));
-
-    if (signature !== lastNotifsSignature) {
-      lastNotifsSignature = signature;
-      callback(sorted);
-    }
-  };
-
-  // 1. Live SSE Stream (<50ms real-time event updates, 0 Firestore reads)
-  const unsubSse = subscribeToCoupleEvents(cleanCode, (payload) => {
-    if (Array.isArray(payload.notifications)) {
-      handleNotifsUpdate(payload.notifications);
-    }
+  const notifsRef = collection(db, 'couples', cleanCode, 'notifications');
+  return onSnapshot(notifsRef, (snapshot) => {
+    const notifs = snapshot.docs.map(d => d.data() as NotificationItem);
+    // Sort by createdAt desc
+    notifs.sort((a, b) => new Date((b as any).createdAt).getTime() - new Date((a as any).createdAt).getTime());
+    callback(notifs);
+  }, (err) => {
+    console.error('[Firebase] Error listening to notifications:', err);
   });
-
-  // 2. Immediate REST check on mount
-  restGetNotifications(cleanCode).then((notifs) => {
-    if (isSubActive && notifs.length > 0) {
-      handleNotifsUpdate(notifs);
-    }
-  }).catch(() => {});
-
-  // 3. Standard SDK onSnapshot listener on subcollection as backup
-  const notifsCol = collection(db, 'couples', cleanCode, 'notifications');
-  const unsubSnapshot = onSnapshot(
-    notifsCol,
-    (snapshot) => {
-      const list: NotificationItem[] = [];
-      snapshot.forEach((docSnap) => {
-        list.push(docSnap.data() as NotificationItem);
-      });
-      if (list.length > 0) {
-        handleNotifsUpdate(list);
-      }
-    },
-    (err) => {
-      console.warn('Notice subscribing to notifications via SDK:', err);
-    }
-  );
-
-  // 4. Server fetch on app focus / visibility change
-  const handleVisibilityChange = () => {
-    if (document.visibilityState === 'visible' && isSubActive) {
-      restGetNotifications(cleanCode).then((notifs) => {
-        if (isSubActive && notifs.length > 0) {
-          handleNotifsUpdate(notifs);
-        }
-      }).catch(() => {});
-    }
-  };
-  window.addEventListener('visibilitychange', handleVisibilityChange);
-  window.addEventListener('focus', handleVisibilityChange);
-
-  return () => {
-    isSubActive = false;
-    unsubSse();
-    window.removeEventListener('visibilitychange', handleVisibilityChange);
-    window.removeEventListener('focus', handleVisibilityChange);
-    try {
-      unsubSnapshot();
-    } catch {
-      // Ignore
-    }
-  };
 }
 
 // Purge all created accounts, couples, spots and notifications in Firestore DB
@@ -2178,10 +1302,7 @@ export async function deleteUserAccountInFirestore(user: User | null, code?: str
       await deleteDoc(doc(db, 'couples', cCode));
       console.log('[Native Debug] Successfully deleted couple document:', cCode);
       
-      // Delete in backend memory store
-      try {
-        await fetch(getBackendApiUrl(`/api/couples/${cCode}`), { method: 'DELETE' });
-      } catch (err) {}
+
     } catch (e) {
       console.warn('[Native Debug] Notice deleting couple document in Firestore:', e);
     }
