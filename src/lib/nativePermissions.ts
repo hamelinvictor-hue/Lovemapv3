@@ -1,12 +1,14 @@
-import { Capacitor } from '@capacitor/core';
+import { Capacitor, registerPlugin } from '@capacitor/core';
 import { GoogleSignIn } from '@capawesome/capacitor-google-sign-in';
 import { SignInWithApple } from '@capacitor-community/apple-sign-in';
-import { Geolocation } from '@capacitor/geolocation';
 import { PushNotifications } from '@capacitor/push-notifications';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { AppReview } from '@capawesome/capacitor-app-review';
 import { App } from '@capacitor/app';
 import { AppTrackingTransparency } from 'capacitor-app-tracking-transparency';
+
+// Register Geolocation dynamically via @capacitor/core so Vite build succeeds everywhere
+const Geolocation = registerPlugin<any>('Geolocation');
 
 /**
  * Bridge for Capacitor Native iOS / Android plugins with clean dynamic fallback
