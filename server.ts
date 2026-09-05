@@ -235,6 +235,38 @@ function normalizeCode(code: string): string {
   return String(code || '').replace(/[^A-Z0-9]/gi, '').toUpperCase();
 }
 
+function decodeFirestoreRestDocFields(docData: any): any {
+  if (!docData || !docData.fields) return null;
+  const decodeVal = (v: any): any => {
+    if (!v) return null;
+    if (v.stringValue !== undefined) return v.stringValue;
+    if (v.booleanValue !== undefined) return v.booleanValue;
+    if (v.integerValue !== undefined) return parseInt(v.integerValue, 10);
+    if (v.doubleValue !== undefined) return parseFloat(v.doubleValue);
+    if (v.timestampValue !== undefined) return v.timestampValue;
+    if (v.nullValue !== undefined) return null;
+    if (v.mapValue !== undefined) {
+      const res: Record<string, any> = {};
+      for (const [k, val] of Object.entries(v.mapValue.fields || {})) {
+        res[k] = decodeVal(val);
+      }
+      return res;
+    }
+    if (v.arrayValue !== undefined) {
+      return (v.arrayValue.values || []).map(decodeVal);
+    }
+    return null;
+  };
+
+  const res: Record<string, any> = {
+    id: (docData.name || '').split('/').pop(),
+  };
+  for (const [k, val] of Object.entries(docData.fields || {})) {
+    res[k] = decodeVal(val);
+  }
+  return res;
+}
+
 function findCoupleByCode(code: string): StoredCoupleRecord | null {
   if (!code) return null;
   const cleanUpper = code.trim().toUpperCase();
@@ -258,6 +290,49 @@ function findCoupleByCode(code: string): StoredCoupleRecord | null {
       return couple;
     }
   }
+  return null;
+}
+
+// Resilient couple lookup: in-memory first, then Firestore REST fallback
+async function getOrFetchCouple(code: string): Promise<StoredCoupleRecord | null> {
+  const local = findCoupleByCode(code);
+  if (local) return local;
+
+  try {
+    const cfgPath = path.join(process.cwd(), 'firebase-applet-config.json');
+    if (!fs.existsSync(cfgPath)) return null;
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    const dbId = cfg.firestoreDatabaseId || '(default)';
+
+    const candidates = new Set<string>();
+    const clean = code.trim().toUpperCase();
+    candidates.add(clean);
+    const norm = normalizeCode(clean);
+    const core = norm.startsWith('LM') ? norm.substring(2) : norm;
+    if (core.length === 8) {
+      candidates.add(`LM-${core.substring(0, 4)}-${core.substring(4, 8)}`);
+      candidates.add(`${core.substring(0, 4)}-${core.substring(4, 8)}`);
+    }
+
+    for (const cand of candidates) {
+      try {
+        const url = `https://firestore.googleapis.com/v1/projects/${cfg.projectId}/databases/${dbId}/documents/couples/${encodeURIComponent(cand)}?key=${cfg.apiKey}`;
+        const res = await fetch(url);
+        if (res.ok) {
+          const docData = await res.json();
+          const decoded = decodeFirestoreRestDocFields(docData);
+          if (decoded && decoded.code && decoded.code !== 'LOVE-NEW') {
+            couplesStore.set(decoded.code.toUpperCase(), decoded as StoredCoupleRecord);
+            persistCouplesStore();
+            return decoded as StoredCoupleRecord;
+          }
+        }
+      } catch {}
+    }
+  } catch (err) {
+    console.warn('[Couples Store] Firestore fetch error for code:', code, err);
+  }
+
   return null;
 }
 
@@ -302,9 +377,9 @@ async function mirrorToFirestore(pathDoc: string, data: Record<string, any>) {
 }
 
 // GET /api/couples/:code
-app.get('/api/couples/:code', (req, res) => {
+app.get('/api/couples/:code', async (req, res) => {
   const { code } = req.params;
-  const couple = findCoupleByCode(code);
+  const couple = await getOrFetchCouple(code);
   if (!couple) {
     return res.status(404).json({ error: 'Couple room not found' });
   }
@@ -312,12 +387,12 @@ app.get('/api/couples/:code', (req, res) => {
 });
 
 // POST /api/couples/:code (Create or save couple)
-app.post('/api/couples/:code', (req, res) => {
+app.post('/api/couples/:code', async (req, res) => {
   const { code } = req.params;
   const body = req.body || {};
   const cleanCode = String(body.code || code).trim().toUpperCase();
 
-  const existing = findCoupleByCode(cleanCode) || {} as any;
+  const existing = (await getOrFetchCouple(cleanCode)) || {} as any;
   const record: StoredCoupleRecord = {
     ...existing,
     ...body,
@@ -333,16 +408,16 @@ app.post('/api/couples/:code', (req, res) => {
 });
 
 // POST /api/couples/:code/join (Partner B joining with code)
-app.post('/api/couples/:code/join', (req, res) => {
+app.post('/api/couples/:code/join', async (req, res) => {
   const { code } = req.params;
   const { partnerName = 'Partenaire 2', avatarUrl, userUid, userEmail } = req.body || {};
 
   console.log(`[Couples Store] Join requested for code: "${code}" by "${partnerName}" (${userUid})`);
 
-  let couple = findCoupleByCode(code);
+  let couple = await getOrFetchCouple(code);
   if (!couple) {
     // Check if maybe there's a couple stored in another casing or format
-    console.warn(`[Couples Store] Code not found in memory store. Registered codes:`, Array.from(couplesStore.keys()));
+    console.warn(`[Couples Store] Code not found in memory store or Firestore REST. Registered codes:`, Array.from(couplesStore.keys()));
     return res.status(404).json({
       error: `Code de couple "${code}" introuvable. Vérifiez que votre partenaire a bien partagé ce code.`
     });

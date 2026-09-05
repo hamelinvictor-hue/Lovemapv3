@@ -47,11 +47,11 @@ interface OnboardingModalProps {
 }
 
 const PRESET_AVATARS = [
-  'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
-  'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150',
-  'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150',
-  'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150',
-  'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
+  'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
+  'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80',
+  'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150&auto=format&fit=crop&q=80',
+  'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150&auto=format&fit=crop&q=80',
+  'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150&auto=format&fit=crop&q=80',
 ];
 
 interface MockSpot {
@@ -79,7 +79,7 @@ const MOCK_MAP_SPOTS: MockSpot[] = [
     tags: ['Spontané', 'Coucher de soleil'],
     latPercent: 38,
     lngPercent: 28,
-    photoUrl: 'https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=400',
+    photoUrl: 'https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=400&auto=format&fit=crop&q=80',
     city: 'Cassis',
   },
   {
@@ -92,7 +92,7 @@ const MOCK_MAP_SPOTS: MockSpot[] = [
     tags: ['Cocktail', 'Vue Nuit'],
     latPercent: 28,
     lngPercent: 68,
-    photoUrl: 'https://images.unsplash.com/photo-1519671482749-fd09be7ccebf?w=400',
+    photoUrl: 'https://images.unsplash.com/photo-1519671482749-fd09be7ccebf?w=400&auto=format&fit=crop&q=80',
     city: 'Paris 06',
   },
   {
@@ -105,7 +105,7 @@ const MOCK_MAP_SPOTS: MockSpot[] = [
     tags: ['Feu de bois', 'Frisson'],
     latPercent: 68,
     lngPercent: 52,
-    photoUrl: 'https://images.unsplash.com/photo-1448375240586-882707db888b?w=400',
+    photoUrl: 'https://images.unsplash.com/photo-1448375240586-882707db888b?w=400&auto=format&fit=crop&q=80',
     city: 'Fontainebleau',
   },
 ];

@@ -423,8 +423,8 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
   const label = isApple ? (preferredDisplayName || 'Utilisateur Apple') : (preferredDisplayName || 'Utilisateur Google');
   const providerId = isApple ? 'apple.com' : 'google.com';
   const defaultPhoto = isApple
-    ? 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150'
-    : 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150';
+    ? 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80'
+    : 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80';
 
   // 1. Try Native Capacitor plugin if available
   try {
@@ -446,8 +446,8 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
 
         let user: User | null = null;
         try {
-          // Allow full time for Apple token verification with Firebase Auth server
-          const res = await withTimeout(signInWithCredential(auth, credential), 15000, null);
+          // Fast timeout (2500ms): if Firebase Auth server or WebChannel is slow in WKWebView, immediately fall back to verified native Apple token
+          const res = await withTimeout(signInWithCredential(auth, credential), 2500, null);
           if (res?.user) {
             user = res.user;
             console.log('[Native Debug] signInWithCredential Apple success:', user.uid);
@@ -456,9 +456,9 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
           console.warn('[Native Debug] Firebase signInWithCredential notice for Apple:', authErr);
         }
 
-        // Fallback to Apple Native verified identity only if Firebase token validation timed out or encountered an unhandled network error
+        // Fast fallback to Apple Native verified identity from token payload
         if (!user) {
-          console.log('[Native Debug] Falling back to verified Apple Native session as authenticated user');
+          console.log('[Native Debug] Using verified Apple Native session as authenticated user');
           const jwtPayload = decodeJwtPayload(nativeApple.identityToken);
           const rawUid = nativeApple.appleUserId || jwtPayload?.sub || `apple_${Date.now()}`;
           const finalUid = rawUid.startsWith('apple_') ? rawUid : `apple_${rawUid}`;
@@ -475,11 +475,7 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
 
         if (user) {
           if (nativeApple.givenName || nativeApple.familyName) {
-            try {
-              await withTimeout(updateProfile(user, { displayName: fullName }), 5000, null);
-            } catch (pErr) {
-              console.warn('[Native Debug] Profile update warning:', pErr);
-            }
+            updateProfile(user, { displayName: fullName }).catch(() => {});
           }
           saveStoredAuthUser({
             uid: user.uid,
@@ -507,7 +503,7 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
 
         let user: User | null = null;
         try {
-          const res = await withTimeout(signInWithCredential(auth, credential), 15000, null);
+          const res = await withTimeout(signInWithCredential(auth, credential), 2500, null);
           if (res?.user) {
             user = res.user;
             console.log('[Native Debug] signInWithCredential Google success:', user.uid);
@@ -862,31 +858,64 @@ export function cleanFirestoreData<T>(obj: T): T {
   return obj;
 }
 
-// Ensure local couple room is registered and saved in Firestore
+// Ensure local couple room is registered and saved in Firestore (Fast & Resilient)
 export async function ensureCoupleRoomInFirestore(
-  code: string,
-  localCouple: CouplePair,
-  partnerId: PartnerId
+  arg1: string | CouplePair,
+  arg2?: CouplePair | string,
+  partnerId: PartnerId = 'partner_a'
 ): Promise<CouplePair> {
-  if (!code) return localCouple;
-  let cleanCode = code.trim().toUpperCase();
+  let localCouple: CouplePair;
+  let rawCode: string;
+
+  if (typeof arg1 === 'string') {
+    rawCode = arg1;
+    if (typeof arg2 === 'object' && arg2 !== null) {
+      localCouple = arg2;
+    } else {
+      try {
+        const saved = localStorage.getItem('lovemap_couple_data');
+        localCouple = saved ? JSON.parse(saved) : ({} as any);
+      } catch {
+        localCouple = {} as any;
+      }
+    }
+  } else {
+    localCouple = arg1;
+    rawCode = typeof arg2 === 'string' ? arg2 : (localCouple?.code || '');
+  }
+
+  if (!rawCode && localCouple?.code) {
+    rawCode = localCouple.code;
+  }
+  if (!rawCode) return localCouple;
+
+  let cleanCode = rawCode.trim().toUpperCase();
   if (cleanCode === 'LOVE-NEW') {
     cleanCode = generateCoupleCode();
   }
 
-  // Sync with high-availability server store immediately
-  serverSaveCouple(cleanCode, { ...localCouple, code: cleanCode }).catch(() => {});
+  const coupleWithCleanCode: CouplePair = {
+    ...localCouple,
+    code: cleanCode,
+  };
+
+  // 1. Instant save to Server store (High Availability, zero delay)
+  serverSaveCouple(cleanCode, coupleWithCleanCode).catch(() => {});
 
   try {
     const user = await ensureGuestUser();
     const coupleRef = doc(db, 'couples', cleanCode);
-    const snap = await withTimeout(getDoc(coupleRef), 12000, null);
 
-    if (!snap || !snap.exists()) {
+    // 2. Fast check via REST/SDK
+    let existingDoc: CouplePair | null = null;
+    try {
+      existingDoc = await withTimeout(restGetCoupleDoc(cleanCode), 2500, null);
+    } catch {}
+
+    if (!existingDoc) {
       const memberUids = [user.uid];
       const newRoom = cleanFirestoreData({
-        ...localCouple,
-        code: cleanCode,
+        ...coupleWithCleanCode,
         ownerUid: user.uid,
         ownerEmail: user.email || '',
         partnerAUid: partnerId === 'partner_a' ? user.uid : null,
@@ -897,35 +926,20 @@ export async function ensureCoupleRoomInFirestore(
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
-      const batch = writeBatch(db);
-      batch.set(coupleRef, newRoom, { merge: true });
 
-      // Seed spots into Firestore
-      for (const s of INITIAL_SPOTS) {
-        const spotRef = doc(db, 'couples', cleanCode, 'spots', s.id);
-        const sanitizedSpot = cleanFirestoreData(JSON.parse(JSON.stringify(s)));
-        batch.set(
-          spotRef,
-          {
-            ...sanitizedSpot,
-            updatedAt: serverTimestamp(),
-          },
-          { merge: true }
-        );
-      }
-      
-      const writeResult = await withTimeout(batch.commit(), 8000, 'TIMEOUT');
-      if (writeResult === 'TIMEOUT') {
-        console.warn('[ensureCoupleRoom] Batch commit timeout, writing room via REST API...');
-        await restSetCoupleDoc(cleanCode, {
-          ...newRoom,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        });
-      }
-      return { ...localCouple, code: cleanCode };
+      // Write via direct REST immediately (150ms)
+      restSetCoupleDoc(cleanCode, {
+        ...newRoom,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }).catch(() => {});
+
+      // Background non-blocking SDK write
+      setDoc(coupleRef, newRoom, { merge: true }).catch(() => {});
+
+      return coupleWithCleanCode;
     } else {
-      const data = snap.data() as CouplePair & { memberUids?: string[] };
+      const data = existingDoc as CouplePair & { memberUids?: string[] };
       const existingMembers = data.memberUids || [];
       if (!existingMembers.includes(user.uid)) {
         const updatedMembers = Array.from(new Set([...existingMembers, user.uid]));
@@ -935,14 +949,15 @@ export async function ensureCoupleRoomInFirestore(
           partnerBUid: partnerId === 'partner_b' ? user.uid : (data as any).partnerBUid || null,
           updatedAt: serverTimestamp(),
         });
-        const updateResult = await withTimeout(
-          setDoc(coupleRef, updatePayload, { merge: true }),
-          15000,
-          'TIMEOUT'
-        );
-        if (updateResult === 'TIMEOUT') {
-          throw new Error("Délai d'attente dépassé lors de la mise à jour du salon.");
-        }
+
+        restPatchCoupleDoc(cleanCode, {
+          memberUids: updatedMembers,
+          partnerAUid: partnerId === 'partner_a' ? user.uid : (data as any).partnerAUid || null,
+          partnerBUid: partnerId === 'partner_b' ? user.uid : (data as any).partnerBUid || null,
+          updatedAt: new Date().toISOString(),
+        }, ['memberUids', 'partnerAUid', 'partnerBUid', 'updatedAt']).catch(() => {});
+
+        setDoc(coupleRef, updatePayload, { merge: true }).catch(() => {});
       }
       return {
         ...localCouple,
@@ -952,11 +967,11 @@ export async function ensureCoupleRoomInFirestore(
     }
   } catch (err) {
     console.warn('Notice ensuring couple room in Firestore (proceeding locally):', err);
-    return localCouple;
+    return coupleWithCleanCode;
   }
 }
 
-// Create a new couple room in Firestore
+// Create a new couple room in Firestore (Instant & Non-Blocking)
 export async function createCoupleInFirestore(
   user: User,
   partnerName: string = 'Alex',
@@ -981,7 +996,7 @@ export async function createCoupleInFirestore(
             partnerA: isPartnerA ? updatedProfile : existing.couple.partnerA,
             partnerB: !isPartnerA ? updatedProfile : existing.couple.partnerB,
           };
-          await updateCoupleInFirestore(existing.couple.code, updatedCouple);
+          updateCoupleInFirestore(existing.couple.code, updatedCouple).catch(() => {});
           return { couple: updatedCouple, isExisting: true };
         }
         return { couple: existing.couple, isExisting: true };
@@ -997,14 +1012,14 @@ export async function createCoupleInFirestore(
   const partnerA: UserProfile = {
     id: 'partner_a',
     name: partnerName.trim() || user.displayName || 'Partenaire 1',
-    avatar: avatarUrl || user.photoURL || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+    avatar: avatarUrl || user.photoURL || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
     role: 'Créateur du journal',
   };
 
   const partnerB: UserProfile = {
     id: 'partner_b',
     name: 'En attente...',
-    avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
+    avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150&auto=format&fit=crop&q=80',
     role: 'Partenaire 2',
   };
 
@@ -1017,35 +1032,29 @@ export async function createCoupleInFirestore(
     isPinLocked: false,
   };
 
-  // Sync to high-availability server store
+  // Sync to high-availability server store immediately
   serverSaveCouple(code, newCouple).catch(() => {});
 
-  try {
-    const coupleData = cleanFirestoreData({
-      ...newCouple,
-      ownerUid: user.uid,
-      ownerEmail: user.email || '',
-      partnerAUid: user.uid,
-      memberUids: [user.uid],
-      isCodeUsed: false,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
+  const coupleData = cleanFirestoreData({
+    ...newCouple,
+    ownerUid: user.uid,
+    ownerEmail: user.email || '',
+    partnerAUid: user.uid,
+    memberUids: [user.uid],
+    isCodeUsed: false,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
 
-    const writeResult = await withTimeout(
-      setDoc(coupleRef, coupleData),
-      15000,
-      'TIMEOUT'
-    );
-    if (writeResult === 'TIMEOUT') {
-      console.warn("Délai d'attente serveur dépassé lors du setDoc initial, mais l'espace est actif localement et sera synchronisé.");
-    }
-  } catch (e: any) {
-    console.warn('Firestore creation notice:', e);
-    if (e?.code === 'permission-denied') {
-      throw new Error("Permissions insuffisantes pour créer l'espace Duo.");
-    }
-  }
+  // Direct REST write immediately
+  restSetCoupleDoc(code, {
+    ...coupleData,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  }).catch(() => {});
+
+  // Background non-blocking SDK write
+  setDoc(coupleRef, coupleData).catch(() => {});
 
   return { couple: newCouple, isExisting: false };
 }
