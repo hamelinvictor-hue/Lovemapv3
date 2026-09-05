@@ -62,17 +62,19 @@ try {
 }
 export const auth = authInstance;
 
-// Initialize Firestore with clean in-memory cache to prevent container clock drift / simulated timestamp warnings
+// Initialize Firestore with clean in-memory cache and forced long polling for iOS WKWebView
 let firestoreInstance;
 try {
   firestoreInstance = initializeFirestore(
     app,
     {
       localCache: memoryLocalCache(),
+      experimentalForceLongPolling: true,
     },
     firebaseConfig.firestoreDatabaseId || undefined
   );
-} catch {
+} catch (initErr) {
+  console.warn('initializeFirestore error, falling back to getFirestore:', initErr);
   firestoreInstance = firebaseConfig.firestoreDatabaseId
     ? getFirestore(app, firebaseConfig.firestoreDatabaseId)
     : getFirestore(app);
