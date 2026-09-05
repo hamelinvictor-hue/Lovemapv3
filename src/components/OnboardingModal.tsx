@@ -187,13 +187,13 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
     setError(null);
     try {
       const u = await loginWithGoogle(userName.trim());
-      onToast(`Connecté avec Google (${userName.trim() || u.displayName || 'Google'})`);
+      onToast(`Connecté avec Google (${userName.trim() || u?.displayName || 'Google'})`);
       await finalizeOnboarding(u);
     } catch (err: any) {
-      if (err.code === 'auth/popup-closed-by-user') {
+      if (err?.code === 'auth/popup-closed-by-user') {
         setError('Connexion Google annulée par l\'utilisateur.');
       } else {
-        setError(err.message || 'Impossible de se connecter avec Google.');
+        setError(err?.message || 'Impossible de se connecter avec Google.');
       }
     } finally {
       setLoading(false);
@@ -208,14 +208,14 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
     setError(null);
     try {
       const u = await loginWithApple(userName.trim());
-      onToast(`Connecté avec Apple (${userName.trim() || u.displayName || 'Apple'})`);
+      onToast(`Connecté avec Apple (${userName.trim() || u?.displayName || 'Apple'})`);
       await finalizeOnboarding(u);
     } catch (err: any) {
       console.error('Apple Login Error Detail:', err);
-      if (err.code === 'auth/popup-closed-by-user') {
+      if (err?.code === 'auth/popup-closed-by-user') {
         setError('Connexion Apple annulée par l\'utilisateur.');
       } else {
-        const fullErr = `Erreur Apple [${err.code || 'UNKNOWN'}]: ${err.message || JSON.stringify(err)}`;
+        const fullErr = err?.message ? `Erreur Apple: ${err.message}` : 'Erreur lors de la connexion Apple.';
         setError(fullErr);
       }
     } finally {

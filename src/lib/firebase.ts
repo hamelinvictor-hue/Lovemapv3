@@ -279,8 +279,8 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
 
         let user: User | null = null;
         try {
-          // Fast timeout (2500ms): if Firebase Auth server or WebChannel is slow in WKWebView, immediately fall back to verified native Apple token
-          const res = await withTimeout(signInWithCredential(auth, credential), 2500, null);
+          // Standard resilient timeout (6000ms) for Apple token exchange with Firebase Auth
+          const res = await withTimeout(signInWithCredential(auth, credential), 6000, null);
           if (res?.user) {
             user = res.user;
             console.log('[Native Debug] signInWithCredential Apple success:', user.uid);
@@ -289,7 +289,7 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
           console.warn('[Native Debug] Firebase signInWithCredential notice for Apple:', authErr);
         }
 
-        // Fast fallback to Apple Native verified identity from token payload
+        // Fast fallback to Apple Native verified identity from token payload if Firebase is unreachable
         if (!user) {
           console.log('[Native Debug] Using verified Apple Native session as authenticated user');
           const jwtPayload = decodeJwtPayload(nativeApple.identityToken);
@@ -336,7 +336,7 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
 
         let user: User | null = null;
         try {
-          const res = await withTimeout(signInWithCredential(auth, credential), 2500, null);
+          const res = await withTimeout(signInWithCredential(auth, credential), 6000, null);
           if (res?.user) {
             user = res.user;
             console.log('[Native Debug] signInWithCredential Google success:', user.uid);
@@ -869,7 +869,13 @@ export async function createCoupleInFirestore(
     updatedAt: new Date().toISOString(),
   });
 
-  await setDoc(coupleRef, coupleData);
+  // Non-blocking write to Firestore: wait up to 3500ms for network ack, otherwise proceed locally while write completes in background
+  try {
+    await withTimeout(setDoc(coupleRef, coupleData), 3500, null);
+  } catch (err) {
+    console.warn('[createCouple] setDoc notice (proceeding locally):', err);
+    setDoc(coupleRef, coupleData).catch(console.warn);
+  }
   
   return { couple: newCouple };
 }
