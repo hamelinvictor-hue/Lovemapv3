@@ -1012,18 +1012,25 @@ export default function App() {
       const myName = activePartnerId === 'partner_a' ? couple.partnerA.name : couple.partnerB.name;
       const myAvatar = activePartnerId === 'partner_a' ? couple.partnerA.avatar : couple.partnerB.avatar;
 
-      const updatedCouple = await joinCoupleInFirestore(
+      const synced = await joinCoupleInFirestore(
         user,
         codeToJoin,
         myName || 'Partenaire',
         myAvatar
       );
-      if (updatedCouple) {
-        setCouple(updatedCouple);
+      if (synced && synced.couple) {
+        setCouple(synced.couple);
+        if (Array.isArray(synced.spots)) {
+          setSpots(synced.spots);
+          saveSpots(synced.spots);
+        }
+        if (Array.isArray(synced.notifications)) {
+          setNotifications(synced.notifications);
+        }
         setActivePartnerId('partner_b');
         setActivePartner('partner_b');
-        saveCouple(updatedCouple);
-        showToast(`💖 Espace Duo synchronisé avec le code ${updatedCouple.code} !`);
+        saveCouple(synced.couple);
+        showToast(`💖 Espace Duo synchronisé avec le code ${synced.couple.code} !`);
       }
     } catch (err: any) {
       const errMsg = err?.message || 'Impossible de rejoindre ce duo. Vérifiez le code.';

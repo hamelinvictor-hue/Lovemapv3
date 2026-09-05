@@ -240,9 +240,9 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
               userName.trim(),
               activeAvatar
             );
-            if (synced) {
-              onToast(`Rejoint l'espace Duo (${synced.code}) avec succès 💖 !`);
-              onComplete('duo', synced, 'partner_b');
+            if (synced && synced.couple) {
+              onToast(`Rejoint l'espace Duo (${synced.couple.code}) avec succès 💖 !`);
+              onComplete('duo', synced.couple, 'partner_b');
               return;
             }
           } catch (joinErr: any) {

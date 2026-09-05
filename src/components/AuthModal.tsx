@@ -141,9 +141,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             displayName.trim() || u.displayName || 'Partenaire',
             u.photoURL || couple.partnerA.avatar
           );
-          if (joined) {
-            onCoupleSync(joined, 'partner_b');
-            onToast(`💖 Espace Duo (${joined.code}) rejoint avec succès !`);
+          if (joined && joined.couple) {
+            onCoupleSync(joined.couple, 'partner_b');
+            onToast(`💖 Espace Duo (${joined.couple.code}) rejoint avec succès !`);
             onClose();
             return;
           }
@@ -191,9 +191,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             displayName.trim() || u.displayName || 'Partenaire',
             u.photoURL || couple.partnerA.avatar
           );
-          if (joined) {
-            onCoupleSync(joined, 'partner_b');
-            onToast(`💖 Espace Duo (${joined.code}) rejoint avec succès !`);
+          if (joined && joined.couple) {
+            onCoupleSync(joined.couple, 'partner_b');
+            onToast(`💖 Espace Duo (${joined.couple.code}) rejoint avec succès !`);
             onClose();
             return;
           }

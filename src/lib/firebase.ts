@@ -247,7 +247,7 @@ export async function serverJoinCouple(
   avatarUrl?: string,
   userUid?: string,
   userEmail?: string
-): Promise<CouplePair | null> {
+): Promise<{ couple: CouplePair; spots: Spot[]; notifications: NotificationItem[] } | null> {
   try {
     const url = getBackendApiUrl(`/api/couples/${encodeURIComponent(code)}/join`);
     const res = await fetch(url, {
@@ -257,7 +257,14 @@ export async function serverJoinCouple(
     });
     if (!res.ok) return null;
     const data = await res.json();
-    return data?.couple || null;
+    if (data?.success && data?.couple) {
+      return {
+        couple: data.couple as CouplePair,
+        spots: Array.isArray(data.spots) ? data.spots : ((data.couple as any).spots || []),
+        notifications: Array.isArray(data.notifications) ? data.notifications : ((data.couple as any).notifications || []),
+      };
+    }
+    return null;
   } catch {
     return null;
   }
@@ -1157,7 +1164,7 @@ export async function joinCoupleInFirestore(
   code: string,
   partnerName: string = 'Sam',
   avatarUrl?: string
-): Promise<CouplePair | null> {
+): Promise<{ couple: CouplePair; spots: Spot[]; notifications: NotificationItem[] } | null> {
   if (!code || !code.trim()) {
     throw new Error('Veuillez saisir un code de couple valide.');
   }
@@ -1176,19 +1183,19 @@ export async function joinCoupleInFirestore(
       user.uid,
       user.email || ''
     );
-    if (serverJoined) {
-      console.log('[joinCouple] Successfully paired via High-Availability Server Engine:', serverJoined.code);
-      const cleanMatchedCode = serverJoined.code || rawClean;
+    if (serverJoined && serverJoined.couple) {
+      console.log('[joinCouple] Successfully paired via High-Availability Server Engine:', serverJoined.couple.code);
+      const cleanMatchedCode = serverJoined.couple.code || rawClean;
       
       try {
         const coupleRef = doc(db, 'couples', cleanMatchedCode);
-        setDoc(coupleRef, serverJoined, { merge: true }).catch(() => {});
+        setDoc(coupleRef, serverJoined.couple, { merge: true }).catch(() => {});
       } catch {}
 
       // Ensure Firestore REST is updated for clients strictly polling Firestore
-      const memberUids = (serverJoined as any).memberUids || [user.uid];
+      const memberUids = (serverJoined.couple as any).memberUids || [user.uid];
       restPatchCoupleDoc(cleanMatchedCode, {
-        partnerB: serverJoined.partnerB,
+        partnerB: serverJoined.couple.partnerB,
         partnerBUid: user.uid,
         partnerBEmail: user.email || '',
         memberUids,
@@ -1281,6 +1288,8 @@ export async function joinCoupleInFirestore(
     partnerBEmail?: string;
     memberUids?: string[];
     isCodeUsed?: boolean;
+    spots?: Spot[];
+    notifications?: NotificationItem[];
   };
 
   const existingMembers = existingData.memberUids || [existingData.ownerUid, existingData.partnerAUid].filter(Boolean) as string[];
@@ -1307,7 +1316,11 @@ export async function joinCoupleInFirestore(
     }, ['partnerAUid', 'memberUids', 'updatedAt']);
 
     serverSaveCouple(matchedDocId, existingData).catch(() => {});
-    return existingData;
+    return {
+      couple: existingData,
+      spots: existingData.spots || [],
+      notifications: existingData.notifications || [],
+    };
   }
 
   const partnerB: UserProfile = {
@@ -1348,7 +1361,11 @@ export async function joinCoupleInFirestore(
     });
   }
 
-  return updatedCouple;
+  return {
+    couple: updatedCouple,
+    spots: existingData.spots || [],
+    notifications: existingData.notifications || [],
+  };
 }
 
 // Search Firestore to automatically restore an existing user's couple room upon re-login

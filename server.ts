@@ -405,42 +405,6 @@ function broadcastCoupleEvent(code: string, payload: { type: string; [key: strin
   }
 }
 
-function getOrCreateCoupleInMemory(code: string): StoredCoupleRecord {
-  const roomKey = getRoomKey(code);
-  for (const [k, v] of couplesStore.entries()) {
-    if (getRoomKey(k) === roomKey || getRoomKey(v.code || '') === roomKey) {
-      return v;
-    }
-  }
-  const cleanCode = code.trim().toUpperCase();
-  const newRecord: StoredCoupleRecord = {
-    code: cleanCode,
-    partnerA: {
-      id: 'partner_a',
-      name: 'Partenaire 1',
-      avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
-      role: 'Partenaire 1',
-    },
-    partnerB: {
-      id: 'partner_b',
-      name: 'En attente...',
-      avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
-      role: 'Partenaire 2',
-    },
-    spots: [],
-    notifications: [],
-    isCodeUsed: false,
-    anniversaryDate: new Date().toISOString().split('T')[0],
-    secretPin: '1234',
-    isPinLocked: false,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
-  couplesStore.set(cleanCode, newRecord);
-  persistCouplesStore();
-  return newRecord;
-}
-
 // GET /api/couples/:code/stream (SSE stream for live couple sync)
 app.get('/api/couples/:code/stream', async (req, res) => {
   const { code } = req.params;
@@ -462,14 +426,16 @@ app.get('/api/couples/:code/stream', async (req, res) => {
   const room = sseRoomClients.get(roomKey)!;
   room.add(res);
 
-  // Send immediate current room snapshot
-  const couple = (await getOrFetchCouple(code)) || getOrCreateCoupleInMemory(code);
-  res.write(`data: ${JSON.stringify({
-    type: 'init',
-    couple,
-    spots: couple.spots || [],
-    notifications: couple.notifications || [],
-  })}\n\n`);
+  // Send immediate current room snapshot if it exists
+  const couple = await getOrFetchCouple(code);
+  if (couple) {
+    res.write(`data: ${JSON.stringify({
+      type: 'init',
+      couple,
+      spots: couple.spots || [],
+      notifications: couple.notifications || [],
+    })}\n\n`);
+  }
 
   // Heartbeat ping every 10s to maintain connection alive across NAT/WiFi/mobile
   const heartbeat = setInterval(() => {
@@ -493,7 +459,10 @@ app.get('/api/couples/:code/stream', async (req, res) => {
 // GET /api/couples/:code
 app.get('/api/couples/:code', async (req, res) => {
   const { code } = req.params;
-  const couple = (await getOrFetchCouple(code)) || getOrCreateCoupleInMemory(code);
+  const couple = await getOrFetchCouple(code);
+  if (!couple) {
+    return res.status(404).json({ success: false, error: 'Couple non trouvé' });
+  }
   return res.json({ success: true, couple });
 });
 
@@ -503,12 +472,36 @@ app.post('/api/couples/:code', async (req, res) => {
   const body = req.body || {};
   const cleanCode = String(body.code || code).trim().toUpperCase();
 
-  const existing = (await getOrFetchCouple(cleanCode)) || getOrCreateCoupleInMemory(cleanCode);
+  const existing = await getOrFetchCouple(cleanCode);
   const record: StoredCoupleRecord = {
-    ...existing,
-    ...body,
     code: cleanCode,
+    partnerA: body.partnerA || existing?.partnerA || {
+      id: 'partner_a',
+      name: 'Partenaire 1',
+      avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+      role: 'Partenaire 1',
+    },
+    partnerB: body.partnerB || existing?.partnerB || {
+      id: 'partner_b',
+      name: 'En attente...',
+      avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
+      role: 'Partenaire 2',
+    },
+    spots: body.spots !== undefined ? body.spots : (existing?.spots || []),
+    notifications: body.notifications !== undefined ? body.notifications : (existing?.notifications || []),
+    anniversaryDate: body.anniversaryDate || existing?.anniversaryDate || new Date().toISOString().split('T')[0],
+    secretPin: body.secretPin || existing?.secretPin || '1234',
+    isPinLocked: body.isPinLocked !== undefined ? body.isPinLocked : (existing?.isPinLocked || false),
+    isCodeUsed: body.isCodeUsed !== undefined ? body.isCodeUsed : (existing?.isCodeUsed || false),
+    ownerUid: body.ownerUid || existing?.ownerUid || '',
+    ownerEmail: body.ownerEmail || existing?.ownerEmail || '',
+    partnerAUid: body.partnerAUid || existing?.partnerAUid || '',
+    partnerAEmail: body.partnerAEmail || existing?.partnerAEmail || '',
+    partnerBUid: body.partnerBUid || existing?.partnerBUid || '',
+    partnerBEmail: body.partnerBEmail || existing?.partnerBEmail || '',
+    memberUids: body.memberUids || existing?.memberUids || [],
     updatedAt: new Date().toISOString(),
+    createdAt: existing?.createdAt || body.createdAt || new Date().toISOString(),
   };
 
   couplesStore.set(cleanCode, record);
@@ -533,7 +526,10 @@ app.post('/api/couples/:code/join', async (req, res) => {
 
   console.log(`[Couples Store] Join requested for code: "${code}" by "${partnerName}" (${userUid})`);
 
-  let couple = (await getOrFetchCouple(code)) || getOrCreateCoupleInMemory(code);
+  const couple = await getOrFetchCouple(code);
+  if (!couple) {
+    return res.status(404).json({ success: false, error: 'Code de duo introuvable ou incorrect.' });
+  }
 
   const existingMembers = couple.memberUids || [];
   const updatedMembers = userUid ? Array.from(new Set([...existingMembers, userUid])) : existingMembers;
@@ -541,7 +537,7 @@ app.post('/api/couples/:code/join', async (req, res) => {
   const partnerB = {
     id: 'partner_b',
     name: partnerName.trim() || 'Partenaire 2',
-    avatar: avatarUrl || 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
+    avatar: avatarUrl || couple.partnerB?.avatar || 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
     role: 'Partenaire 2',
   };
 
@@ -573,7 +569,12 @@ app.post('/api/couples/:code/join', async (req, res) => {
   });
 
   console.log(`[Couples Store] Successfully joined couple: ${couple.code} as Partner B!`);
-  return res.json({ success: true, couple });
+  return res.json({
+    success: true,
+    couple,
+    spots: couple.spots || [],
+    notifications: couple.notifications || [],
+  });
 });
 
 // POST /api/couples/:code/break (Break duo)
@@ -582,7 +583,7 @@ app.post('/api/couples/:code/break', async (req, res) => {
   const { breakerName = 'Partenaire' } = req.body || {};
   const cleanCode = code.trim().toUpperCase();
 
-  let couple = (await getOrFetchCouple(cleanCode)) || getOrCreateCoupleInMemory(cleanCode);
+  const couple = await getOrFetchCouple(cleanCode);
   if (couple) {
     couple.status = 'broken' as any;
     (couple as any).brokenBy = breakerName;
@@ -607,7 +608,7 @@ app.post('/api/couples/:code/break', async (req, res) => {
 // GET /api/couples/:code/spots
 app.get('/api/couples/:code/spots', async (req, res) => {
   const { code } = req.params;
-  const couple = (await getOrFetchCouple(code)) || getOrCreateCoupleInMemory(code);
+  const couple = await getOrFetchCouple(code);
   return res.json({ success: true, spots: couple?.spots || [] });
 });
 
@@ -617,14 +618,40 @@ app.post('/api/couples/:code/spots', async (req, res) => {
   const spot = req.body || {};
   if (!spot.id) return res.status(400).json({ error: 'Missing spot id' });
 
-  const couple = (await getOrFetchCouple(code)) || getOrCreateCoupleInMemory(code);
-
-  couple.spots = couple.spots || [];
-  const idx = couple.spots.findIndex((s: any) => s.id === spot.id);
-  if (idx >= 0) {
-    couple.spots[idx] = { ...couple.spots[idx], ...spot, updatedAt: new Date().toISOString() };
+  let couple = await getOrFetchCouple(code);
+  if (!couple) {
+    const cleanCode = code.trim().toUpperCase();
+    couple = {
+      code: cleanCode,
+      anniversaryDate: new Date().toISOString().split('T')[0],
+      secretPin: '1234',
+      isPinLocked: false,
+      partnerA: {
+        id: 'partner_a',
+        name: 'Partenaire 1',
+        avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+        role: 'Partenaire 1',
+      },
+      partnerB: {
+        id: 'partner_b',
+        name: 'En attente...',
+        avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
+        role: 'Partenaire 2',
+      },
+      spots: [spot],
+      notifications: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
   } else {
-    couple.spots.push({ ...spot, updatedAt: new Date().toISOString() });
+    couple.spots = couple.spots || [];
+    const idx = couple.spots.findIndex((s: any) => s.id === spot.id);
+    if (idx >= 0) {
+      couple.spots[idx] = { ...couple.spots[idx], ...spot, updatedAt: new Date().toISOString() };
+    } else {
+      couple.spots.unshift({ ...spot, updatedAt: new Date().toISOString() });
+    }
+    couple.updatedAt = new Date().toISOString();
   }
 
   couplesStore.set(couple.code.toUpperCase(), couple);
@@ -645,27 +672,29 @@ app.post('/api/couples/:code/spots', async (req, res) => {
 // DELETE /api/couples/:code/spots/:spotId
 app.delete('/api/couples/:code/spots/:spotId', async (req, res) => {
   const { code, spotId } = req.params;
-  const couple = (await getOrFetchCouple(code)) || getOrCreateCoupleInMemory(code);
+  const couple = await getOrFetchCouple(code);
+  if (couple) {
+    couple.spots = (couple.spots || []).filter((s: any) => s.id !== spotId);
+    couple.updatedAt = new Date().toISOString();
+    couplesStore.set(couple.code.toUpperCase(), couple);
+    persistCouplesStore();
 
-  couple.spots = (couple.spots || []).filter((s: any) => s.id !== spotId);
-  couplesStore.set(couple.code.toUpperCase(), couple);
-  persistCouplesStore();
+    // Broadcast deletion to partner
+    broadcastCoupleEvent(couple.code, {
+      type: 'spots_update',
+      deletedSpotId: spotId,
+      spots: couple.spots,
+      couple,
+    });
+  }
 
-  // Broadcast deletion to partner
-  broadcastCoupleEvent(couple.code, {
-    type: 'spots_update',
-    deletedSpotId: spotId,
-    spots: couple.spots,
-    couple,
-  });
-
-  return res.json({ success: true, spots: couple.spots });
+  return res.json({ success: true, spots: couple?.spots || [] });
 });
 
 // GET /api/couples/:code/notifications
 app.get('/api/couples/:code/notifications', async (req, res) => {
   const { code } = req.params;
-  const couple = (await getOrFetchCouple(code)) || getOrCreateCoupleInMemory(code);
+  const couple = await getOrFetchCouple(code);
   return res.json({ success: true, notifications: couple?.notifications || [] });
 });
 
@@ -675,30 +704,32 @@ app.post('/api/couples/:code/notifications', async (req, res) => {
   const notif = req.body || {};
   if (!notif.id) return res.status(400).json({ error: 'Missing notification id' });
 
-  const couple = (await getOrFetchCouple(code)) || getOrCreateCoupleInMemory(code);
+  let couple = await getOrFetchCouple(code);
+  if (couple) {
+    couple.notifications = couple.notifications || [];
+    const idx = couple.notifications.findIndex((n: any) => n.id === notif.id);
+    if (idx >= 0) {
+      couple.notifications[idx] = { ...couple.notifications[idx], ...notif };
+    } else {
+      couple.notifications.unshift({ ...notif, createdAt: new Date().toISOString() });
+    }
+    if (couple.notifications.length > 50) {
+      couple.notifications = couple.notifications.slice(0, 50);
+    }
+    couple.updatedAt = new Date().toISOString();
 
-  couple.notifications = couple.notifications || [];
-  const idx = couple.notifications.findIndex((n: any) => n.id === notif.id);
-  if (idx >= 0) {
-    couple.notifications[idx] = { ...couple.notifications[idx], ...notif };
-  } else {
-    couple.notifications.unshift({ ...notif, createdAt: new Date().toISOString() });
+    couplesStore.set(couple.code.toUpperCase(), couple);
+    persistCouplesStore();
+
+    // Broadcast live notification
+    broadcastCoupleEvent(couple.code, {
+      type: 'notifications_update',
+      notification: notif,
+      notifications: couple.notifications,
+    });
   }
-  if (couple.notifications.length > 50) {
-    couple.notifications = couple.notifications.slice(0, 50);
-  }
 
-  couplesStore.set(couple.code.toUpperCase(), couple);
-  persistCouplesStore();
-
-  // Broadcast live notification
-  broadcastCoupleEvent(couple.code, {
-    type: 'notifications_update',
-    notification: notif,
-    notifications: couple.notifications,
-  });
-
-  return res.json({ success: true, notifications: couple.notifications });
+  return res.json({ success: true, notifications: couple?.notifications || [] });
 });
 
 // GET /api/couples/find-user/:uid

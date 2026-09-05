@@ -170,33 +170,7 @@ export const CoupleSettingsModal: React.FC<CoupleSettingsModalProps> = ({
       setIsPinLocked(couple.isPinLocked || false);
     }
     prevIsOpenRef.current = isOpen;
-  }, [isOpen]);
-
-  // Save changes automatically when unmounting if modal was open
-  useEffect(() => {
-    return () => {
-      if (prevIsOpenRef.current) {
-        const c = coupleRef.current;
-        const s = formStateRef.current;
-        onUpdateCouple({
-          ...c,
-          anniversaryDate: s.anniversaryDate,
-          secretPin: s.secretPin,
-          isPinLocked: s.isPinLocked,
-          partnerA: {
-            ...c.partnerA,
-            name: s.partnerAName.trim() || c.partnerA.name || 'Partenaire 1',
-            avatar: s.partnerAAvatar.trim() || c.partnerA.avatar,
-          },
-          partnerB: {
-            ...c.partnerB,
-            name: s.partnerBName.trim() || c.partnerB.name || 'Partenaire 2',
-            avatar: s.partnerBAvatar.trim() || c.partnerB.avatar,
-          },
-        });
-      }
-    };
-  }, []);
+  }, [isOpen, couple]);
 
   if (!isOpen) return null;
 
@@ -216,13 +190,13 @@ export const CoupleSettingsModal: React.FC<CoupleSettingsModalProps> = ({
       isPinLocked: newLocked,
       partnerA: {
         ...c.partnerA,
-        name: newAName.trim() || c.partnerA.name || 'Partenaire 1',
-        avatar: newAAvatar.trim() || c.partnerA.avatar,
+        name: isPartnerA ? (newAName.trim() || c.partnerA.name || 'Partenaire 1') : c.partnerA.name,
+        avatar: isPartnerA ? (newAAvatar.trim() || c.partnerA.avatar) : c.partnerA.avatar,
       },
       partnerB: {
         ...c.partnerB,
-        name: newBName.trim() || c.partnerB.name || 'Partenaire 2',
-        avatar: newBAvatar.trim() || c.partnerB.avatar,
+        name: !isPartnerA ? (newBName.trim() || c.partnerB.name || 'Partenaire 2') : c.partnerB.name,
+        avatar: !isPartnerA ? (newBAvatar.trim() || c.partnerB.avatar) : c.partnerB.avatar,
       },
     });
   };
@@ -365,6 +339,7 @@ export const CoupleSettingsModal: React.FC<CoupleSettingsModalProps> = ({
                       try {
                         await onJoinDuoCode(joinCodeInput.trim());
                         setJoinCodeInput('');
+                        onClose();
                       } catch (err: any) {
                         setJoinCodeError(err?.message || 'Code introuvable ou erreur de synchronisation.');
                       } finally {
