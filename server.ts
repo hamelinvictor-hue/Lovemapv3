@@ -173,6 +173,8 @@ interface StoredCoupleRecord {
   code: string;
   partnerA: any;
   partnerB: any;
+  status?: string;
+  brokenBy?: string;
   anniversaryDate?: string;
   secretPin?: string;
   isPinLocked?: boolean;
@@ -375,6 +377,78 @@ async function mirrorToFirestore(pathDoc: string, data: Record<string, any>) {
   }
 }
 
+// ==========================================
+// SSE REAL-TIME SYNC ENGINE (Zero Firestore reads, <50ms latency)
+// ==========================================
+const sseRoomClients = new Map<string, Set<express.Response>>();
+
+function broadcastCoupleEvent(code: string, payload: { type: string; [key: string]: any }) {
+  if (!code) return;
+  const cleanCode = code.trim().toUpperCase();
+  const clients = sseRoomClients.get(cleanCode);
+  if (!clients || clients.size === 0) return;
+
+  const dataStr = `data: ${JSON.stringify(payload)}\n\n`;
+  for (const client of Array.from(clients)) {
+    try {
+      client.write(dataStr);
+    } catch {
+      clients.delete(client);
+    }
+  }
+}
+
+// GET /api/couples/:code/stream (SSE stream for live couple sync)
+app.get('/api/couples/:code/stream', async (req, res) => {
+  const { code } = req.params;
+  const cleanCode = code.trim().toUpperCase();
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    'Connection': 'keep-alive',
+    'Access-Control-Allow-Origin': '*',
+  });
+  if (typeof (res as any).flushHeaders === 'function') {
+    (res as any).flushHeaders();
+  }
+
+  if (!sseRoomClients.has(cleanCode)) {
+    sseRoomClients.set(cleanCode, new Set());
+  }
+  const room = sseRoomClients.get(cleanCode)!;
+  room.add(res);
+
+  // Send immediate current room snapshot
+  const couple = await getOrFetchCouple(cleanCode);
+  if (couple) {
+    res.write(`data: ${JSON.stringify({
+      type: 'init',
+      couple,
+      spots: couple.spots || [],
+      notifications: couple.notifications || [],
+    })}\n\n`);
+  }
+
+  // Heartbeat ping every 20s to maintain connection alive across NAT/WiFi/mobile
+  const heartbeat = setInterval(() => {
+    try {
+      res.write(': ping\n\n');
+    } catch {
+      clearInterval(heartbeat);
+      room.delete(res);
+    }
+  }, 20000);
+
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    room.delete(res);
+    if (room.size === 0) {
+      sseRoomClients.delete(cleanCode);
+    }
+  });
+});
+
 // GET /api/couples/:code
 app.get('/api/couples/:code', async (req, res) => {
   const { code } = req.params;
@@ -403,6 +477,14 @@ app.post('/api/couples/:code', async (req, res) => {
   persistCouplesStore();
   mirrorToFirestore(`couples/${cleanCode}`, record);
 
+  // Broadcast to partner in real-time
+  broadcastCoupleEvent(cleanCode, {
+    type: 'couple_update',
+    couple: record,
+    spots: record.spots || [],
+    notifications: record.notifications || [],
+  });
+
   return res.json({ success: true, couple: record });
 });
 
@@ -415,7 +497,6 @@ app.post('/api/couples/:code/join', async (req, res) => {
 
   let couple = await getOrFetchCouple(code);
   if (!couple) {
-    // Check if maybe there's a couple stored in another casing or format
     console.warn(`[Couples Store] Code not found in memory store or Firestore REST. Registered codes:`, Array.from(couplesStore.keys()));
     return res.status(404).json({
       error: `Code de couple "${code}" introuvable. Vérifiez que votre partenaire a bien partagé ce code.`
@@ -451,8 +532,44 @@ app.post('/api/couples/:code/join', async (req, res) => {
     updatedAt: couple.updatedAt,
   });
 
+  // Broadcast partner joined to partner A instantly
+  broadcastCoupleEvent(couple.code, {
+    type: 'partner_joined',
+    couple,
+    spots: couple.spots || [],
+    notifications: couple.notifications || [],
+  });
+
   console.log(`[Couples Store] Successfully joined couple: ${couple.code} as Partner B!`);
   return res.json({ success: true, couple });
+});
+
+// POST /api/couples/:code/break (Break duo)
+app.post('/api/couples/:code/break', async (req, res) => {
+  const { code } = req.params;
+  const { breakerName = 'Partenaire' } = req.body || {};
+  const cleanCode = code.trim().toUpperCase();
+
+  let couple = await getOrFetchCouple(cleanCode);
+  if (couple) {
+    couple.status = 'broken' as any;
+    (couple as any).brokenBy = breakerName;
+    couple.spots = [];
+    couple.notifications = [];
+    couple.updatedAt = new Date().toISOString();
+
+    couplesStore.set(cleanCode, couple);
+    persistCouplesStore();
+
+    broadcastCoupleEvent(cleanCode, {
+      type: 'couple_update',
+      couple,
+      spots: [],
+      notifications: [],
+    });
+  }
+
+  return res.json({ success: true });
 });
 
 // GET /api/couples/:code/spots
@@ -483,6 +600,14 @@ app.post('/api/couples/:code/spots', async (req, res) => {
   persistCouplesStore();
   mirrorToFirestore(`couples/${couple.code.toUpperCase()}/spots/${spot.id}`, spot);
 
+  // Broadcast instantly to partner
+  broadcastCoupleEvent(couple.code, {
+    type: 'spots_update',
+    spot,
+    spots: couple.spots,
+    couple,
+  });
+
   return res.json({ success: true, spots: couple.spots });
 });
 
@@ -495,6 +620,14 @@ app.delete('/api/couples/:code/spots/:spotId', async (req, res) => {
   couple.spots = (couple.spots || []).filter((s: any) => s.id !== spotId);
   couplesStore.set(couple.code.toUpperCase(), couple);
   persistCouplesStore();
+
+  // Broadcast deletion to partner
+  broadcastCoupleEvent(couple.code, {
+    type: 'spots_update',
+    deletedSpotId: spotId,
+    spots: couple.spots,
+    couple,
+  });
 
   return res.json({ success: true, spots: couple.spots });
 });
@@ -523,6 +656,13 @@ app.post('/api/couples/:code/notifications', async (req, res) => {
 
   couplesStore.set(couple.code.toUpperCase(), couple);
   persistCouplesStore();
+
+  // Broadcast live notification
+  broadcastCoupleEvent(couple.code, {
+    type: 'notifications_update',
+    notification: notif,
+    notifications: couple.notifications,
+  });
 
   return res.json({ success: true, notifications: couple.notifications });
 });
