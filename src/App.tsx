@@ -31,6 +31,8 @@ import {
   saveHasRatedApp,
   getHasPromptedFirstSpotRating,
   saveHasPromptedFirstSpotRating,
+  getHasPromptedFirstSpotPaywall,
+  saveHasPromptedFirstSpotPaywall,
 } from './lib/storage';
 import {
   subscribeToCouple,
@@ -39,6 +41,7 @@ import {
   saveSpotToFirestore,
   deleteSpotFromFirestore,
   saveNotificationToFirestore,
+  savePushTokenToFirestore,
   updateCoupleInFirestore,
   logoutFromFirebase,
   auth,
@@ -85,9 +88,15 @@ import { MobileFrame } from './components/MobileFrame';
 import { AppTrackingModal } from './components/AppTrackingModal';
 import { LocationPermissionModal } from './components/LocationPermissionModal';
 import { NotificationPermissionModal } from './components/NotificationPermissionModal';
-import { StoreRatingModal } from './components/StoreRatingModal';
 import { LegalPrivacyModal } from './components/LegalPrivacyModal';
-import { isNativePlatform, requestNativeGeolocation } from './lib/nativePermissions';
+import {
+  isNativePlatform,
+  isCapacitorNative,
+  requestNativeGeolocation,
+  triggerNativeStoreReview,
+  dispatchExternalSystemNotification,
+  setupNativeNotificationHandlers,
+} from './lib/nativePermissions';
 import { Heart, Sparkles, CheckCircle2, Bell, Smartphone, KeyRound, HeartOff, AlertTriangle } from 'lucide-react';
 
 export default function App() {
@@ -175,6 +184,7 @@ export default function App() {
   const [isPremiumModalOpen, setIsPremiumModalOpen] = useState(false);
   const [premiumModalReason, setPremiumModalReason] = useState<string | undefined>(undefined);
   const [isFirstSpotPaywall, setIsFirstSpotPaywall] = useState(false);
+  const firstSpotPaywallTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const handleOpenPremiumModal = (reasonMessage?: string, isFirstSpot = false) => {
     setPremiumModalReason(reasonMessage);
@@ -227,6 +237,33 @@ export default function App() {
     }
 
     if (active) {
+      // Notify the partner that premium subscription has been activated for the duo!
+      const partnerIdToNotify: PartnerId = isSubscriberA ? 'partner_b' : 'partner_a';
+      const subscriberName = subscriberProfile.name || (isSubscriberA ? 'Votre partenaire 1' : 'Votre partenaire 2');
+      const planLabel = plan === 'monthly' ? '1 mois' : '1 an';
+      
+      const premiumNotif: NotificationItem = {
+        id: `notif-premium-${Date.now()}`,
+        type: 'premium_activated',
+        spotId: '',
+        senderId: subscriberPartnerId,
+        targetPartnerId: partnerIdToNotify,
+        title: '👑 Pass Duo Premium Activé !',
+        message: `${subscriberName} a souscrit au Pass Duo Premium (${planLabel}) ! Vous bénéficiez désormais tous les deux de toutes les fonctionnalités illimitées.`,
+        timestamp: 'À l’instant',
+        isRead: false,
+      };
+
+      const updatedNotifs = [premiumNotif, ...notificationsRef.current];
+      setNotifications(updatedNotifs);
+      saveNotifications(updatedNotifs);
+
+      if (couple.code) {
+        saveNotificationToFirestore(couple.code, premiumNotif).catch((e) => {
+          console.warn('Error pushing premium activation notification to Firestore:', e);
+        });
+      }
+
       showToast(plan === 'monthly' ? '👑 Pass Duo Premium (1 mois) activé !' : '👑 Pass Duo Premium (1 an) activé !');
     } else {
       showToast('Pass Duo Premium résilié.');
@@ -237,8 +274,6 @@ export default function App() {
   const [isAttModalOpen, setIsAttModalOpen] = useState<boolean>(() => !getAttConsent());
   const [isLocationModalOpen, setIsLocationModalOpen] = useState(false);
   const [isNotificationModalOpen, setIsNotificationModalOpen] = useState(false);
-  const [isStoreRatingOpen, setIsStoreRatingOpen] = useState(false);
-  const [ratingTriggerSource, setRatingTriggerSource] = useState<'first_spot' | 'app_launch' | 'manual'>('app_launch');
   const [isLegalPrivacyOpen, setIsLegalPrivacyOpen] = useState(false);
 
   // App launch counter & ATT prompt on startup
@@ -249,12 +284,14 @@ export default function App() {
       setIsAttModalOpen(true);
     } else {
       // Trigger App Rating on 2nd launch, then every 4 launches thereafter (2, 6, 10, 14...)
-      if (!getHasRatedApp()) {
+      // Sur iPhone natif : vraie popup système Apple StoreKit officielle !
+      // Sur le web : suppression absolue de toute popup !
+      if (isCapacitorNative() && !getHasRatedApp()) {
         if (launchCount === 2 || (launchCount > 2 && (launchCount - 2) % 4 === 0)) {
           const rateTimer = setTimeout(() => {
-            setRatingTriggerSource('app_launch');
-            setIsStoreRatingOpen(true);
-          }, 1500);
+            triggerNativeStoreReview();
+            saveHasRatedApp(true);
+          }, 2000);
           return () => clearTimeout(rateTimer);
         }
       }
@@ -265,6 +302,41 @@ export default function App() {
   useEffect(() => {
     initializePurchases(couple.code || undefined);
   }, [couple.code]);
+
+  // Setup Native iOS Notification click handlers, APNs push registration & app resume sync
+  useEffect(() => {
+    const cleanup = setupNativeNotificationHandlers({
+      onNotificationClick: (data) => {
+        if (data?.spotId) {
+          const targetSpot = spotsRef.current.find((s) => s.id === data.spotId);
+          if (targetSpot && data.type === 'new_spot_proposed') {
+            setValidationSpot(targetSpot);
+          } else if (targetSpot) {
+            setSelectedSpot(targetSpot);
+            setActiveTab('map');
+          } else {
+            setActiveTab('notifs');
+          }
+        } else {
+          setActiveTab('notifs');
+        }
+      },
+      onPushToken: (token) => {
+        if (couple?.code && activePartnerId) {
+          savePushTokenToFirestore(couple.code, activePartnerId, token).catch(console.warn);
+        }
+      },
+      onAppStateChange: (isActive) => {
+        if (isActive && couple?.code) {
+          console.log('[Native App] Returned to active foreground, sync refreshed');
+        }
+      },
+    });
+
+    return () => {
+      cleanup();
+    };
+  }, [couple.code, activePartnerId]);
 
   // Trigger location permission prompt
   useEffect(() => {
@@ -487,32 +559,14 @@ export default function App() {
           newPartnerNotifs.forEach((notif) => {
             triggerHaptic('success');
 
-            // Dispatch Native Web Notification on phone / browser
-            if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
-              try {
-                const isValidationPrompt = notif.type === 'new_spot_proposed';
-                const nativeNotif = new Notification(notif.title || '💖 LoveMap Notification', {
-                  body: notif.message || 'Nouveau lieu partagé par votre moitié !',
-                  icon: '/favicon.ico',
-                  tag: notif.id,
-                });
-
-                nativeNotif.onclick = () => {
-                  window.focus();
-                  const targetSpot = spotsRef.current.find((s) => s.id === notif.spotId);
-                  if (targetSpot && isValidationPrompt) {
-                    setValidationSpot(targetSpot);
-                  } else if (targetSpot) {
-                    setSelectedSpot(targetSpot);
-                    setActiveTab('map');
-                  } else {
-                    setActiveTab('notifs');
-                  }
-                };
-              } catch (e) {
-                console.warn('Native notification dispatch error:', e);
-              }
-            }
+            // Dispatch System Notification outside the app (Apple UNUserNotificationCenter on iPhone & Web API)
+            dispatchExternalSystemNotification({
+              id: notif.id,
+              title: notif.title || '💖 LoveMap Duo',
+              message: notif.message || 'Votre moitié a partagé un lieu ou une note !',
+              spotId: notif.spotId,
+              type: notif.type,
+            });
 
             // In-app alert preview banner
             showToast(`🔔 ${notif.title} : ${notif.message}`);
@@ -628,22 +682,36 @@ export default function App() {
       showToast(`💌 Spot proposé à ${partnerUser.name} !`);
     }
 
-    // Trigger 1st Spot High-Converting Paywall Popup after 5 seconds if not already premium
+    // Trigger 1st Spot High-Converting Paywall Popup after 4.5 seconds if not already premium
     const currentPremiumState = getDuoPremiumState(couple, activePartnerId);
-    if (spots.length === 0 && !currentPremiumState.isPremium) {
-      setTimeout(() => {
-        handleOpenPremiumModal(
-          "🎉 Bravo pour votre 1er lieu enregistré ! Profitez des 7 jours d'essai gratuit.",
-          true
-        );
-      }, 5000);
+    if (spots.length === 0 && !currentPremiumState.isPremium && !getHasPromptedFirstSpotPaywall()) {
+      saveHasPromptedFirstSpotPaywall(true);
+      if (firstSpotPaywallTimerRef.current) {
+        clearTimeout(firstSpotPaywallTimerRef.current);
+      }
+      firstSpotPaywallTimerRef.current = setTimeout(() => {
+        setIsPremiumModalOpen((alreadyOpen) => {
+          if (!alreadyOpen) {
+            setPremiumModalReason(
+              "🎉 Bravo pour votre 1er lieu enregistré ! Profitez des 7 jours d'essai gratuit."
+            );
+            setIsFirstSpotPaywall(true);
+            return true;
+          }
+          return alreadyOpen;
+        });
+      }, 4500);
     } else if (!getHasRatedApp() && !getHasPromptedFirstSpotRating()) {
       // Trigger Store Rating prompt after recording first spot if paywall not shown
       saveHasPromptedFirstSpotRating(true);
-      setTimeout(() => {
-        setRatingTriggerSource('first_spot');
-        setIsStoreRatingOpen(true);
-      }, 5000);
+      // Sur iPhone natif : vraie popup système Apple StoreKit !
+      // Sur le web : suppression de toute popup !
+      if (isCapacitorNative()) {
+        setTimeout(() => {
+          triggerNativeStoreReview();
+          saveHasRatedApp(true);
+        }, 4000);
+      }
     }
   };
 
@@ -1039,9 +1107,9 @@ export default function App() {
 
         {/* Floating Toast Notification Banner */}
         {toastMessage && (
-          <div className="absolute top-14 left-1/2 -translate-x-1/2 z-50 bg-white/95 dark:bg-slate-900/95 border border-pink-200 dark:border-pink-900/60 text-pink-600 dark:text-pink-400 px-4 py-2 rounded-2xl shadow-xl backdrop-blur-md text-xs font-semibold flex items-center gap-2 animate-bounce">
+          <div className="fixed top-14 sm:top-16 left-1/2 -translate-x-1/2 z-[100000] w-[92%] sm:w-auto max-w-md bg-white/95 dark:bg-slate-900/95 border border-pink-200 dark:border-pink-900/60 text-pink-600 dark:text-pink-400 px-4 py-2.5 rounded-2xl shadow-2xl backdrop-blur-md text-xs sm:text-sm font-bold flex items-center justify-center text-center gap-2.5 animate-bounce pointer-events-none">
             <Sparkles className="w-4 h-4 text-pink-500 shrink-0" />
-            <span>{toastMessage}</span>
+            <span className="leading-snug">{toastMessage}</span>
           </div>
         )}
 
@@ -1133,8 +1201,11 @@ export default function App() {
               onBreakCouple={handleBreakCouple}
               onJoinDuoCode={handleJoinDuoCode}
               onOpenRateApp={() => {
-                setRatingTriggerSource('manual');
-                setIsStoreRatingOpen(true);
+                if (isCapacitorNative()) {
+                  triggerNativeStoreReview();
+                } else {
+                  showToast('L’évaluation sur l’App Store est disponible sur l’application iPhone.');
+                }
               }}
               onOpenLegalPrivacy={() => setIsLegalPrivacyOpen(true)}
               onOpenPremiumModal={() => handleOpenPremiumModal()}
@@ -1245,8 +1316,11 @@ export default function App() {
           onJoinDuoCode={handleJoinDuoCode}
           onBreakCouple={handleBreakCouple}
           onOpenRateApp={() => {
-            setRatingTriggerSource('manual');
-            setIsStoreRatingOpen(true);
+            if (isCapacitorNative()) {
+              triggerNativeStoreReview();
+            } else {
+              showToast('L’évaluation sur l’App Store est disponible sur l’application iPhone.');
+            }
           }}
           onOpenLegalPrivacy={() => setIsLegalPrivacyOpen(true)}
           onOpenPremiumModal={() => handleOpenPremiumModal()}
@@ -1383,12 +1457,7 @@ export default function App() {
           }}
         />
 
-        <StoreRatingModal
-          isOpen={isStoreRatingOpen}
-          onClose={() => setIsStoreRatingOpen(false)}
-          onToast={showToast}
-          triggerSource={ratingTriggerSource}
-        />
+
 
         <LegalPrivacyModal
           isOpen={isLegalPrivacyOpen}

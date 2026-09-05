@@ -920,23 +920,23 @@ export const AddSpotModal: React.FC<AddSpotModalProps> = ({
           </div>
 
           {/* Submit Action */}
-          <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-800">
+          <div className="flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-end gap-2 pt-3 border-t border-slate-800">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-semibold transition-colors cursor-pointer"
+              className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-semibold transition-colors cursor-pointer text-center"
             >
               Annuler
             </button>
             <button
               type="submit"
-              className={`px-5 py-2.5 rounded-xl text-white text-xs font-bold shadow-lg flex items-center gap-1.5 transition-all hover:scale-102 active:scale-98 cursor-pointer ${
+              className={`w-full sm:w-auto justify-center px-5 py-2.5 rounded-xl text-white text-xs font-bold shadow-lg flex items-center gap-1.5 transition-all hover:scale-102 active:scale-98 cursor-pointer ${
                 isSoloSpot
                   ? 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 shadow-emerald-600/20'
                   : 'bg-gradient-to-r from-rose-500 via-pink-500 to-rose-600 hover:from-rose-600 hover:to-pink-600 shadow-rose-500/25'
               }`}
             >
-              <Send className="w-3.5 h-3.5 text-white" />
+              <Send className="w-3.5 h-3.5 text-white shrink-0" />
               <span>
                 {isEditing
                   ? "Enregistrer les modifications"

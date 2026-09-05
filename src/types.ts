@@ -70,7 +70,7 @@ export interface Category {
 
 export interface NotificationItem {
   id: string;
-  type: 'new_spot_proposed' | 'spot_validated' | 'questionnaire_completed' | 'spot_declined' | 'premium_offer_urgency';
+  type: 'new_spot_proposed' | 'spot_validated' | 'questionnaire_completed' | 'spot_declined' | 'premium_offer_urgency' | 'premium_activated';
   spotId: string;
   senderId: PartnerId;
   targetPartnerId?: PartnerId;
@@ -95,6 +95,7 @@ export interface UserProfile {
   avatar: string;
   role: string;
   subscription?: UserSubscription;
+  pushToken?: string;
 }
 
 export interface CouplePair {

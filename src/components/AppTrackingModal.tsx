@@ -20,11 +20,15 @@ export const AppTrackingModal: React.FC<AppTrackingModalProps> = ({
   if (!isOpen) return null;
 
   const handleConsent = async (status: 'authorized' | 'denied') => {
-    saveAttConsent(status);
     if (status === 'authorized') {
-      await triggerNativeAppTracking();
+      // Trigger the true iOS native system ATT dialog
+      const nativeResult = await triggerNativeAppTracking();
+      saveAttConsent(nativeResult);
+      onClose(nativeResult);
+    } else {
+      saveAttConsent('denied');
+      onClose('denied');
     }
-    onClose(status);
   };
 
   return (

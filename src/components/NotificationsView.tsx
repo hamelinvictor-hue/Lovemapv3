@@ -1,6 +1,6 @@
 import React from 'react';
 import { NotificationItem, Spot, PartnerId, CouplePair } from '../types';
-import { Bell, Check, Clock, Heart, MapPin, Sparkles, UserCheck } from 'lucide-react';
+import { Bell, Check, Clock, Crown, Heart, MapPin, Sparkles, UserCheck } from 'lucide-react';
 import { triggerHaptic } from '../lib/feedback';
 
 interface NotificationsViewProps {
@@ -95,21 +95,26 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
           {sortedNotifications.map((notif) => {
             const spot = spots.find((s) => s.id === notif.spotId);
             const isUrgency = notif.type === 'premium_offer_urgency';
+            const isPremiumActivated = notif.type === 'premium_activated';
 
             return (
               <div
                 key={notif.id}
                 onClick={() => handleNotifClick(notif)}
-                className={`p-4 rounded-2xl border transition-all cursor-pointer flex items-start gap-3.5 ${
-                  isUrgency
+                className={`p-3.5 sm:p-4 rounded-2xl border transition-all cursor-pointer flex items-start gap-3 sm:gap-3.5 ${
+                  isPremiumActivated
+                    ? 'bg-gradient-to-r from-amber-500/15 via-rose-500/10 to-amber-500/15 border-amber-400/90 dark:border-amber-500/80 shadow-md ring-1 ring-amber-400/50'
+                    : isUrgency
                     ? 'bg-gradient-to-r from-rose-500/10 via-amber-500/10 to-rose-500/5 border-rose-400/80 dark:border-rose-500/60 shadow-lg'
                     : !notif.isRead
                     ? 'bg-white dark:bg-slate-900 border-2 border-white dark:border-white ring-2 ring-rose-400/80 dark:ring-white/80 shadow-[0_0_15px_rgba(255,255,255,0.8)] animate-pulse'
                     : 'bg-white/80 dark:bg-slate-900/80 border-slate-200/80 dark:border-slate-800 hover:bg-white dark:hover:bg-slate-900'
                 }`}
               >
-                <div className="p-2.5 rounded-xl bg-slate-900 dark:bg-slate-800 text-white shrink-0 mt-0.5 shadow-2xs border border-slate-800 dark:border-slate-700">
-                  {isUrgency ? (
+                <div className="p-2 sm:p-2.5 rounded-xl bg-slate-900 dark:bg-slate-800 text-white shrink-0 mt-0.5 shadow-2xs border border-slate-800 dark:border-slate-700">
+                  {isPremiumActivated ? (
+                    <Crown className="w-4 h-4 text-amber-400 animate-bounce" />
+                  ) : isUrgency ? (
                     <Clock className="w-4 h-4 text-rose-400 animate-pulse" />
                   ) : notif.type === 'new_spot_proposed' ? (
                     <MapPin className="w-4 h-4 text-rose-400" />
@@ -125,7 +130,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                     <h4 className="font-extrabold text-xs sm:text-sm text-slate-900 dark:text-white truncate tracking-tight">{notif.title}</h4>
                     <span className="text-[10px] text-slate-400 dark:text-slate-300 font-bold shrink-0">{notif.timestamp}</span>
                   </div>
-                  <p className="text-xs text-slate-700 dark:text-slate-100 mt-1 leading-relaxed font-medium">{notif.message}</p>
+                  <p className="text-xs sm:text-[13px] text-slate-700 dark:text-slate-100 mt-1 leading-relaxed font-medium break-words">{notif.message}</p>
 
                   {isUrgency && (
                     <div className="mt-2.5 inline-flex items-center gap-1.5 text-[11px] text-white font-extrabold bg-gradient-to-r from-rose-600 to-amber-600 px-3 py-1 rounded-xl shadow-md">

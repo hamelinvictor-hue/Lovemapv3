@@ -1,5 +1,12 @@
+import { Capacitor } from '@capacitor/core';
 import { GoogleSignIn } from '@capawesome/capacitor-google-sign-in';
 import { SignInWithApple } from '@capacitor-community/apple-sign-in';
+import { Geolocation } from '@capacitor/geolocation';
+import { PushNotifications } from '@capacitor/push-notifications';
+import { LocalNotifications } from '@capacitor/local-notifications';
+import { AppReview } from '@capawesome/capacitor-app-review';
+import { App } from '@capacitor/app';
+import { AppTrackingTransparency } from 'capacitor-app-tracking-transparency';
 
 /**
  * Bridge for Capacitor Native iOS / Android plugins with clean dynamic fallback
@@ -9,11 +16,14 @@ import { SignInWithApple } from '@capacitor-community/apple-sign-in';
 
 export const isCapacitorNative = (): boolean => {
   if (typeof window === 'undefined') return false;
+  // Strictly check Capacitor.isNativePlatform()
+  if (typeof Capacitor !== 'undefined' && typeof Capacitor.isNativePlatform === 'function') {
+    return Capacitor.isNativePlatform();
+  }
   const cap = (window as any).Capacitor;
-  if (!cap) return false;
-  if (typeof cap.isNativePlatform === 'function' && cap.isNativePlatform()) return true;
-  if (cap.platform === 'ios' || cap.platform === 'android') return true;
-  if (cap.isPluginAvailable && (cap.isPluginAvailable('Dialog') || cap.isPluginAvailable('AppTrackingTransparency') || cap.isPluginAvailable('Geolocation'))) return true;
+  if (cap && typeof cap.isNativePlatform === 'function') {
+    return cap.isNativePlatform();
+  }
   return false;
 };
 
@@ -34,17 +44,33 @@ export const requestNativeNotification = triggerNativeNotification;
 /**
  * Native App Tracking Transparency (ATT) permission request on iOS
  */
-export async function triggerNativeAppTracking(): Promise<boolean> {
-  const cap = (window as any).Capacitor;
-  if (isCapacitorNative() && cap?.Plugins?.AppTrackingTransparency) {
-    try {
-      const res = await cap.Plugins.AppTrackingTransparency.requestPermission();
-      return res.status === 'authorized';
-    } catch (e) {
-      console.warn('Native AppTrackingTransparency plugin call fallback:', e);
-    }
+export async function triggerNativeAppTracking(): Promise<'authorized' | 'denied'> {
+  if (!isCapacitorNative()) {
+    return 'authorized';
   }
-  return true;
+
+  const cap = (window as any).Capacitor;
+  try {
+    if (AppTrackingTransparency) {
+      const attInstance = new (AppTrackingTransparency as any)();
+      if (typeof attInstance.requestPermission === 'function') {
+        const res = await attInstance.requestPermission();
+        return res?.status === 'authorized' ? 'authorized' : 'denied';
+      }
+    }
+  } catch (e) {
+    console.warn('Native AppTrackingTransparency class instance error:', e);
+  }
+
+  try {
+    if (cap?.Plugins?.AppTrackingTransparency?.requestPermission) {
+      const res = await cap.Plugins.AppTrackingTransparency.requestPermission();
+      return res?.status === 'authorized' || res?.value?.status === 'authorized' ? 'authorized' : 'denied';
+    }
+  } catch (e) {
+    console.warn('Native AppTrackingTransparency plugin call fallback:', e);
+  }
+  return 'authorized';
 }
 
 /**
@@ -119,11 +145,23 @@ export async function checkNativeLocationPermission(): Promise<boolean> {
 export async function triggerNativeGeolocation(): Promise<boolean> {
   const cap = (window as any).Capacitor;
   console.log('[Native Debug] triggerNativeGeolocation called.');
+  try {
+    if (Geolocation && typeof Geolocation.requestPermissions === 'function') {
+      const res = await Geolocation.requestPermissions();
+      console.log('[Native Debug] Geolocation.requestPermissions result:', res);
+      if (res?.location === 'granted' || res?.coarseLocation === 'granted') {
+        return true;
+      }
+    }
+  } catch (e) {
+    console.warn('[Native Debug] Geolocation.requestPermissions plugin error:', e);
+  }
+
   if (cap?.Plugins?.Geolocation) {
     try {
-      console.log('[Native Debug] Calling Geolocation.requestPermissions()...');
+      console.log('[Native Debug] Calling cap.Plugins.Geolocation.requestPermissions()...');
       const res = await cap.Plugins.Geolocation.requestPermissions();
-      console.log('[Native Debug] Geolocation.requestPermissions() result:', res);
+      console.log('[Native Debug] cap.Plugins.Geolocation.requestPermissions() result:', res);
       if (res?.location === 'granted' || res?.coarseLocation === 'granted' || res?.results?.location === 'granted') {
         return true;
       }
@@ -139,19 +177,20 @@ export async function triggerNativeGeolocation(): Promise<boolean> {
       resolve(false);
     }, 12000);
 
-    if (cap?.Plugins?.Geolocation) {
-      cap.Plugins.Geolocation.getCurrentPosition({
+    const geoService = (Geolocation && typeof Geolocation.getCurrentPosition === 'function') ? Geolocation : cap?.Plugins?.Geolocation;
+    if (geoService) {
+      geoService.getCurrentPosition({
         enableHighAccuracy: true,
         timeout: 10000,
         maximumAge: 0,
       })
         .then((pos: any) => {
           clearTimeout(fallbackTimeout);
-          console.log('[Native Debug] cap Geolocation.getCurrentPosition resolved:', pos);
+          console.log('[Native Debug] Geolocation.getCurrentPosition resolved:', pos);
           resolve(true);
         })
         .catch((err: any) => {
-          console.warn('[Native Debug] cap Geolocation.getCurrentPosition error:', err);
+          console.warn('[Native Debug] Geolocation.getCurrentPosition error:', err);
           if (typeof navigator !== 'undefined' && 'geolocation' in navigator) {
             navigator.geolocation.getCurrentPosition(
               (pos) => {
@@ -344,28 +383,288 @@ export function watchNativePosition(
 }
 
 /**
+ * Native Apple iOS Store Review dialog (SKStoreReviewController)
+ * On iPhone / Capacitor native, prompts the real system App Store rating dialog.
+ * On Web, does nothing (popup is suppressed completely).
+ */
+export async function triggerNativeStoreReview(): Promise<boolean> {
+  if (!isCapacitorNative()) {
+    // Supprimé sur le web : aucune popup !
+    return false;
+  }
+
+  try {
+    if (Capacitor.isPluginAvailable('AppReview') && AppReview && typeof AppReview.requestReview === 'function') {
+      await AppReview.requestReview();
+      console.log('[Native] SKStoreReviewController.requestReview() triggered successfully.');
+      return true;
+    }
+  } catch (e) {
+    console.warn('Native AppReview.requestReview error:', e);
+  }
+
+  const cap = (window as any).Capacitor;
+  try {
+    if (cap?.Plugins?.AppReview?.requestReview) {
+      await cap.Plugins.AppReview.requestReview();
+      return true;
+    }
+  } catch (e) {
+    console.warn('Capacitor AppReview plugin fallback error:', e);
+  }
+
+  return false;
+}
+
+/**
  * Native Push / Local Notification permission request
  */
 export async function triggerNativeNotification(): Promise<boolean> {
-  const cap = (window as any).Capacitor;
-  if (isCapacitorNative() && cap?.Plugins?.PushNotifications) {
+  let granted = false;
+
+  // 1. Native iOS / Android Push & Local Notifications (Never execute on web)
+  if (isCapacitorNative()) {
+    // 1a. Request LocalNotifications permission (critical for iOS UNUserNotificationCenter local alerts)
     try {
-      const res = await cap.Plugins.PushNotifications.requestPermissions();
-      return res.receive === 'granted';
+      if (Capacitor.isPluginAvailable('LocalNotifications') && LocalNotifications && typeof LocalNotifications.requestPermissions === 'function') {
+        const res = await LocalNotifications.requestPermissions();
+        if (res?.display === 'granted') {
+          granted = true;
+        }
+      }
     } catch (e) {
-      console.warn('Native PushNotifications plugin call fallback:', e);
+      console.warn('LocalNotifications.requestPermissions plugin error:', e);
     }
+
+    // 1b. Request PushNotifications permission and register for APNs
+    try {
+      if (Capacitor.isPluginAvailable('PushNotifications') && PushNotifications && typeof PushNotifications.requestPermissions === 'function') {
+        const res = await PushNotifications.requestPermissions();
+        if (res?.receive === 'granted') {
+          granted = true;
+          try {
+            await PushNotifications.register();
+          } catch (regErr) {
+            console.warn('PushNotifications.register warning:', regErr);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('PushNotifications.requestPermissions plugin error:', e);
+    }
+
+    return granted;
   }
 
+  // 2. Web Notification permission request (Browser / PWA fallback)
   if (typeof window !== 'undefined' && 'Notification' in window) {
     try {
       const status = await Notification.requestPermission();
-      return status === 'granted';
+      if (status === 'granted') granted = true;
     } catch {
-      return false;
+      // Ignored
     }
   }
+
+  return granted;
+}
+
+/**
+ * Dispatches an external notification (outside the app):
+ * - On iPhone (iOS native via Capacitor): schedules an immediate local notification via Apple UNUserNotificationCenter,
+ *   which displays the iOS system banner at the top of the screen, plays a sound, and appears on the lock screen / notification center
+ *   even when the user is outside the app.
+ * - On Web: uses the browser Notification API / Service Worker if permission is granted.
+ */
+export async function dispatchExternalSystemNotification(notif: {
+  id?: string | number;
+  title: string;
+  message: string;
+  spotId?: string;
+  type?: string;
+}): Promise<boolean> {
+  // Convert any string id to 32-bit positive integer for Capacitor LocalNotifications
+  let numericId = 1;
+  if (typeof notif.id === 'number') {
+    numericId = Math.abs(notif.id) % 2147483647 || 1;
+  } else if (notif.id) {
+    let hash = 0;
+    const str = String(notif.id);
+    for (let i = 0; i < str.length; i++) {
+      hash = ((hash << 5) - hash) + str.charCodeAt(i);
+      hash |= 0;
+    }
+    numericId = Math.abs(hash) % 2147483647 || 1;
+  } else {
+    numericId = (Date.now() % 2147483647) || 1;
+  }
+
+  // 1. Native iOS / Android via Capacitor LocalNotifications
+  if (isCapacitorNative() && Capacitor.isPluginAvailable('LocalNotifications')) {
+    try {
+      if (LocalNotifications && typeof LocalNotifications.schedule === 'function') {
+        // Ensure channel exists on Android
+        try {
+          if (typeof LocalNotifications.createChannel === 'function') {
+            await LocalNotifications.createChannel({
+              id: 'lovemap_duo',
+              name: 'LoveMap Duo',
+              description: 'Notifications partagées par votre duo',
+              importance: 5,
+              visibility: 1,
+              vibration: true,
+            });
+          }
+        } catch {
+          // Ignored on iOS
+        }
+
+        await LocalNotifications.schedule({
+          notifications: [
+            {
+              id: numericId,
+              title: notif.title || '💖 LoveMap Duo',
+              body: notif.message || 'Votre partenaire a partagé une nouvelle activité !',
+              sound: 'beep.wav',
+              channelId: 'lovemap_duo',
+              extra: {
+                spotId: notif.spotId,
+                type: notif.type,
+                id: notif.id,
+              },
+              schedule: { at: new Date(Date.now() + 100) },
+            },
+          ],
+        });
+        console.log('[Native] System notification banner dispatched outside app:', notif.title);
+        return true;
+      }
+    } catch (err) {
+      console.warn('[Native] LocalNotifications.schedule error:', err);
+    }
+  }
+
+  // 2. Web fallback (Browser / PWA)
+  if (typeof window !== 'undefined' && 'Notification' in window) {
+    try {
+      if (Notification.permission === 'granted') {
+        if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+          const reg = await navigator.serviceWorker.ready;
+          await reg.showNotification(notif.title || '💖 LoveMap Duo', {
+            body: notif.message,
+            icon: '/favicon.ico',
+            badge: '/favicon.ico',
+            tag: String(notif.id || Date.now()),
+            data: {
+              spotId: notif.spotId,
+              type: notif.type,
+              url: '/',
+            },
+          });
+          return true;
+        } else {
+          new Notification(notif.title || '💖 LoveMap Duo', {
+            body: notif.message,
+            icon: '/favicon.ico',
+            tag: String(notif.id || Date.now()),
+          });
+          return true;
+        }
+      }
+    } catch (e) {
+      console.warn('[Web] System notification dispatch error:', e);
+    }
+  }
+
   return false;
+}
+
+/**
+ * Sets up listeners for native notification taps and push tokens on iPhone
+ */
+export function setupNativeNotificationHandlers(callbacks: {
+  onNotificationClick: (data: { spotId?: string; type?: string; id?: string }) => void;
+  onPushToken?: (token: string) => void;
+  onAppStateChange?: (isActive: boolean) => void;
+}): () => void {
+  const unsubs: Array<() => void> = [];
+
+  // Strictly disabled on Web - plugins are only invoked on iOS / Android native
+  if (!isCapacitorNative()) {
+    return () => {};
+  }
+
+  // 1. Local notification clicked while app is outside / in background
+  try {
+    if (Capacitor.isPluginAvailable('LocalNotifications') && LocalNotifications && typeof LocalNotifications.addListener === 'function') {
+      const handlePromise = LocalNotifications.addListener('localNotificationActionPerformed', (action) => {
+        const extra = action.notification.extra;
+        if (extra) {
+          callbacks.onNotificationClick(extra);
+        }
+      });
+      unsubs.push(() => {
+        handlePromise.then((h: any) => h?.remove?.()).catch(() => {});
+      });
+    }
+  } catch (e) {
+    console.warn('Error adding LocalNotifications listener:', e);
+  }
+
+  // 2. Push notification clicked by user
+  try {
+    if (Capacitor.isPluginAvailable('PushNotifications') && PushNotifications && typeof PushNotifications.addListener === 'function') {
+      const pushActionPromise = PushNotifications.addListener('pushNotificationActionPerformed', (action) => {
+        const data = action.notification.data;
+        if (data) {
+          callbacks.onNotificationClick(data);
+        }
+      });
+      unsubs.push(() => {
+        pushActionPromise.then((h: any) => h?.remove?.()).catch(() => {});
+      });
+
+      // 3. APNs Push Token Registration
+      const pushRegPromise = PushNotifications.addListener('registration', (token) => {
+        if (token?.value && callbacks.onPushToken) {
+          callbacks.onPushToken(token.value);
+        }
+      });
+      unsubs.push(() => {
+        pushRegPromise.then((h: any) => h?.remove?.()).catch(() => {});
+      });
+
+      // 4. In-flight push notification received while app is active
+      const pushRecPromise = PushNotifications.addListener('pushNotificationReceived', (notification) => {
+        console.log('[Native] Push notification received in foreground:', notification);
+      });
+      unsubs.push(() => {
+        pushRecPromise.then((h: any) => h?.remove?.()).catch(() => {});
+      });
+    }
+  } catch (e) {
+    console.warn('Error adding PushNotifications listeners:', e);
+  }
+
+  // 5. App State Change (detect background / foreground)
+  try {
+    if (Capacitor.isPluginAvailable('App') && App && typeof App.addListener === 'function') {
+      const appStatePromise = App.addListener('appStateChange', (state) => {
+        if (callbacks.onAppStateChange) {
+          callbacks.onAppStateChange(state.isActive);
+        }
+      });
+      unsubs.push(() => {
+        appStatePromise.then((h: any) => h?.remove?.()).catch(() => {});
+      });
+    }
+  } catch (e) {
+    console.warn('Error adding App state listener:', e);
+  }
+
+  return () => {
+    unsubs.forEach((u) => u());
+  };
 }
 
 /**

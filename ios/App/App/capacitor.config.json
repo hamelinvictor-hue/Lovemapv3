@@ -4,7 +4,13 @@
 	"webDir": "dist",
 	"packageClassList": [
 		"SignInWithApple",
+		"AppPlugin",
+		"GeolocationPlugin",
+		"LocalNotificationsPlugin",
+		"PushNotificationsPlugin",
+		"AppReviewPlugin",
 		"GoogleSignInPlugin",
-		"PurchasesPlugin"
+		"PurchasesPlugin",
+		"AppTrackingTransparencyPlugin"
 	]
 }

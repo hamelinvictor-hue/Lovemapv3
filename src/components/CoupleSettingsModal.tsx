@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { CouplePair, PartnerId, AppMode } from '../types';
 import { auth, getEffectiveUser } from '../lib/firebase';
 import type { User as FirebaseUser } from 'firebase/auth';
@@ -128,9 +128,39 @@ export const CoupleSettingsModal: React.FC<CoupleSettingsModalProps> = ({
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showBreakConfirm, setShowBreakConfirm] = useState(false);
 
-  // Sync state only when modal opens
+  // Keep a ref of latest form values so closing or unmounting always saves cleanly
+  const formStateRef = useRef({
+    partnerAName,
+    partnerAAvatar,
+    partnerBName,
+    partnerBAvatar,
+    anniversaryDate,
+    secretPin,
+    isPinLocked,
+  });
+
   useEffect(() => {
-    if (isOpen) {
+    formStateRef.current = {
+      partnerAName,
+      partnerAAvatar,
+      partnerBName,
+      partnerBAvatar,
+      anniversaryDate,
+      secretPin,
+      isPinLocked,
+    };
+  }, [partnerAName, partnerAAvatar, partnerBName, partnerBAvatar, anniversaryDate, secretPin, isPinLocked]);
+
+  // Keep a ref of current couple to avoid stale closures
+  const coupleRef = useRef(couple);
+  useEffect(() => {
+    coupleRef.current = couple;
+  }, [couple]);
+
+  // Sync state ONLY when modal transitions from closed to open (never overwrite while user is typing)
+  const prevIsOpenRef = useRef(false);
+  useEffect(() => {
+    if (isOpen && !prevIsOpenRef.current) {
       setPartnerAName(couple.partnerA.name);
       setPartnerAAvatar(couple.partnerA.avatar || '');
       setPartnerBName(couple.partnerB.name);
@@ -139,7 +169,34 @@ export const CoupleSettingsModal: React.FC<CoupleSettingsModalProps> = ({
       setSecretPin(couple.secretPin || '1234');
       setIsPinLocked(couple.isPinLocked || false);
     }
-  }, [isOpen, couple]);
+    prevIsOpenRef.current = isOpen;
+  }, [isOpen]);
+
+  // Save changes automatically when unmounting if modal was open
+  useEffect(() => {
+    return () => {
+      if (prevIsOpenRef.current) {
+        const c = coupleRef.current;
+        const s = formStateRef.current;
+        onUpdateCouple({
+          ...c,
+          anniversaryDate: s.anniversaryDate,
+          secretPin: s.secretPin,
+          isPinLocked: s.isPinLocked,
+          partnerA: {
+            ...c.partnerA,
+            name: s.partnerAName.trim() || c.partnerA.name || 'Partenaire 1',
+            avatar: s.partnerAAvatar.trim() || c.partnerA.avatar,
+          },
+          partnerB: {
+            ...c.partnerB,
+            name: s.partnerBName.trim() || c.partnerB.name || 'Partenaire 2',
+            avatar: s.partnerBAvatar.trim() || c.partnerB.avatar,
+          },
+        });
+      }
+    };
+  }, []);
 
   if (!isOpen) return null;
 
@@ -151,20 +208,21 @@ export const CoupleSettingsModal: React.FC<CoupleSettingsModalProps> = ({
     newPin: string,
     newLocked: boolean
   ) => {
+    const c = coupleRef.current;
     onUpdateCouple({
-      ...couple,
+      ...c,
       anniversaryDate,
       secretPin: newPin,
       isPinLocked: newLocked,
       partnerA: {
-        ...couple.partnerA,
-        name: newAName.trim() || couple.partnerA.name || 'Partenaire 1',
-        avatar: newAAvatar.trim() || couple.partnerA.avatar,
+        ...c.partnerA,
+        name: newAName.trim() || c.partnerA.name || 'Partenaire 1',
+        avatar: newAAvatar.trim() || c.partnerA.avatar,
       },
       partnerB: {
-        ...couple.partnerB,
-        name: newBName.trim() || couple.partnerB.name || 'Partenaire 2',
-        avatar: newBAvatar.trim() || couple.partnerB.avatar,
+        ...c.partnerB,
+        name: newBName.trim() || c.partnerB.name || 'Partenaire 2',
+        avatar: newBAvatar.trim() || c.partnerB.avatar,
       },
     });
   };
@@ -632,6 +690,21 @@ export const CoupleSettingsModal: React.FC<CoupleSettingsModalProps> = ({
                 <span>{t.settings.deleteAccount}</span>
               </button>
             </div>
+          </div>
+
+          {/* Primary Save & Close button */}
+          <div className="pt-2">
+            <button
+              type="button"
+              onClick={() => {
+                triggerHaptic('success');
+                handleCloseModal();
+              }}
+              className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-rose-500 via-pink-500 to-amber-500 hover:from-rose-600 hover:to-pink-600 text-white font-black text-sm shadow-lg shadow-rose-500/25 transition-all cursor-pointer active:scale-98 flex items-center justify-center gap-2"
+            >
+              <Heart className="w-4 h-4 fill-white" />
+              <span>{t.common.save} & {t.common.close}</span>
+            </button>
           </div>
         </div>
       </div>

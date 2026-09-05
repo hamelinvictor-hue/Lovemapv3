@@ -114,7 +114,7 @@ export const ValidateSpotModal: React.FC<ValidateSpotModalProps> = ({
             )}
           </div>
 
-          <div className="flex items-center justify-between pt-2 border-t border-slate-800">
+          <div className="flex flex-col-reverse sm:flex-row items-center sm:justify-between gap-3 pt-3 border-t border-slate-800">
             <button
               type="button"
               onClick={() => {
@@ -122,7 +122,7 @@ export const ValidateSpotModal: React.FC<ValidateSpotModalProps> = ({
                 onDeclineSpot(spot.id);
                 onClose();
               }}
-              className="text-xs font-semibold text-rose-400 hover:text-rose-300 flex items-center gap-1 cursor-pointer transition-colors"
+              className="w-full sm:w-auto text-center justify-center text-xs font-semibold text-rose-400 hover:text-rose-300 flex items-center gap-1 cursor-pointer transition-colors py-1.5"
             >
               <XCircle className="w-3.5 h-3.5" /> Décliner ce spot
             </button>
@@ -135,9 +135,9 @@ export const ValidateSpotModal: React.FC<ValidateSpotModalProps> = ({
                 onClose();
                 onOpenQuestionnaire(spot);
               }}
-              className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-rose-500 via-pink-500 to-rose-600 hover:from-rose-600 hover:to-pink-600 text-white text-xs font-bold shadow-lg shadow-rose-500/25 flex items-center gap-1.5 transition-all hover:scale-102 active:scale-98 cursor-pointer"
+              className="w-full sm:w-auto justify-center px-5 py-2.5 rounded-xl bg-gradient-to-r from-rose-500 via-pink-500 to-rose-600 hover:from-rose-600 hover:to-pink-600 text-white text-xs font-bold shadow-lg shadow-rose-500/25 flex items-center gap-1.5 transition-all hover:scale-102 active:scale-98 cursor-pointer"
             >
-              <CheckCircle2 className="w-4 h-4 text-white" />
+              <CheckCircle2 className="w-4 h-4 text-white shrink-0" />
               <span>Accepter & Évaluer à deux</span>
             </button>
           </div>

@@ -76,14 +76,7 @@ export const DuoPremiumModal: React.FC<DuoPremiumModalProps> = ({
   const trialOfferAvailable = remainingTrialSeconds > 0;
 
   // Paywall Stages: 'trial_7_days' (First spot 7 days), 'trial_14_days' (Downsell 14 days), 'standard' (regular)
-  const [stage, setStage] = useState<'trial_7_days' | 'trial_14_days' | 'standard'>(() => {
-    if (isFirstSpotPaywall) {
-      startTrialOfferCountdown();
-      const remaining = getTrialOfferRemainingSeconds();
-      if (remaining > 0) return 'trial_7_days';
-    }
-    return 'standard';
-  });
+  const [stage, setStage] = useState<'trial_7_days' | 'trial_14_days' | 'standard'>('standard');
 
   // Real-time live countdown timer (ticks every second)
   useEffect(() => {
@@ -112,16 +105,20 @@ export const DuoPremiumModal: React.FC<DuoPremiumModalProps> = ({
     if (isOpen) {
       if (isFirstSpotPaywall) {
         startTrialOfferCountdown();
-      }
-      const remaining = getTrialOfferRemainingSeconds();
-      setRemainingTrialSeconds(remaining);
-      if (isFirstSpotPaywall && remaining > 0) {
-        setStage('trial_7_days');
+        const remaining = getTrialOfferRemainingSeconds();
+        setRemainingTrialSeconds(remaining);
+        if (remaining > 0 && !premiumState.isPremium) {
+          setStage('trial_7_days');
+        } else {
+          setStage('standard');
+        }
       } else {
+        const remaining = getTrialOfferRemainingSeconds();
+        setRemainingTrialSeconds(remaining);
         setStage('standard');
       }
     }
-  }, [isOpen, isFirstSpotPaywall]);
+  }, [isOpen, isFirstSpotPaywall, premiumState.isPremium]);
 
   // Load native RevenueCat offerings (with localized Apple StoreKit pricing)
   const [currentOffering, setCurrentOffering] = useState<PurchasesOffering | null>(null);
@@ -212,14 +209,10 @@ export const DuoPremiumModal: React.FC<DuoPremiumModalProps> = ({
     }
   };
 
-  // Handle Refusal on 7-Day Trial -> Transition to 14-Day Trial Downsell (ONLY in first spot modal)
+  // Handle Refusal on 7-Day Trial -> Dismiss cleanly so user is never prompted twice
   const handleDecline7Days = () => {
-    triggerHaptic('double');
-    if (isFirstSpotPaywall && trialOfferAvailable) {
-      setStage('trial_14_days');
-    } else {
-      onClose();
-    }
+    triggerHaptic('light');
+    onClose();
   };
 
   // Handle Cancel Subscription
@@ -258,7 +251,7 @@ export const DuoPremiumModal: React.FC<DuoPremiumModalProps> = ({
             exit={{ opacity: 0 }}
             transition={{ duration: 0.22 }}
             className="fixed inset-0 bg-slate-950/75 backdrop-blur-md"
-            onClick={stage === 'trial_7_days' ? handleDecline7Days : onClose}
+            onClick={onClose}
           />
 
           {/* Fluid spring scale & slide modal card */}
@@ -268,6 +261,7 @@ export const DuoPremiumModal: React.FC<DuoPremiumModalProps> = ({
             exit={{ opacity: 0, scale: 0.92, y: 14 }}
             transition={{ type: 'spring', damping: 27, stiffness: 340 }}
             className="relative w-full max-w-lg bg-white dark:bg-slate-900 border border-amber-300/40 dark:border-amber-900/50 rounded-3xl shadow-2xl overflow-hidden flex flex-col my-auto max-h-[94vh] z-10"
+            onClick={(e) => e.stopPropagation()}
           >
             {/* ==================================================== */}
             {/* STAGE 1: 7-DAY FREE TRIAL PAYWALL (POST-1ST SPOT)   */}
@@ -282,39 +276,39 @@ export const DuoPremiumModal: React.FC<DuoPremiumModalProps> = ({
                 className="flex flex-col flex-1 overflow-hidden"
               >
                 {/* Unified Royal Gradient Header */}
-                <div className="relative bg-gradient-to-br from-amber-500 via-rose-600 to-purple-600 p-6 text-white text-center overflow-hidden shrink-0">
+                <div className="relative bg-gradient-to-br from-amber-500 via-rose-600 to-purple-600 px-4 pt-5 pb-4 sm:px-6 sm:pt-6 sm:pb-5 text-white text-center overflow-hidden shrink-0">
                   <div className="absolute top-0 right-0 -mr-6 -mt-6 w-32 h-32 bg-white/15 rounded-full blur-2xl pointer-events-none" />
                   <div className="absolute bottom-0 left-0 -ml-6 -mb-6 w-32 h-32 bg-rose-400/25 rounded-full blur-2xl pointer-events-none" />
 
                   <button
-                    onClick={handleDecline7Days}
+                    onClick={onClose}
                     type="button"
-                    className="absolute top-4 right-4 p-2 rounded-full bg-black/20 hover:bg-black/30 text-white transition-colors cursor-pointer"
-                    title="Passer"
+                    className="absolute top-3 right-3 sm:top-4 sm:right-4 w-8 h-8 rounded-full bg-black/25 hover:bg-black/40 text-white flex items-center justify-center transition-colors z-20 cursor-pointer"
+                    title="Fermer"
                   >
                     <X className="w-4 h-4" />
                   </button>
 
-                  <div className="flex flex-col items-center justify-center gap-2 mb-2">
-                    {/* Fused 48H Timer & 7-Day Free Trial Badge */}
-                    <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-slate-950/80 border border-amber-300/80 text-white shadow-xl shadow-slate-950/40 backdrop-blur-md">
-                      <span className="px-2 py-0.5 rounded-full bg-gradient-to-r from-amber-400 to-rose-500 text-slate-950 text-[10px] font-black uppercase tracking-wider">
+                  {/* Responsive & well-spaced timer banner */}
+                  <div className="flex justify-center mb-2.5 pt-1 sm:pt-0 pr-8 pl-8 sm:px-0">
+                    <div className="inline-flex flex-wrap items-center justify-center gap-1.5 sm:gap-2 px-3 py-1.5 rounded-full bg-slate-950/85 border border-amber-300/80 text-white shadow-xl shadow-slate-950/30 backdrop-blur-md max-w-full">
+                      <span className="px-2 py-0.5 rounded-full bg-gradient-to-r from-amber-400 to-rose-500 text-slate-950 text-[10px] font-black uppercase tracking-wider shrink-0">
                         🔥 7 Jours Gratuits
                       </span>
-                      <span className="text-amber-200 text-xs font-bold flex items-center gap-1.5">
+                      <div className="flex items-center gap-1.5 text-amber-200 text-xs font-bold shrink-0">
                         <Clock className="w-3.5 h-3.5 text-rose-400 shrink-0 animate-pulse" />
-                        <span className="text-[11px] text-rose-200 font-medium">Expire dans :</span>
-                        <span className="font-mono font-black text-amber-300 tracking-wider">
+                        <span className="text-[10px] sm:text-[11px] text-rose-200/90 font-medium">Expire dans :</span>
+                        <span className="font-mono font-black text-amber-300 tracking-wider text-xs sm:text-sm">
                           {formatTrialCountdown(remainingTrialSeconds)}
                         </span>
-                      </span>
+                      </div>
                     </div>
                   </div>
 
-                  <h2 className="text-2xl sm:text-3xl font-black tracking-tight text-white leading-tight">
+                  <h2 className="text-lg sm:text-2xl font-black tracking-tight text-white leading-tight px-2 sm:px-4">
                     7 Jours Gratuits pour votre Histoire 💖
                   </h2>
-                  <p className="text-xs text-amber-100/90 font-semibold mt-1.5 max-w-sm mx-auto">
+                  <p className="text-[11px] sm:text-xs text-amber-100/90 font-medium mt-1 max-w-sm mx-auto leading-relaxed">
                     Bravo pour votre 1er lieu ! Profitez de 100% du Pass Duo sans débourser 1 centime aujourd'hui.
                   </p>
                 </div>
@@ -539,40 +533,40 @@ export const DuoPremiumModal: React.FC<DuoPremiumModalProps> = ({
                 className="flex flex-col flex-1 overflow-hidden"
               >
                 {/* Downsell Header Banner */}
-                <div className="relative bg-gradient-to-br from-amber-500 via-rose-600 to-purple-600 p-6 text-white text-center overflow-hidden shrink-0">
+                <div className="relative bg-gradient-to-br from-amber-500 via-rose-600 to-purple-600 px-4 pt-5 pb-4 sm:px-6 sm:pt-6 sm:pb-5 text-white text-center overflow-hidden shrink-0">
                   <div className="absolute top-0 right-0 -mr-6 -mt-6 w-32 h-32 bg-amber-400/20 rounded-full blur-2xl pointer-events-none animate-pulse" />
                   <div className="absolute bottom-0 left-0 -ml-6 -mb-6 w-32 h-32 bg-rose-400/20 rounded-full blur-2xl pointer-events-none" />
 
                   <button
                     onClick={onClose}
                     type="button"
-                    className="absolute top-4 right-4 p-2 rounded-full bg-black/20 hover:bg-black/30 text-white transition-colors cursor-pointer"
+                    className="absolute top-3 right-3 sm:top-4 sm:right-4 w-8 h-8 rounded-full bg-black/25 hover:bg-black/40 text-white flex items-center justify-center transition-colors z-20 cursor-pointer"
                     title="Fermer"
                   >
                     <X className="w-4 h-4" />
                   </button>
 
-                  <div className="flex flex-col items-center justify-center gap-2 mb-2">
-                    {/* Fused 48H Timer & 14-Day Free Trial Badge */}
-                    <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-slate-950/80 border border-amber-300/80 text-white shadow-xl shadow-slate-950/40 backdrop-blur-md">
-                      <span className="px-2 py-0.5 rounded-full bg-amber-400 text-slate-950 text-[10px] font-black uppercase tracking-wider flex items-center gap-1">
+                  {/* Responsive & well-spaced timer banner */}
+                  <div className="flex justify-center mb-2.5 pt-1 sm:pt-0 pr-8 pl-8 sm:px-0">
+                    <div className="inline-flex flex-wrap items-center justify-center gap-1.5 sm:gap-2 px-3 py-1.5 rounded-full bg-slate-950/85 border border-amber-300/80 text-white shadow-xl shadow-slate-950/30 backdrop-blur-md max-w-full">
+                      <span className="px-2 py-0.5 rounded-full bg-amber-400 text-slate-950 text-[10px] font-black uppercase tracking-wider flex items-center gap-1 shrink-0">
                         <Gift className="w-3 h-3 fill-slate-950" />
                         Offre 14 Jours Gratuits
                       </span>
-                      <span className="text-amber-200 text-xs font-bold flex items-center gap-1.5">
+                      <div className="flex items-center gap-1.5 text-amber-200 text-xs font-bold shrink-0">
                         <Clock className="w-3.5 h-3.5 text-rose-400 shrink-0 animate-pulse" />
-                        <span className="text-[11px] text-rose-200 font-medium">Expire dans :</span>
-                        <span className="font-mono font-black text-amber-300 tracking-wider">
+                        <span className="text-[10px] sm:text-[11px] text-rose-200/90 font-medium">Expire dans :</span>
+                        <span className="font-mono font-black text-amber-300 tracking-wider text-xs sm:text-sm">
                           {formatTrialCountdown(remainingTrialSeconds)}
                         </span>
-                      </span>
+                      </div>
                     </div>
                   </div>
 
-                  <h2 className="text-2xl sm:text-3xl font-black tracking-tight text-white leading-tight">
+                  <h2 className="text-lg sm:text-2xl font-black tracking-tight text-white leading-tight px-2 sm:px-4">
                     Profitez de 14 JOURS GRATUITS !
                   </h2>
-                  <p className="text-xs text-rose-100 font-semibold mt-1.5 max-w-sm mx-auto leading-relaxed">
+                  <p className="text-[11px] sm:text-xs text-rose-100 font-medium mt-1 max-w-sm mx-auto leading-relaxed">
                     Nous tenons vraiment à votre histoire : <strong>2 semaines entières de Pass Duo 100% gratuit !</strong>
                   </p>
                 </div>
@@ -710,14 +704,15 @@ export const DuoPremiumModal: React.FC<DuoPremiumModalProps> = ({
                 className="flex flex-col flex-1 overflow-hidden"
               >
                 {/* Unified Royal Gradient Header */}
-                <div className="relative bg-gradient-to-br from-amber-500 via-rose-600 to-purple-600 p-6 text-white text-center overflow-hidden shrink-0">
+                <div className="relative bg-gradient-to-br from-amber-500 via-rose-600 to-purple-600 px-4 pt-5 pb-4 sm:px-6 sm:pt-6 sm:pb-5 text-white text-center overflow-hidden shrink-0">
                   <div className="absolute top-0 right-0 -mr-6 -mt-6 w-28 h-28 bg-white/15 rounded-full blur-2xl pointer-events-none" />
                   <div className="absolute bottom-0 left-0 -ml-6 -mb-6 w-28 h-28 bg-rose-400/25 rounded-full blur-2xl pointer-events-none" />
 
                   <button
                     onClick={onClose}
                     type="button"
-                    className="absolute top-4 right-4 p-2 rounded-full bg-black/20 hover:bg-black/30 text-white transition-colors cursor-pointer"
+                    className="absolute top-3 right-3 sm:top-4 sm:right-4 w-8 h-8 rounded-full bg-black/25 hover:bg-black/40 text-white flex items-center justify-center transition-colors z-20 cursor-pointer"
+                    title="Fermer"
                   >
                     <X className="w-4 h-4" />
                   </button>
@@ -727,7 +722,7 @@ export const DuoPremiumModal: React.FC<DuoPremiumModalProps> = ({
                     <span>Pass Duo Premium 👑</span>
                   </div>
 
-                  <h2 className="text-xl sm:text-2xl font-black tracking-tight text-white">
+                  <h2 className="text-lg sm:text-2xl font-black tracking-tight text-white leading-tight px-2 sm:px-4">
                     Immortalisez vos souvenirs sans limite
                   </h2>
                 </div>
@@ -870,12 +865,12 @@ export const DuoPremiumModal: React.FC<DuoPremiumModalProps> = ({
 
                       {/* Harmonized Pricing Plan Selector */}
                       <div className="space-y-3">
-                        <div className="flex items-center justify-between">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
                           <h3 className="text-xs font-black uppercase tracking-wider text-slate-400">
                             Choisissez votre formule
                           </h3>
                           {trialOfferAvailable && (
-                            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-950 dark:bg-slate-950 border border-amber-400/60 text-white text-[10px] shadow-sm">
+                            <div className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1 rounded-full bg-slate-950 dark:bg-slate-950 border border-amber-400/60 text-white text-[10px] shadow-sm shrink-0">
                               <span className="font-bold text-amber-400">🔥 7j Gratuits</span>
                               <span className="text-slate-500">•</span>
                               <Clock className="w-3 h-3 text-rose-400 shrink-0 animate-pulse" />

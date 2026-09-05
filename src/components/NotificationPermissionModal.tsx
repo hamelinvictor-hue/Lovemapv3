@@ -28,8 +28,8 @@ export const NotificationPermissionModal: React.FC<NotificationPermissionModalPr
   };
 
   return (
-    <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-fade-in">
-      <div className="relative w-full max-w-sm bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl rounded-[28px] shadow-2xl border border-slate-200/80 dark:border-slate-800 p-6 overflow-hidden text-slate-900 dark:text-white space-y-5">
+    <div className="fixed inset-0 z-[99999] flex items-center justify-center p-3 sm:p-4 bg-slate-950/80 backdrop-blur-md animate-fade-in overflow-y-auto">
+      <div className="relative w-full max-w-sm bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl rounded-[28px] shadow-2xl border border-slate-200/80 dark:border-slate-800 p-5 sm:p-6 overflow-y-auto my-auto max-h-[94vh] text-slate-900 dark:text-white space-y-4 sm:space-y-5">
         
         {/* Header Icon Badge with Apple/Google Style */}
         <div className="flex items-center justify-center pt-1">

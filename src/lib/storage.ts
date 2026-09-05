@@ -14,6 +14,7 @@ const LOCATION_PROMPT_KEY = 'lovemap_location_prompt_seen_v2';
 const LOCATION_PERMISSION_STATUS_KEY = 'lovemap_location_permission_status_v2';
 const RATED_APP_KEY = 'lovemap_has_rated_app_v2';
 const FIRST_SPOT_RATING_PROMPTED_KEY = 'lovemap_first_spot_rating_prompted_v2';
+const FIRST_SPOT_PAYWALL_PROMPTED_KEY = 'lovemap_first_spot_paywall_prompted_v2';
 const NOTIFICATION_PROMPT_KEY = 'lovemap_notification_prompt_seen_v2';
 const NOTIFICATION_PERMISSION_KEY = 'lovemap_notification_permission_v2';
 const TRIAL_URGENCY_NOTIF_KEY = 'lovemap_trial_urgency_notif_sent_v2';
@@ -176,6 +177,22 @@ export function saveHasPromptedFirstSpotRating(prompted: boolean): void {
     localStorage.setItem(FIRST_SPOT_RATING_PROMPTED_KEY, prompted ? 'true' : 'false');
   } catch (err) {
     console.error('Failed to save first spot rating state', err);
+  }
+}
+
+export function getHasPromptedFirstSpotPaywall(): boolean {
+  try {
+    return localStorage.getItem(FIRST_SPOT_PAYWALL_PROMPTED_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+export function saveHasPromptedFirstSpotPaywall(prompted: boolean): void {
+  try {
+    localStorage.setItem(FIRST_SPOT_PAYWALL_PROMPTED_KEY, prompted ? 'true' : 'false');
+  } catch (err) {
+    console.error('Failed to save first spot paywall state', err);
   }
 }
 

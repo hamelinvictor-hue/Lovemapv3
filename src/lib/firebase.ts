@@ -1325,6 +1325,35 @@ export async function updateCoupleInFirestore(code: string, updated: CouplePair)
   }
 }
 
+// Save device APNs / Push token for a partner in Firestore
+export async function savePushTokenToFirestore(code: string, partnerId: PartnerId, token: string) {
+  if (!code || !token) return;
+  const cleanCode = code.trim().toUpperCase();
+  const partnerKey = partnerId === 'partner_a' ? 'partnerA.pushToken' : 'partnerB.pushToken';
+  
+  // REST patch
+  restPatchCoupleDoc(cleanCode, { [partnerKey]: token }, [partnerKey]).catch(() => {});
+
+  // SDK update
+  try {
+    await ensureGuestUser();
+    const coupleRef = doc(db, 'couples', cleanCode);
+    await setDoc(
+      coupleRef,
+      cleanFirestoreData({
+        [partnerId === 'partner_a' ? 'partnerA' : 'partnerB']: {
+          pushToken: token,
+        },
+        updatedAt: serverTimestamp(),
+      }),
+      { merge: true }
+    );
+    console.log('[savePushTokenToFirestore] Device push token saved for', partnerId);
+  } catch (e) {
+    console.warn('[savePushTokenToFirestore] Notice saving token:', e);
+  }
+}
+
 // Break up / dissolve a duo in Firestore
 export async function breakCoupleInFirestore(code: string, breakerName: string) {
   if (!code) return;
