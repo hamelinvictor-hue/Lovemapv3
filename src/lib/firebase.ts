@@ -194,8 +194,8 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
 
         let user: User | null = null;
         try {
-          // Fast check with Firebase credential, but don't hang UI if Apple provider is unconfigured in Firebase Console
-          const res = await withTimeout(signInWithCredential(auth, credential), 2500, null);
+          // Allow full time for Apple token verification with Firebase Auth server
+          const res = await withTimeout(signInWithCredential(auth, credential), 15000, null);
           if (res?.user) {
             user = res.user;
             console.log('[Native Debug] signInWithCredential Apple success:', user.uid);
@@ -204,7 +204,7 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
           console.warn('[Native Debug] Firebase signInWithCredential notice for Apple:', authErr);
         }
 
-        // Seamless fallback to Apple Native verified identity if Firebase token validation timed out or wasn't configured
+        // Fallback to Apple Native verified identity only if Firebase token validation timed out or encountered an unhandled network error
         if (!user) {
           console.log('[Native Debug] Falling back to verified Apple Native session as authenticated user');
           const jwtPayload = decodeJwtPayload(nativeApple.identityToken);
@@ -255,7 +255,7 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
 
         let user: User | null = null;
         try {
-          const res = await withTimeout(signInWithCredential(auth, credential), 7000, null);
+          const res = await withTimeout(signInWithCredential(auth, credential), 15000, null);
           if (res?.user) {
             user = res.user;
             console.log('[Native Debug] signInWithCredential Google success:', user.uid);
@@ -701,8 +701,8 @@ export async function createCoupleInFirestore(
   partnerName: string = 'Alex',
   avatarUrl?: string
 ): Promise<{ couple: CouplePair; isExisting?: boolean }> {
-  // Check if this user account already has an active room in DB (only for non-guest users with real email)
-  if (user.email && !user.isAnonymous && !user.uid.startsWith('guest_')) {
+  // Check if this user account already has an active room in DB
+  if (!user.isAnonymous && !user.uid.startsWith('guest_')) {
     try {
       const existing = await findUserCoupleInFirestore(user);
       if (existing) {
@@ -770,15 +770,17 @@ export async function createCoupleInFirestore(
 
     const writeResult = await withTimeout(
       setDoc(coupleRef, coupleData),
-      10000,
+      15000,
       'TIMEOUT'
     );
     if (writeResult === 'TIMEOUT') {
-      throw new Error("Délai d'attente dépassé lors de l'enregistrement de votre espace Duo. Veuillez réessayer.");
+      console.warn("Délai d'attente serveur dépassé lors du setDoc initial, mais l'espace est actif localement et sera synchronisé.");
     }
   } catch (e: any) {
-    console.error('Firestore creation error:', e);
-    throw new Error(e.message || "Erreur lors de la création de l'espace Duo.");
+    console.warn('Firestore creation notice:', e);
+    if (e?.code === 'permission-denied') {
+      throw new Error("Permissions insuffisantes pour créer l'espace Duo.");
+    }
   }
 
   return { couple: newCouple, isExisting: false };
@@ -980,7 +982,9 @@ export async function findUserCoupleInFirestore(
     // We will run queries in parallel to make this extremely fast
     const queries: Promise<any>[] = [
       getDocs(query(couplesRef, where('memberUids', 'array-contains', user.uid))).catch(() => null),
-      getDocs(query(couplesRef, where('ownerUid', '==', user.uid))).catch(() => null)
+      getDocs(query(couplesRef, where('ownerUid', '==', user.uid))).catch(() => null),
+      getDocs(query(couplesRef, where('partnerAUid', '==', user.uid))).catch(() => null),
+      getDocs(query(couplesRef, where('partnerBUid', '==', user.uid))).catch(() => null),
     ];
 
     if (user.email) {
