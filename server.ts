@@ -157,7 +157,7 @@ app.post('/api/revenuecat/subscribers/:appUserId/revoke', async (req, res) => {
 // PUSH NOTIFICATIONS SERVICE (OneSignal / APNs)
 // ==========================================
 
-const ONESIGNAL_APP_ID = process.env.ONESIGNAL_APP_ID || '';
+const ONESIGNAL_APP_ID = process.env.ONESIGNAL_APP_ID || '6bbd3278-e98f-4ddc-bfe5-a417960d8aac';
 const ONESIGNAL_REST_API_KEY = process.env.ONESIGNAL_REST_API_KEY || '';
 const ONESIGNAL_BASE_URL = 'https://onesignal.com/api/v1';
 
