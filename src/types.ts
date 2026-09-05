@@ -107,6 +107,7 @@ export interface CouplePair {
   isPinLocked?: boolean;
   status?: 'active' | 'broken';
   brokenBy?: string;
+  isCodeUsed?: boolean;
   spots?: Spot[];
   notifications?: NotificationItem[];
 }

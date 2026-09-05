@@ -558,10 +558,15 @@ export default function App() {
           return;
         }
 
-        setCouple((prev) => ({
-          ...prev,
-          ...remoteCouple,
-        }));
+        setCouple((prev) => {
+          const merged = { ...prev, ...remoteCouple };
+          // If code is used and partner B has joined, close the share modal
+          if (merged.isCodeUsed || (merged.partnerB && merged.partnerB.name !== 'En attente...')) {
+            setShowDuoCodeModal(null);
+          }
+          saveCouple(merged);
+          return merged;
+        });
       }
     });
 

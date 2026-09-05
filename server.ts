@@ -605,6 +605,24 @@ app.post('/api/couples/:code/break', async (req, res) => {
   return res.json({ success: true });
 });
 
+// DELETE /api/couples/:code
+app.delete('/api/couples/:code', async (req, res) => {
+  const { code } = req.params;
+  const cleanCode = code.trim().toUpperCase();
+
+  couplesStore.delete(cleanCode);
+  persistCouplesStore();
+
+  broadcastCoupleEvent(cleanCode, {
+    type: 'couple_update',
+    couple: null as any,
+    spots: [],
+    notifications: [],
+  });
+
+  return res.json({ success: true });
+});
+
 // GET /api/couples/:code/spots
 app.get('/api/couples/:code/spots', async (req, res) => {
   const { code } = req.params;

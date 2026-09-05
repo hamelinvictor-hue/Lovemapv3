@@ -942,7 +942,7 @@ export async function ensureCoupleRoomInFirestore(
       localCouple = arg2;
     } else {
       try {
-        const saved = localStorage.getItem('lovemap_couple_data');
+        const saved = localStorage.getItem('lovemap_couple_v1');
         localCouple = saved ? JSON.parse(saved) : ({} as any);
       } catch {
         localCouple = {} as any;
@@ -1628,6 +1628,30 @@ export function subscribeToCoupleEvents(code: string, handler: CoupleEventHandle
       es.onerror = () => {
         // Built-in EventSource auto-reconnects
       };
+
+      // iOS Native Fallback: Polling every 15s in case EventSource silently dies in background
+      const fallbackPoll = setInterval(() => {
+        if (activeEventSourceCode === cleanCode) {
+          serverGetCouple(cleanCode).then((coupleData) => {
+            if (coupleData) {
+              eventHandlers.forEach((h) => {
+                try {
+                  h({
+                    type: 'poll_sync',
+                    couple: coupleData,
+                    spots: coupleData.spots || [],
+                    notifications: coupleData.notifications || [],
+                  });
+                } catch (e) {}
+              });
+            }
+          }).catch(() => {});
+        } else {
+          clearInterval(fallbackPoll);
+        }
+      }, 15000);
+
+      (es as any)._fallbackPoll = fallbackPoll;
     } catch (e) {
       console.warn('[SSE Live] Could not initialize EventSource:', e);
     }
@@ -1636,6 +1660,9 @@ export function subscribeToCoupleEvents(code: string, handler: CoupleEventHandle
   return () => {
     eventHandlers.delete(handler);
     if (eventHandlers.size === 0 && activeEventSource) {
+      if ((activeEventSource as any)._fallbackPoll) {
+        clearInterval((activeEventSource as any)._fallbackPoll);
+      }
       try { activeEventSource.close(); } catch {}
       activeEventSource = null;
       activeEventSourceCode = '';
@@ -2150,10 +2177,25 @@ export async function deleteUserAccountInFirestore(user: User | null, code?: str
       // Delete main couple document
       await deleteDoc(doc(db, 'couples', cCode));
       console.log('[Native Debug] Successfully deleted couple document:', cCode);
+      
+      // Delete in backend memory store
+      try {
+        await fetch(getBackendApiUrl(`/api/couples/${cCode}`), { method: 'DELETE' });
+      } catch (err) {}
     } catch (e) {
       console.warn('[Native Debug] Notice deleting couple document in Firestore:', e);
     }
   }
+
+  // Clear local storage for Duo
+  try {
+    localStorage.removeItem('lovemap_couple_v1');
+    localStorage.removeItem('lovemap_spots_v1');
+    localStorage.removeItem('lovemap_notifs_v1');
+    localStorage.removeItem('lovemap_active_partner_v1');
+    localStorage.removeItem('lovemap_app_mode_v1');
+    localStorage.removeItem('lovemap_onboarding_completed_v2');
+  } catch (e) {}
 
   // 2. Clear persisted auth storage
   saveStoredAuthUser(null);
