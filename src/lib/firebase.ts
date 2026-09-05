@@ -1685,6 +1685,27 @@ export async function saveNotificationToFirestore(code: string, notif: Notificat
   } catch (err) {
     console.warn('Notice saving notification to Firestore:', err);
   }
+
+  // 3. Dispatch external Push Notification to partner's device (Apple APNs / OneSignal)
+  // This delivers a real lock screen push on iPhone even if the partner has closed the app!
+  try {
+    fetch('/api/push/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        code: cleanCode,
+        senderPartnerId: notif.senderId,
+        title: notif.title,
+        message: notif.message,
+        spotId: notif.spotId,
+        type: notif.type,
+      }),
+    }).catch((pushErr) => {
+      console.warn('[saveNotificationToFirestore] Notice dispatching external push:', pushErr);
+    });
+  } catch (pushErr) {
+    // Non-blocking
+  }
 }
 
 // Subscribe to notifications real-time changes (Hybrid: SDK onSnapshot + REST couple.notifications polling for iOS)

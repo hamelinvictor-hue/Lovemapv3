@@ -324,6 +324,17 @@ export default function App() {
       onPushToken: (token) => {
         if (couple?.code && activePartnerId) {
           savePushTokenToFirestore(couple.code, activePartnerId, token).catch(console.warn);
+          // Register with server push engine (OneSignal / APNs delivery when app is closed)
+          fetch('/api/push/register-token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              code: couple.code,
+              partnerId: activePartnerId,
+              pushToken: token,
+              platform: 'ios',
+            }),
+          }).catch(console.warn);
         }
       },
       onAppStateChange: (isActive) => {
