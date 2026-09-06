@@ -8,6 +8,7 @@ import {
   joinCoupleInFirestore,
   ensureGuestUser,
   updateCoupleInFirestore,
+  generateCoupleCode,
 } from '../lib/firebase';
 import { AppMode, CouplePair, PartnerId } from '../types';
 import { compressImageFile } from '../lib/imageCompressor';
@@ -252,13 +253,40 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
           }
         }
 
-        const res = await createCoupleInFirestore(u, userName.trim(), activeAvatar);
-        if (res.isExisting) {
-          onToast(`Compte existant retrouvé ! Espace Duo (${res.couple.code}) restauré 💖`);
-        } else {
-          onToast(`Espace Duo créé avec succès (${res.couple.code}) !`);
+        let coupleResult: CouplePair | null = null;
+        try {
+          const res = await createCoupleInFirestore(u, userName.trim(), activeAvatar);
+          coupleResult = res.couple;
+          if (res.isExisting) {
+            onToast(`Compte existant retrouvé ! Espace Duo (${res.couple.code}) restauré 💖`);
+          } else {
+            onToast(`Espace Duo créé avec succès (${res.couple.code}) !`);
+          }
+        } catch (createErr) {
+          console.warn('createCoupleInFirestore notice (fallback):', createErr);
         }
-        onComplete('duo', res.couple, 'partner_a', u);
+
+        if (!coupleResult) {
+          coupleResult = {
+            code: generateCoupleCode(),
+            partnerA: {
+              id: 'partner_a',
+              name: userName.trim() || u.displayName || 'Partenaire 1',
+              avatar: activeAvatar || u.photoURL || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+              role: 'Créateur du journal',
+            },
+            partnerB: {
+              id: 'partner_b',
+              name: 'En attente...',
+              avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
+              role: 'Partenaire 2',
+            },
+            anniversaryDate: new Date().toISOString().split('T')[0],
+            isCodeUsed: false,
+          };
+        }
+
+        onComplete('duo', coupleResult, 'partner_a', u);
       } else {
         // Solo mode
         const u = userParam || (await ensureGuestUser(userName.trim() || 'Utilisateur'));

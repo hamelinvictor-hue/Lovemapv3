@@ -1,6 +1,6 @@
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import { GoogleSignIn } from '@capawesome/capacitor-google-sign-in';
-import { SignInWithApple } from '@capacitor-community/apple-sign-in';
+import { AppleSignIn, SignInScope } from '@capawesome/capacitor-apple-sign-in';
 import { PushNotifications } from '@capacitor/push-notifications';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { AppReview } from '@capawesome/capacitor-app-review';
@@ -766,46 +766,47 @@ export async function triggerNativeAppleAuth(): Promise<{
   email?: string;
 } | null> {
   const cap = (window as any).Capacitor;
-  const applePlugin = SignInWithApple || cap?.Plugins?.SignInWithApple || (window as any).SignInWithApple;
-  console.log('[Native Debug] triggerNativeAppleAuth called. Available:', !!applePlugin);
+  const applePlugin = AppleSignIn || cap?.Plugins?.AppleSignIn || (window as any).AppleSignIn;
+  console.log('[Native Debug] triggerNativeAppleAuth called (@capawesome/capacitor-apple-sign-in). Available:', !!applePlugin);
   
-  if (applePlugin && typeof applePlugin.authorize === 'function') {
+  if (applePlugin && typeof applePlugin.signIn === 'function') {
     try {
       const rawNonce = generateRawNonce(32);
       const hashedNonce = await sha256Hex(rawNonce);
-      console.log('[Native Debug] Calling SignInWithApple.authorize() with hashed nonce...');
+      console.log('[Native Debug] Calling AppleSignIn.signIn() with hashed nonce...');
       
-      const authPromise = applePlugin.authorize({
-        clientId: 'com.lovemap.duo',
-        redirectURI: 'https://gen-lang-client-0158057859.firebaseapp.com/__/auth/handler',
-        scopes: 'email name',
+      const authPromise = applePlugin.signIn({
+        scopes: [SignInScope.Email, SignInScope.FullName],
         nonce: hashedNonce,
       });
 
-      // Safety timeout: 20 seconds to prevent hanging on native iOS
-      const res = await withTimeoutPromise(
+      // Safety timeout: 25 seconds
+      const rawRes = await withTimeoutPromise(
         authPromise,
-        20000,
+        25000,
         'Délai de connexion Apple dépassé. Veuillez réessayer.'
       );
+      const res = rawRes as any;
 
-      console.log('[Native Debug] SignInWithApple.authorize() result received');
+      console.log('[Native Debug] AppleSignIn.signIn() response received:', !!res);
       
-      const resp = (res as any)?.response || res || {};
-      const token = resp.identityToken;
-      if (token) {
+      if (res && res.idToken) {
         return {
-          identityToken: token,
-          appleUserId: resp.user,
+          identityToken: res.idToken,
+          appleUserId: res.user || undefined,
           rawNonce,
-          givenName: resp.givenName,
-          familyName: resp.familyName,
-          email: resp.email,
+          givenName: res.givenName || undefined,
+          familyName: res.familyName || undefined,
+          email: res.email || undefined,
         };
       }
       throw new Error('Jeton d\'authentification Apple non reçu.');
-    } catch (e) {
-      console.warn('[Native Debug] Native SignInWithApple plugin error/cancelled:', e);
+    } catch (e: any) {
+      if (e?.code === 'SIGN_IN_CANCELED' || e?.message?.includes('cancel') || e?.message?.includes('annul')) {
+        console.log('[Native Debug] Native AppleSignIn cancelled by user');
+        throw new Error('Connexion Apple annulée');
+      }
+      console.warn('[Native Debug] Native AppleSignIn error:', e);
       throw e;
     }
   }

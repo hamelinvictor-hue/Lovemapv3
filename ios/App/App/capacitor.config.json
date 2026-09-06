@@ -3,12 +3,12 @@
 	"appName": "react-example",
 	"webDir": "dist",
 	"packageClassList": [
-		"SignInWithApple",
 		"AppPlugin",
 		"GeolocationPlugin",
 		"LocalNotificationsPlugin",
 		"PushNotificationsPlugin",
 		"AppReviewPlugin",
+		"AppleSignInPlugin",
 		"GoogleSignInPlugin",
 		"PurchasesPlugin",
 		"AppTrackingTransparencyPlugin"

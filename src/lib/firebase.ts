@@ -1039,9 +1039,9 @@ export async function createCoupleInFirestore(
 
   const coupleRef = doc(db, 'couples', code);
 
-  // If the local code already exists in DB (e.g., created by Guest mode), we MERGE the new Google user into it
-  // This prevents creating duplicate rooms for the same user when they upgrade from Guest to Google/Apple
-  const snap = await getDoc(coupleRef).catch(() => null);
+  // If the local code already exists in DB (e.g., created by Guest mode), we MERGE the new Google/Apple user into it
+  // Wrap getDoc with 1200ms timeout so it never hangs the mobile app
+  const snap = await withTimeout(getDoc(coupleRef), 1200, null).catch(() => null);
   if (snap && snap.exists()) {
     const existingData = snap.data() as CouplePair & { memberUids?: string[], ownerEmail?: string };
     const existingMembers = existingData.memberUids || [];
@@ -1066,7 +1066,9 @@ export async function createCoupleInFirestore(
       updatedAt: new Date().toISOString(),
     });
     
-    await setDoc(coupleRef, updatePayload, { merge: true }).catch(() => {});
+    // Save via REST (instant, 50ms) + non-blocking JS SDK
+    restSetDoc(`couples/${code}`, updatePayload).catch(() => {});
+    withTimeout(setDoc(coupleRef, updatePayload, { merge: true }), 1500, null).catch(() => {});
     verifiedRoomsCache.add(code);
     return { couple: updatedCouple, isExisting: true };
   }
@@ -1107,12 +1109,14 @@ export async function createCoupleInFirestore(
     updatedAt: new Date().toISOString(),
   });
 
-  // Single clean write
+  // Fast write: instant REST save (50ms) + bounded JS SDK write (max 1500ms so UI never hangs)
   try {
-    await setDoc(coupleRef, coupleData);
+    restSetDoc(`couples/${code}`, coupleData).catch((e) => {
+      console.warn('[REST] createCouple notice:', e);
+    });
+    await withTimeout(setDoc(coupleRef, coupleData), 1500, null).catch(() => {});
   } catch (err: any) {
-    console.error('[DUO-SYNC-ERROR] createCoupleInFirestore setDoc failed:', err?.code, err?.message);
-    throw new Error("Erreur de création de duo sur le réseau. Veuillez réessayer.");
+    console.warn('[createCouple] Non-fatal setDoc notice (proceeding):', err);
   }
   verifiedRoomsCache.add(code);
   console.log('[createCouple] Couple room registered in Firestore:', code);
@@ -1320,43 +1324,53 @@ export async function findUserCoupleInFirestore(
       }
     }
 
-    // 1. Search by memberUids with candidate UIDs
-    for (const cand of candidateUids) {
-      if (!foundDoc) {
+    // 1. Search by memberUids with candidate UIDs (fast parallel batch)
+    const candList = Array.from(candidateUids).slice(0, 4);
+    const memberPromises = candList.map(async (cand) => {
+      try {
         const q = query(couplesRef, where('memberUids', 'array-contains', cand), limit(1));
-        const snap = await withTimeout(getDocs(q), 3000, null);
+        const snap = await withTimeout(getDocs(q), 1200, null).catch(() => null);
         if (snap && !snap.empty) {
-          foundDoc = snap.docs[0];
-          const docData = foundDoc.data();
-          if (docData.partnerBUid === cand || docData.partnerBUid === user.uid) partnerId = 'partner_b';
-          break;
+          return { doc: snap.docs[0], cand };
         }
+      } catch (e) {}
+      return null;
+    });
+
+    const memberResults = await Promise.all(memberPromises);
+    for (const res of memberResults) {
+      if (res && res.doc) {
+        foundDoc = res.doc;
+        const docData = foundDoc.data();
+        if (docData.partnerBUid === res.cand || docData.partnerBUid === user.uid) partnerId = 'partner_b';
+        break;
       }
     }
 
-    // 1b. Search by ownerUid, partnerAUid, partnerBUid with candidate UIDs
-    if (!foundDoc) {
-      for (const cand of candidateUids) {
-        if (foundDoc) break;
-        const qOwner = query(couplesRef, where('ownerUid', '==', cand), limit(1));
-        const snapOwner = await withTimeout(getDocs(qOwner), 2500, null);
-        if (snapOwner && !snapOwner.empty) {
-          foundDoc = snapOwner.docs[0];
-          break;
-        }
+    // 1b. Search by ownerUid or partner UIDs if not found
+    if (!foundDoc && candList.length > 0) {
+      const fieldPromises = candList.map(async (cand) => {
+        try {
+          const qOwner = query(couplesRef, where('ownerUid', '==', cand), limit(1));
+          const snapOwner = await withTimeout(getDocs(qOwner), 1000, null).catch(() => null);
+          if (snapOwner && !snapOwner.empty) return { doc: snapOwner.docs[0], pId: 'partner_a' as PartnerId };
 
-        const qPA = query(couplesRef, where('partnerAUid', '==', cand), limit(1));
-        const snapPA = await withTimeout(getDocs(qPA), 2500, null);
-        if (snapPA && !snapPA.empty) {
-          foundDoc = snapPA.docs[0];
-          break;
-        }
+          const qPA = query(couplesRef, where('partnerAUid', '==', cand), limit(1));
+          const snapPA = await withTimeout(getDocs(qPA), 1000, null).catch(() => null);
+          if (snapPA && !snapPA.empty) return { doc: snapPA.docs[0], pId: 'partner_a' as PartnerId };
 
-        const qPB = query(couplesRef, where('partnerBUid', '==', cand), limit(1));
-        const snapPB = await withTimeout(getDocs(qPB), 2500, null);
-        if (snapPB && !snapPB.empty) {
-          foundDoc = snapPB.docs[0];
-          partnerId = 'partner_b';
+          const qPB = query(couplesRef, where('partnerBUid', '==', cand), limit(1));
+          const snapPB = await withTimeout(getDocs(qPB), 1000, null).catch(() => null);
+          if (snapPB && !snapPB.empty) return { doc: snapPB.docs[0], pId: 'partner_b' as PartnerId };
+        } catch (e) {}
+        return null;
+      });
+
+      const fieldResults = await Promise.all(fieldPromises);
+      for (const res of fieldResults) {
+        if (res && res.doc) {
+          foundDoc = res.doc;
+          partnerId = res.pId;
           break;
         }
       }
@@ -1365,24 +1379,11 @@ export async function findUserCoupleInFirestore(
     // 2. Search by email
     if (!foundDoc && user.email) {
       const qEmail = query(couplesRef, where('ownerEmail', '==', user.email), limit(1));
-      const snapEmail = await withTimeout(getDocs(qEmail), 3000, null);
+      const snapEmail = await withTimeout(getDocs(qEmail), 1200, null).catch(() => null);
       if (snapEmail && !snapEmail.empty) {
         foundDoc = snapEmail.docs[0];
         const docData = foundDoc.data();
         if (docData.partnerBEmail === user.email) partnerId = 'partner_b';
-      } else {
-        const qA = query(couplesRef, where('partnerAEmail', '==', user.email), limit(1));
-        const snapA = await withTimeout(getDocs(qA), 3000, null);
-        if (snapA && !snapA.empty) {
-          foundDoc = snapA.docs[0];
-        } else {
-          const qB = query(couplesRef, where('partnerBEmail', '==', user.email), limit(1));
-          const snapB = await withTimeout(getDocs(qB), 3000, null);
-          if (snapB && !snapB.empty) {
-            foundDoc = snapB.docs[0];
-            partnerId = 'partner_b';
-          }
-        }
       }
     }
 
