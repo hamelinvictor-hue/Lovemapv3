@@ -180,16 +180,19 @@ export async function restGetDoc(docPath: string): Promise<any | null> {
   }
 }
 
-export async function restSetDoc(docPath: string, data: any): Promise<boolean> {
+export async function restSetDoc(docPath: string, data: any, merge: boolean = true): Promise<boolean> {
   try {
     const cleanPath = docPath.startsWith('/') ? docPath.slice(1) : docPath;
     const fields: Record<string, any> = {};
+    const fieldMasks: string[] = [];
     for (const [k, v] of Object.entries(data)) {
       if (v !== undefined) {
         fields[k] = toFirestoreValue(v);
+        fieldMasks.push(`updateMask.fieldPaths=${encodeURIComponent(k)}`);
       }
     }
-    const res = await fetch(`${FIRESTORE_REST_BASE}/${cleanPath}?key=${firebaseConfig.apiKey}`, {
+    const maskQuery = merge && fieldMasks.length > 0 ? `&${fieldMasks.join('&')}` : '';
+    const res = await fetch(`${FIRESTORE_REST_BASE}/${cleanPath}?key=${firebaseConfig.apiKey}${maskQuery}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ fields }),
