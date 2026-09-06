@@ -1769,8 +1769,29 @@ export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void
     document.addEventListener('visibilitychange', onVisibilityChange);
   }
 
+  // 3. Ultra-low cost Liveness Poller
+  // Checks only the couple document (1 read) every 10 seconds.
+  // If we detect the lastSpotUpdate timestamp changed, we THEN trigger a full spots sync.
+  let lastKnownSpotUpdate = 0;
+  const livenessPoller = setInterval(async () => {
+    try {
+      const coupleDoc = await restGetDoc(`couples/${cleanCode}`);
+      if (coupleDoc && coupleDoc.lastSpotUpdate) {
+        const remoteUpdate = Number(coupleDoc.lastSpotUpdate);
+        if (lastKnownSpotUpdate === 0) {
+          lastKnownSpotUpdate = remoteUpdate;
+        } else if (remoteUpdate > lastKnownSpotUpdate) {
+          lastKnownSpotUpdate = remoteUpdate;
+          console.log('[Firebase] Liveness poller detected spot change, fetching...');
+          fetchSpotsDirect();
+        }
+      }
+    } catch (e) {}
+  }, 10000);
+
   return () => {
     unsubSnapshot();
+    clearInterval(livenessPoller);
     if (typeof window !== 'undefined') {
       window.removeEventListener('focus', onFocus);
       window.removeEventListener('native-app-resume', onNativeResume);
@@ -1788,7 +1809,11 @@ export async function saveNotificationToFirestore(code: string, notif: Notificat
   const cleanedNotif = cleanFirestoreData(notif);
   
   // 1. Instantly write via REST
-  restSetDoc(`couples/${cleanCode}/notifications/${notif.id}`, cleanedNotif).catch(() => {});
+  restSetDoc(`couples/${cleanCode}/notifications/${notif.id}`, cleanedNotif)
+    .then((ok) => {
+      if (ok) restSetDoc(`couples/${cleanCode}`, { updatedAt: new Date().toISOString(), lastNotificationUpdate: Date.now() }).catch(() => {});
+    })
+    .catch(() => {});
 
   // 2. Pass to SDK for offline local cache resolution (non-blocking)
   try {
@@ -1863,8 +1888,27 @@ export function subscribeToNotifications(code: string, callback: (notifs: Notifi
     document.addEventListener('visibilitychange', onVisibilityChange);
   }
 
+  // 3. Ultra-low cost Liveness Poller
+  let lastKnownNotifUpdate = 0;
+  const livenessPoller = setInterval(async () => {
+    try {
+      const coupleDoc = await restGetDoc(`couples/${cleanCode}`);
+      if (coupleDoc && coupleDoc.lastNotificationUpdate) {
+        const remoteUpdate = Number(coupleDoc.lastNotificationUpdate);
+        if (lastKnownNotifUpdate === 0) {
+          lastKnownNotifUpdate = remoteUpdate;
+        } else if (remoteUpdate > lastKnownNotifUpdate) {
+          lastKnownNotifUpdate = remoteUpdate;
+          console.log('[Firebase] Liveness poller detected notif change, fetching...');
+          fetchNotifsDirect();
+        }
+      }
+    } catch (e) {}
+  }, 10000);
+
   return () => {
     unsubSnapshot();
+    clearInterval(livenessPoller);
     if (typeof window !== 'undefined') {
       window.removeEventListener('focus', onFocus);
       window.removeEventListener('native-app-resume', onNativeResume);

@@ -644,6 +644,10 @@ export function setupNativeNotificationHandlers(callbacks: {
       // 4. In-flight push notification received while app is active
       const pushRecPromise = PushNotifications.addListener('pushNotificationReceived', (notification) => {
         console.log('[Native] Push notification received in foreground:', notification);
+        // Force a data sync because a partner action occurred
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new Event('native-app-resume'));
+        }
       });
       unsubs.push(() => {
         pushRecPromise.then((h: any) => h?.remove?.()).catch(() => {});
