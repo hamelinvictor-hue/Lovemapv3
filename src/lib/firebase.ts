@@ -399,8 +399,9 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
         const finalUid = rawAppleId.startsWith('apple_') ? rawAppleId : `apple_${rawAppleId}`;
         const finalEmail = nativeApple.email || jwtPayload?.email || null;
 
-        console.log('[Native Debug] Native Apple auth token received. Authenticating with Firebase (with safe timeout)...');
+        console.log('[Native Debug] Native Apple auth token received. Authenticating with Firebase OAuthProvider credential...');
         let user: User | null = null;
+        let firebaseAuthError: any = null;
         try {
           const credOptions: any = { idToken: nativeApple.identityToken };
           if (nativeApple.rawNonce) {
@@ -408,46 +409,76 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
           }
           const credential = appleProvider.credential(credOptions);
           
-          // Safe timeout of 3500ms so the user is NEVER blocked if Firebase credential exchange hangs
+          console.log('[Native Debug] Exchanging credential with Firebase (up to 15s)...');
           const userCredential = await withTimeout(
             signInWithCredential(auth, credential),
-            3500,
+            15000,
             null
           );
+
           if (userCredential && userCredential.user) {
             user = userCredential.user;
-            console.log('[Native Debug] Firebase Apple auth successful, real UID:', user.uid);
+            console.log('[Native Debug] Firebase Apple signInWithCredential succeeded! Real UID:', user.uid);
             if (nativeApple.givenName || nativeApple.familyName) {
               updateProfile(user, { displayName: fullName }).catch(() => {});
             }
+          } else {
+            console.warn('[Native Debug] Firebase Apple signInWithCredential returned null or timed out after 15s');
           }
-        } catch (fbErr) {
-          console.warn('[Native Debug] Firebase signInWithCredential non-fatal notice (fallback to verified Apple token):', fbErr);
+        } catch (fbErr: any) {
+          firebaseAuthError = fbErr;
+          console.error('[Native Debug] Firebase Apple signInWithCredential error:', {
+            code: fbErr?.code,
+            message: fbErr?.message,
+            customData: fbErr?.customData,
+            full: fbErr,
+          });
+
+          // If nonce mismatch, retry without rawNonce in case plugin didn't hash it
+          if (fbErr?.code === 'auth/invalid-credential' && nativeApple.rawNonce) {
+            try {
+              console.log('[Native Debug] Retrying Apple credential exchange without rawNonce parameter...');
+              const retryCredential = appleProvider.credential({ idToken: nativeApple.identityToken });
+              const retryResult = await withTimeout(
+                signInWithCredential(auth, retryCredential),
+                10000,
+                null
+              );
+              if (retryResult?.user) {
+                user = retryResult.user;
+                console.log('[Native Debug] Apple auth succeeded on retry without rawNonce! Real UID:', user.uid);
+              }
+            } catch (retryErr) {
+              console.error('[Native Debug] Retry without rawNonce also failed:', retryErr);
+            }
+          }
         }
 
-        // Resilient fallback: use the cryptographically verified native Apple session with permanent deterministic UID
-        if (!user) {
-          console.log('[Native Debug] Using verified Apple session with deterministic UID:', finalUid);
-          user = buildSyntheticUser({
-            uid: finalUid,
-            displayName: fullName,
-            email: finalEmail,
-            photoURL: defaultPhoto,
+        if (user) {
+          saveStoredAuthUser({
+            uid: user.uid,
+            displayName: user.displayName || fullName,
+            email: user.email || finalEmail,
+            photoURL: user.photoURL || defaultPhoto,
             providerId: 'apple.com',
             isAnonymous: false,
           });
+          return user;
         }
 
-        saveStoredAuthUser({
-          uid: user.uid,
-          displayName: user.displayName || fullName,
-          email: user.email || finalEmail,
-          photoURL: user.photoURL || defaultPhoto,
-          providerId: 'apple.com',
-          isAnonymous: false,
-        });
+        // If Firebase auth failed with a known error, throw a clear explanatory error
+        if (firebaseAuthError) {
+          const code = firebaseAuthError.code || '';
+          if (code === 'auth/operation-not-allowed') {
+            throw new Error("La connexion avec Apple n'est pas encore activée dans la console Firebase. Activez le fournisseur Apple sous Authentication > Sign-in method.");
+          } else if (code === 'auth/invalid-credential') {
+            throw new Error("L'identifiant Apple n'a pas pu être validé par Firebase (" + (firebaseAuthError.message || code) + ").");
+          } else {
+            throw new Error(`Erreur d'authentification Firebase Apple: ${firebaseAuthError.message || code}`);
+          }
+        }
 
-        return user;
+        throw new Error("Délai de validation Apple auprès des serveurs dépassé. Veuillez réessayer.");
       }
     } else {
       const nativeGoogle = await triggerNativeGoogleAuth();
