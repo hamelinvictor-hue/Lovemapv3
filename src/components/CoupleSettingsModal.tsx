@@ -78,7 +78,19 @@ export const CoupleSettingsModal: React.FC<CoupleSettingsModalProps> = ({
   const { t } = useTranslation();
   const isSolo = appMode === 'solo';
   const isPartnerA = activePartnerId === 'partner_a';
-  const isPaired = couple.partnerB.name !== 'En attente...' && couple.status !== 'broken';
+  const partnerA = couple?.partnerA || {
+    id: 'partner_a',
+    name: 'Partenaire 1',
+    avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+    role: 'Partenaire 1',
+  };
+  const partnerB = couple?.partnerB || {
+    id: 'partner_b',
+    name: 'En attente...',
+    avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
+    role: 'Partenaire 2',
+  };
+  const isPaired = (partnerB.name || '') !== 'En attente...' && couple?.status !== 'broken';
   const premiumState = getDuoPremiumState(couple, activePartnerId);
 
   // Reactive tracking of user connection to prevent showing sync cards when already authenticated
@@ -109,13 +121,13 @@ export const CoupleSettingsModal: React.FC<CoupleSettingsModalProps> = ({
     (getEffectiveUser() && !getEffectiveUser()?.isAnonymous)
   );
 
-  const [partnerAName, setPartnerAName] = useState(couple.partnerA.name);
-  const [partnerAAvatar, setPartnerAAvatar] = useState(couple.partnerA.avatar || '');
-  const [partnerBName, setPartnerBName] = useState(couple.partnerB.name);
-  const [partnerBAvatar, setPartnerBAvatar] = useState(couple.partnerB.avatar || '');
-  const [anniversaryDate, setAnniversaryDate] = useState(couple.anniversaryDate);
-  const [secretPin, setSecretPin] = useState(couple.secretPin || '1234');
-  const [isPinLocked, setIsPinLocked] = useState(couple.isPinLocked || false);
+  const [partnerAName, setPartnerAName] = useState(partnerA.name || 'Partenaire 1');
+  const [partnerAAvatar, setPartnerAAvatar] = useState(partnerA.avatar || '');
+  const [partnerBName, setPartnerBName] = useState(partnerB.name || 'En attente...');
+  const [partnerBAvatar, setPartnerBAvatar] = useState(partnerB.avatar || '');
+  const [anniversaryDate, setAnniversaryDate] = useState(couple?.anniversaryDate || new Date().toISOString().split('T')[0]);
+  const [secretPin, setSecretPin] = useState(couple?.secretPin || '1234');
+  const [isPinLocked, setIsPinLocked] = useState(couple?.isPinLocked || false);
   const [copiedCode, setCopiedCode] = useState(false);
 
   // Join Code Input state
@@ -161,13 +173,15 @@ export const CoupleSettingsModal: React.FC<CoupleSettingsModalProps> = ({
   const prevIsOpenRef = useRef(false);
   useEffect(() => {
     if (isOpen && !prevIsOpenRef.current) {
-      setPartnerAName(couple.partnerA.name);
-      setPartnerAAvatar(couple.partnerA.avatar || '');
-      setPartnerBName(couple.partnerB.name);
-      setPartnerBAvatar(couple.partnerB.avatar || '');
-      setAnniversaryDate(couple.anniversaryDate);
-      setSecretPin(couple.secretPin || '1234');
-      setIsPinLocked(couple.isPinLocked || false);
+      const curA = couple?.partnerA || partnerA;
+      const curB = couple?.partnerB || partnerB;
+      setPartnerAName(curA.name || 'Partenaire 1');
+      setPartnerAAvatar(curA.avatar || '');
+      setPartnerBName(curB.name || 'En attente...');
+      setPartnerBAvatar(curB.avatar || '');
+      setAnniversaryDate(couple?.anniversaryDate || new Date().toISOString().split('T')[0]);
+      setSecretPin(couple?.secretPin || '1234');
+      setIsPinLocked(couple?.isPinLocked || false);
     }
     prevIsOpenRef.current = isOpen;
   }, [isOpen, couple]);
@@ -182,21 +196,23 @@ export const CoupleSettingsModal: React.FC<CoupleSettingsModalProps> = ({
     newPin: string,
     newLocked: boolean
   ) => {
-    const c = coupleRef.current;
+    const c = coupleRef.current || couple;
+    const curA = c?.partnerA || partnerA;
+    const curB = c?.partnerB || partnerB;
     onUpdateCouple({
       ...c,
       anniversaryDate,
       secretPin: newPin,
       isPinLocked: newLocked,
       partnerA: {
-        ...c.partnerA,
-        name: isPartnerA ? (newAName.trim() || c.partnerA.name || 'Partenaire 1') : c.partnerA.name,
-        avatar: isPartnerA ? (newAAvatar.trim() || c.partnerA.avatar) : c.partnerA.avatar,
+        ...curA,
+        name: isPartnerA ? (newAName.trim() || curA.name || 'Partenaire 1') : curA.name,
+        avatar: isPartnerA ? (newAAvatar.trim() || curA.avatar) : curA.avatar,
       },
       partnerB: {
-        ...c.partnerB,
-        name: !isPartnerA ? (newBName.trim() || c.partnerB.name || 'Partenaire 2') : c.partnerB.name,
-        avatar: !isPartnerA ? (newBAvatar.trim() || c.partnerB.avatar) : c.partnerB.avatar,
+        ...curB,
+        name: !isPartnerA ? (newBName.trim() || curB.name || 'Partenaire 2') : curB.name,
+        avatar: !isPartnerA ? (newBAvatar.trim() || curB.avatar) : curB.avatar,
       },
     });
   };
@@ -365,7 +381,7 @@ export const CoupleSettingsModal: React.FC<CoupleSettingsModalProps> = ({
           <div className="space-y-4">
             <h3 className="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider flex items-center gap-2">
               <User className="w-4 h-4 text-slate-400" />
-              <span>{t.settings.profileSection} ({isPartnerA ? couple.partnerA.name : couple.partnerB.name})</span>
+              <span>{t.settings.profileSection} ({isPartnerA ? partnerA.name : partnerB.name})</span>
             </h3>
 
             {/* Avatar & Name Editor */}
@@ -373,7 +389,7 @@ export const CoupleSettingsModal: React.FC<CoupleSettingsModalProps> = ({
               <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-800 flex items-center gap-4">
                 <label className="relative group cursor-pointer inline-block shrink-0" title={t.settings.clickPhotoChange}>
                   <img
-                    src={partnerAAvatar || couple.partnerA.avatar}
+                    src={partnerAAvatar || partnerA.avatar}
                     alt={partnerAName}
                     className="w-14 h-14 rounded-full object-cover border-2 border-rose-500 shadow-sm transition-transform group-hover:scale-105"
                   />
@@ -421,7 +437,7 @@ export const CoupleSettingsModal: React.FC<CoupleSettingsModalProps> = ({
               <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-800 flex items-center gap-4">
                 <label className="relative group cursor-pointer inline-block shrink-0" title={t.settings.clickPhotoChange}>
                   <img
-                    src={partnerBAvatar || couple.partnerB.avatar}
+                    src={partnerBAvatar || partnerB.avatar}
                     alt={partnerBName}
                     className="w-14 h-14 rounded-full object-cover border-2 border-rose-500 shadow-sm transition-transform group-hover:scale-105"
                   />

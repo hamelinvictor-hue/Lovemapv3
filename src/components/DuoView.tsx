@@ -75,10 +75,20 @@ export const DuoView: React.FC<DuoViewProps> = ({
   const [isJoiningDuo, setIsJoiningDuo] = useState(false);
   const [duoCodeError, setDuoCodeError] = useState<string | null>(null);
 
-  const partnerA = couple.partnerA;
-  const partnerB = couple.partnerB;
+  const partnerA = couple?.partnerA || {
+    id: 'partner_a',
+    name: 'Partenaire 1',
+    avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+    role: 'Partenaire 1',
+  };
+  const partnerB = couple?.partnerB || {
+    id: 'partner_b',
+    name: 'En attente...',
+    avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
+    role: 'Partenaire 2',
+  };
   const isPartnerAActive = activePartnerId === 'partner_a';
-  const isPaired = couple.partnerB.name !== 'En attente...' && couple.status !== 'broken';
+  const isPaired = (partnerB.name || '') !== 'En attente...' && couple?.status !== 'broken';
 
   const handleCopyCode = () => {
     triggerHaptic('medium');

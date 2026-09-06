@@ -23,6 +23,8 @@ import {
 } from 'firebase/auth';
 import {
   initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
   memoryLocalCache,
   getFirestore,
   doc,
@@ -35,9 +37,11 @@ import {
   addDoc,
   query,
   where,
+  limit,
   orderBy,
   serverTimestamp,
-  deleteDoc, writeBatch,
+  deleteDoc,
+  writeBatch,
 } from 'firebase/firestore';
 import { Spot, CouplePair, NotificationItem, PartnerId, UserProfile } from '../types';
 import { INITIAL_SPOTS } from '../data/initialData';
@@ -63,21 +67,33 @@ try {
 }
 export const auth = authInstance;
 
-// Initialize Firestore with fast memoryLocalCache to eliminate WKWebView IndexedDB locking on iOS
+// Initialize Firestore with persistentLocalCache (IndexedDB) to cache reads and eliminate repeated network reads
 let firestoreInstance;
 try {
   firestoreInstance = initializeFirestore(
     app,
     {
-      localCache: memoryLocalCache(),
+      localCache: persistentLocalCache({
+        tabManager: persistentMultipleTabManager(),
+      }),
     },
     firebaseConfig.firestoreDatabaseId || undefined
   );
 } catch (initErr) {
-  console.warn('initializeFirestore error, falling back to getFirestore:', initErr);
-  firestoreInstance = firebaseConfig.firestoreDatabaseId
-    ? getFirestore(app, firebaseConfig.firestoreDatabaseId)
-    : getFirestore(app);
+  try {
+    firestoreInstance = initializeFirestore(
+      app,
+      {
+        localCache: memoryLocalCache(),
+      },
+      firebaseConfig.firestoreDatabaseId || undefined
+    );
+  } catch (memErr) {
+    console.warn('initializeFirestore error, falling back to getFirestore:', memErr);
+    firestoreInstance = firebaseConfig.firestoreDatabaseId
+      ? getFirestore(app, firebaseConfig.firestoreDatabaseId)
+      : getFirestore(app);
+  }
 }
 
 // Check for redirect result on initialization for iOS PWA/Web (skip on Native to prevent auth hanging)
@@ -787,7 +803,9 @@ export function generateCoupleCode(): string {
 export function cleanFirestoreData<T>(obj: T): T {
   if (obj === null || obj === undefined) return null as unknown as T;
   if (Array.isArray(obj)) {
-    return obj.map((item) => cleanFirestoreData(item)) as unknown as T;
+    return obj
+      .filter((item) => item !== undefined)
+      .map((item) => cleanFirestoreData(item)) as unknown as T;
   }
   if (typeof obj === 'object' && !(obj instanceof Date)) {
     const cleaned: Record<string, any> = {};
@@ -801,7 +819,11 @@ export function cleanFirestoreData<T>(obj: T): T {
   return obj;
 }
 
-// Ensure local couple room is registered and saved in Firestore (Fast & Resilient)
+// Cache verified couple rooms in session to prevent redundant reads and writes
+const verifiedRoomsCache = new Set<string>();
+const savedPushTokensCache = new Map<string, string>();
+
+// Ensure local couple room is registered and saved in Firestore (Fast, Cached & Quota-Optimized)
 export async function ensureCoupleRoomInFirestore(
   arg1: string | CouplePair,
   arg2?: CouplePair | string,
@@ -842,18 +864,17 @@ export async function ensureCoupleRoomInFirestore(
     code: cleanCode,
   };
 
+  // If already verified in this session and has a real code, return immediately without network overhead
+  if (verifiedRoomsCache.has(cleanCode)) {
+    return coupleWithCleanCode;
+  }
+
   try {
     const user = await ensureGuestUser();
     const coupleRef = doc(db, 'couples', cleanCode);
 
-    // Fast check via native REST first
-    let existingData = await restGetDoc(`couples/${cleanCode}`).catch(() => null);
-    if (!existingData) {
-      const snap = await withTimeout(getDoc(coupleRef), 1500, null).catch(() => null);
-      if (snap && snap.exists()) {
-        existingData = snap.data();
-      }
-    }
+    const snap = await withTimeout(getDoc(coupleRef), 2000, null).catch(() => null);
+    const existingData = snap && snap.exists() ? snap.data() : null;
 
     if (!existingData) {
       const memberUids = [user.uid];
@@ -870,9 +891,9 @@ export async function ensureCoupleRoomInFirestore(
         updatedAt: new Date().toISOString(),
       });
 
-      // Write room to Firestore via REST (<100ms) + background SDK
-      restSetDoc(`couples/${cleanCode}`, newRoom).catch(() => {});
+      // Write room to Firestore cleanly once
       setDoc(coupleRef, newRoom, { merge: true }).catch(() => {});
+      verifiedRoomsCache.add(cleanCode);
       return coupleWithCleanCode;
     } else {
       const data = existingData as CouplePair & { memberUids?: string[] };
@@ -886,9 +907,9 @@ export async function ensureCoupleRoomInFirestore(
           updatedAt: new Date().toISOString(),
         });
 
-        restSetDoc(`couples/${cleanCode}`, updatePayload).catch(() => {});
         setDoc(coupleRef, updatePayload, { merge: true }).catch(() => {});
       }
+      verifiedRoomsCache.add(cleanCode);
       return {
         ...localCouple,
         ...data,
@@ -975,9 +996,9 @@ export async function createCoupleInFirestore(
     updatedAt: new Date().toISOString(),
   });
 
-  // Fast write directly via REST (<80ms) and background SDK
-  await restSetDoc(`couples/${code}`, coupleData).catch(console.warn);
+  // Single clean write
   setDoc(coupleRef, coupleData).catch(console.warn);
+  verifiedRoomsCache.add(code);
   console.log('[createCouple] Couple room registered in Firestore:', code);
   
   return { couple: newCouple };
@@ -1038,41 +1059,24 @@ export async function joinCoupleInFirestore(
   let targetData: any = null;
   let targetCode = rawClean;
 
-  // 1. Fast direct REST check for each candidate ID (<80ms each)
+  // 1. Direct document lookup by candidate codes
   for (const cand of candidates) {
     try {
-      const res = await restGetDoc(`couples/${cand}`);
-      if (res) {
-        targetData = res;
+      const snap = await withTimeout(getDoc(doc(db, 'couples', cand)), 1500, null);
+      if (snap && snap.exists()) {
+        targetData = snap.data();
         targetCode = cand;
-        console.log('[joinCouple] Found couple document by REST:', cand);
+        console.log('[joinCouple] Found couple document:', cand);
         break;
       }
-    } catch (e) {
-      console.warn('[joinCouple] REST candidate notice:', e);
-    }
+    } catch (e) {}
   }
 
-  // 2. SDK fallback if REST did not locate it
-  if (!targetData) {
-    for (const cand of candidates) {
-      try {
-        const snap = await withTimeout(getDoc(doc(db, 'couples', cand)), 1500, null);
-        if (snap && snap.exists()) {
-          targetData = snap.data();
-          targetCode = cand;
-          console.log('[joinCouple] Found couple document by SDK:', cand);
-          break;
-        }
-      } catch (e) {}
-    }
-  }
-
-  // 3. Collection query fallback
+  // 2. Query fallback if direct lookup didn't find it
   if (!targetData) {
     try {
-      const q = query(collection(db, 'couples'), where('code', 'in', candidates.slice(0, 10)));
-      const querySnap = await withTimeout(getDocs(q), 2500, null);
+      const q = query(collection(db, 'couples'), where('code', 'in', candidates.slice(0, 10)), limit(1));
+      const querySnap = await withTimeout(getDocs(q), 2000, null);
       if (querySnap && !querySnap.empty) {
         targetData = querySnap.docs[0].data();
         targetCode = querySnap.docs[0].id;
@@ -1106,10 +1110,10 @@ export async function joinCoupleInFirestore(
     updatedAt: new Date().toISOString(),
   });
 
-  // Write pairing update immediately via REST + SDK
-  restSetDoc(`couples/${targetCode}`, updateData).catch(console.warn);
+  // Single clean write
   const coupleRef = doc(db, 'couples', targetCode);
-  setDoc(coupleRef, updateData, { merge: true }).catch(console.warn);
+  await setDoc(coupleRef, updateData, { merge: true });
+  verifiedRoomsCache.add(targetCode);
 
   const couple: CouplePair = {
     ...targetData,
@@ -1117,9 +1121,19 @@ export async function joinCoupleInFirestore(
     code: targetCode,
   };
 
-  // Fetch existing spots & notifications for immediate offline ready pairing
-  const spots = await restListDocs(`couples/${targetCode}/spots`).catch(() => []);
-  const notifications = await restListDocs(`couples/${targetCode}/notifications`).catch(() => []);
+  // Fetch existing spots & notifications
+  let spots: Spot[] = [];
+  let notifications: NotificationItem[] = [];
+  try {
+    const spotsSnap = await withTimeout(getDocs(collection(db, 'couples', targetCode, 'spots')), 2000, null);
+    if (spotsSnap) {
+      spots = spotsSnap.docs.map(d => d.data() as Spot);
+    }
+    const notifsSnap = await withTimeout(getDocs(collection(db, 'couples', targetCode, 'notifications')), 2000, null);
+    if (notifsSnap) {
+      notifications = notifsSnap.docs.map(d => d.data() as NotificationItem);
+    }
+  } catch {}
 
   console.log('[joinCouple] Successfully paired to room:', couple.code);
   return { couple, spots, notifications };
@@ -1134,27 +1148,20 @@ export async function findUserCoupleInFirestore(
   try {
     const couplesRef = collection(db, 'couples');
     
-    const queries = [
-      getDocs(query(couplesRef, where('memberUids', 'array-contains', user.uid))).catch(() => null),
-      getDocs(query(couplesRef, where('partnerAUid', '==', user.uid))).catch(() => null),
-      getDocs(query(couplesRef, where('partnerBUid', '==', user.uid))).catch(() => null),
-    ];
+    // Single targeted query with limit(1) to minimize read quota
+    const q = query(couplesRef, where('memberUids', 'array-contains', user.uid), limit(1));
+    const snap = await withTimeout(getDocs(q), 2500, null);
 
-    const sdkResults = await withTimeout(Promise.all(queries), 2500, null);
-
-    if (sdkResults) {
-      for (const snap of sdkResults) {
-        if (snap && !snap.empty) {
-          const docData = snap.docs[0].data();
-          let partnerId: PartnerId = 'partner_a';
-          if (docData.partnerBUid === user.uid) partnerId = 'partner_b';
-          
-          return {
-            couple: docData as CouplePair,
-            partnerId,
-          };
-        }
-      }
+    if (snap && !snap.empty) {
+      const docData = snap.docs[0].data();
+      let partnerId: PartnerId = 'partner_a';
+      if (docData.partnerBUid === user.uid) partnerId = 'partner_b';
+      
+      verifiedRoomsCache.add(docData.code || snap.docs[0].id);
+      return {
+        couple: docData as CouplePair,
+        partnerId,
+      };
     }
   } catch (err) {
     console.error('Error in findUserCoupleInFirestore:', err);
@@ -1169,7 +1176,9 @@ export async function updateCoupleInFirestore(code: string, updated: CouplePair)
     const cleanCode = code.trim().toUpperCase();
     const docRef = doc(db, 'couples', cleanCode);
     const { spots, notifications, ...coreCouple } = updated;
-    await setDoc(docRef, { ...coreCouple, updatedAt: new Date().toISOString() }, { merge: true });
+    const cleaned = cleanFirestoreData({ ...coreCouple, updatedAt: new Date().toISOString() });
+    await setDoc(docRef, cleaned, { merge: true });
+    verifiedRoomsCache.add(cleanCode);
     console.log('[Firebase] Couple updated successfully');
   } catch (err) {
     console.error('[Firebase] Failed to update couple:', err);
@@ -1181,12 +1190,13 @@ export async function updateCoupleInFirestore(code: string, updated: CouplePair)
 export async function savePushTokenToFirestore(code: string, partnerId: PartnerId, token: string) {
   if (!code || !token) return;
   const cleanCode = code.trim().toUpperCase();
-  const partnerKey = partnerId === 'partner_a' ? 'partnerA.pushToken' : 'partnerB.pushToken';
-  
-  // REST patch
-  
+  const cacheKey = `${cleanCode}_${partnerId}`;
 
-  // SDK update
+  // Avoid redundant writes if token already saved
+  if (savedPushTokensCache.get(cacheKey) === token) {
+    return;
+  }
+
   try {
     await ensureGuestUser();
     const coupleRef = doc(db, 'couples', cleanCode);
@@ -1200,6 +1210,7 @@ export async function savePushTokenToFirestore(code: string, partnerId: PartnerI
       }),
       { merge: true }
     );
+    savedPushTokensCache.set(cacheKey, token);
     console.log('[savePushTokenToFirestore] Device push token saved for', partnerId);
   } catch (e) {
     console.warn('[savePushTokenToFirestore] Notice saving token:', e);
@@ -1210,6 +1221,8 @@ export async function savePushTokenToFirestore(code: string, partnerId: PartnerI
 export async function breakCoupleInFirestore(code: string, breakerName: string) {
   if (!code) return;
   const cleanCode = code.trim().toUpperCase();
+  verifiedRoomsCache.delete(cleanCode);
+
   const brokenPayload = {
     status: 'broken',
     brokenBy: breakerName,
@@ -1222,9 +1235,6 @@ export async function breakCoupleInFirestore(code: string, breakerName: string) 
     spots: [],
     notifications: [],
   };
-
-  // 1. Instant REST update
-  Promise.resolve().catch(console.warn);
 
   try {
     await ensureGuestUser();
@@ -1256,28 +1266,7 @@ export async function breakCoupleInFirestore(code: string, breakerName: string) 
   }
 }
 
-// ==========================================
-// SSE LIVE SYNC ENGINE (Zero Firestore reads, <50ms real-time latency)
-// ==========================================
-type CoupleSsePayload = {
-  type: string;
-  couple?: CouplePair;
-  spots?: Spot[];
-  notifications?: NotificationItem[];
-  spot?: Spot;
-  deletedSpotId?: string;
-  notification?: NotificationItem;
-};
-
-type CoupleEventHandler = (payload: CoupleSsePayload) => void;
-
-let activeEventSource: EventSource | null = null;
-let activeEventSourceCode: string = '';
-const eventHandlers = new Set<CoupleEventHandler>();
-
-
-
-// Subscribe to couple data real-time changes (Hybrid: SSE Live Stream + SDK onSnapshot fallback)
+// Subscribe to couple data real-time changes
 export function subscribeToCouple(code: string, callback: (couple: CouplePair | null) => void) {
   if (!code) return () => {};
   const cleanCode = code.trim().toUpperCase();
@@ -1293,13 +1282,13 @@ export function subscribeToCouple(code: string, callback: (couple: CouplePair | 
   });
 }
 
-// Save spot to Firestore (Direct REST + SDK onSnapshot sync)
+// Save spot to Firestore (Single clean SDK write with merge)
 export async function saveSpotToFirestore(code: string, spot: Spot) {
   try {
     const cleanCode = code.trim().toUpperCase();
-    restSetDoc(`couples/${cleanCode}/spots/${spot.id}`, spot).catch(console.warn);
+    const cleanedSpot = cleanFirestoreData(spot);
     const docRef = doc(db, 'couples', cleanCode, 'spots', spot.id);
-    setDoc(docRef, spot, { merge: true }).catch(console.warn);
+    await setDoc(docRef, cleanedSpot, { merge: true });
     console.log('[Firebase] Spot saved successfully:', spot.id);
     return true;
   } catch (err) {
@@ -1308,12 +1297,11 @@ export async function saveSpotToFirestore(code: string, spot: Spot) {
   }
 }
 
-// Delete spot from Firestore (Direct REST + SDK onSnapshot sync)
+// Delete spot from Firestore (Single clean SDK delete)
 export async function deleteSpotFromFirestore(code: string, spotId: string) {
   try {
     const cleanCode = code.trim().toUpperCase();
-    restDeleteDoc(`couples/${cleanCode}/spots/${spotId}`).catch(console.warn);
-    deleteDoc(doc(db, 'couples', cleanCode, 'spots', spotId)).catch(console.warn);
+    await deleteDoc(doc(db, 'couples', cleanCode, 'spots', spotId));
     console.log('[Firebase] Spot deleted successfully:', spotId);
     return true;
   } catch (err) {
@@ -1322,7 +1310,7 @@ export async function deleteSpotFromFirestore(code: string, spotId: string) {
   }
 }
 
-// Subscribe to spots real-time changes (Hybrid: Live SSE Stream + SDK onSnapshot fallback)
+// Subscribe to spots real-time changes
 export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void) {
   if (!code) return () => {};
   const cleanCode = code.trim().toUpperCase();
@@ -1335,13 +1323,13 @@ export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void
   });
 }
 
-// Save notification to Firestore (Direct REST + SDK onSnapshot sync)
+// Save notification to Firestore (Single clean SDK write with merge)
 export async function saveNotificationToFirestore(code: string, notif: NotificationItem) {
   try {
     const cleanCode = code.trim().toUpperCase();
-    restSetDoc(`couples/${cleanCode}/notifications/${notif.id}`, notif).catch(console.warn);
+    const cleanedNotif = cleanFirestoreData(notif);
     const docRef = doc(db, 'couples', cleanCode, 'notifications', notif.id);
-    setDoc(docRef, notif, { merge: true }).catch(console.warn);
+    await setDoc(docRef, cleanedNotif, { merge: true });
     return true;
   } catch (err) {
     console.error('[Firebase] Failed to save notification:', err);
@@ -1349,14 +1337,13 @@ export async function saveNotificationToFirestore(code: string, notif: Notificat
   }
 }
 
-// Subscribe to notifications real-time changes (Hybrid: Live SSE Stream + SDK onSnapshot fallback)
+// Subscribe to notifications real-time changes
 export function subscribeToNotifications(code: string, callback: (notifs: NotificationItem[]) => void) {
   if (!code) return () => {};
   const cleanCode = code.trim().toUpperCase();
   const notifsRef = collection(db, 'couples', cleanCode, 'notifications');
   return onSnapshot(notifsRef, (snapshot) => {
     const notifs = snapshot.docs.map(d => d.data() as NotificationItem);
-    // Sort by createdAt desc
     notifs.sort((a, b) => new Date((b as any).createdAt).getTime() - new Date((a as any).createdAt).getTime());
     callback(notifs);
   }, (err) => {

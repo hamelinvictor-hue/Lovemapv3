@@ -20,6 +20,19 @@ export const StatsView: React.FC<StatsViewProps> = ({ spots, couple, onSelectSpo
     setStatsMode(appMode);
   }, [appMode]);
 
+  const partnerA = couple?.partnerA || {
+    id: 'partner_a',
+    name: 'Partenaire 1',
+    avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+    role: 'Partenaire 1',
+  };
+  const partnerB = couple?.partnerB || {
+    id: 'partner_b',
+    name: 'En attente...',
+    avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
+    role: 'Partenaire 2',
+  };
+
   const isSolo = statsMode === 'solo';
 
   // Filter spots depending on stats mode (Solo vs Duo)
@@ -84,7 +97,7 @@ export const StatsView: React.FC<StatsViewProps> = ({ spots, couple, onSelectSpo
           <p className="text-xs text-slate-500 dark:text-slate-400 font-medium mt-0.5">
             {isSolo
               ? "Synthèse de vos lieux personnels enregistrés en toute confidentialité"
-              : `Synthèse des moments enregistrés ensemble par ${couple.partnerA.name} et ${couple.partnerB.name}`}
+              : `Synthèse des moments enregistrés ensemble par ${partnerA.name} et ${partnerB.name}`}
           </p>
         </div>
       </div>

@@ -135,11 +135,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       // If user is in register mode and provided a partner code to join
       if (mode === 'register' && hasPartnerCode && partnerCode.trim()) {
         try {
+          const defaultAvatar = couple?.partnerA?.avatar || 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150';
           const joined = await joinCoupleInFirestore(
             u,
             partnerCode.trim().toUpperCase(),
             displayName.trim() || u.displayName || 'Partenaire',
-            u.photoURL || couple.partnerA.avatar
+            u.photoURL || defaultAvatar
           );
           if (joined && joined.couple) {
             onCoupleSync(joined.couple, 'partner_b');
@@ -185,11 +186,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       // If user is in register mode and provided a partner code to join
       if (mode === 'register' && hasPartnerCode && partnerCode.trim()) {
         try {
+          const defaultAvatar = couple?.partnerA?.avatar || 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150';
           const joined = await joinCoupleInFirestore(
             u,
             partnerCode.trim().toUpperCase(),
             displayName.trim() || u.displayName || 'Partenaire',
-            u.photoURL || couple.partnerA.avatar
+            u.photoURL || defaultAvatar
           );
           if (joined && joined.couple) {
             onCoupleSync(joined.couple, 'partner_b');

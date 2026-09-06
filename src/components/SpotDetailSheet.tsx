@@ -62,7 +62,19 @@ export const SpotDetailSheet: React.FC<SpotDetailSheetProps> = ({
   const isPremium = premiumState.isPremium;
   const isSoloSpot = spot.isSolo;
   const isCreator = isSoloSpot || spot.creatorId === activePartnerId;
-  const creatorUser = spot.creatorId === 'partner_a' ? couple.partnerA : couple.partnerB;
+  const partnerA = couple?.partnerA || {
+    id: 'partner_a',
+    name: 'Partenaire 1',
+    avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+    role: 'Partenaire 1',
+  };
+  const partnerB = couple?.partnerB || {
+    id: 'partner_b',
+    name: 'En attente...',
+    avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
+    role: 'Partenaire 2',
+  };
+  const creatorUser = spot.creatorId === 'partner_a' ? partnerA : partnerB;
 
   const category = CATEGORIES.find((c) => c.id === spot.categoryId) || CATEGORIES[0];
   const ratingA = spot.ratings?.partner_a;
@@ -451,8 +463,8 @@ export const SpotDetailSheet: React.FC<SpotDetailSheetProps> = ({
                     </div>
 
                     <div className="flex items-center justify-between text-[10px] text-slate-400 font-medium">
-                      <span>{couple.partnerA.name}: {displayScoreA}</span>
-                      <span>{couple.partnerB.name}: {displayScoreB}</span>
+                      <span>{partnerA.name}: {displayScoreA}</span>
+                      <span>{partnerB.name}: {displayScoreB}</span>
                     </div>
                   </div>
                 );
@@ -464,12 +476,12 @@ export const SpotDetailSheet: React.FC<SpotDetailSheetProps> = ({
                 {ratingA?.comment && (
                   activePartnerId === 'partner_a' || isValidated ? (
                     <p className="text-slate-700">
-                      <strong className="text-slate-900">{couple.partnerA.name}:</strong> "{ratingA.comment}"
+                      <strong className="text-slate-900">{partnerA.name}:</strong> "{ratingA.comment}"
                     </p>
                   ) : (
                     <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200/60 text-amber-800 text-[11px] font-medium flex items-center gap-2">
                       <Lock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                      <span>Commentaire de <strong>{couple.partnerA.name}</strong> masqué jusqu'à votre évaluation</span>
+                      <span>Commentaire de <strong>{partnerA.name}</strong> masqué jusqu'à votre évaluation</span>
                     </div>
                   )
                 )}
@@ -477,12 +489,12 @@ export const SpotDetailSheet: React.FC<SpotDetailSheetProps> = ({
                 {ratingB?.comment && (
                   activePartnerId === 'partner_b' || isValidated ? (
                     <p className="text-slate-700">
-                      <strong className="text-slate-900">{couple.partnerB.name}:</strong> "{ratingB.comment}"
+                      <strong className="text-slate-900">{partnerB.name}:</strong> "{ratingB.comment}"
                     </p>
                   ) : (
                     <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200/60 text-amber-800 text-[11px] font-medium flex items-center gap-2">
                       <Lock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                      <span>Commentaire de <strong>{couple.partnerB.name}</strong> masqué jusqu'à votre évaluation</span>
+                      <span>Commentaire de <strong>{partnerB.name}</strong> masqué jusqu'à votre évaluation</span>
                     </div>
                   )
                 )}

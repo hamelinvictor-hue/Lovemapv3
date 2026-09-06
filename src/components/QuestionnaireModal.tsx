@@ -34,7 +34,19 @@ export const QuestionnaireModal: React.FC<QuestionnaireModalProps> = ({
 
   if (!isOpen || !spot) return null;
 
-  const activeUser = activePartnerId === 'partner_a' ? couple.partnerA : couple.partnerB;
+  const partnerA = couple?.partnerA || {
+    id: 'partner_a',
+    name: 'Partenaire 1',
+    avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+    role: 'Partenaire 1',
+  };
+  const partnerB = couple?.partnerB || {
+    id: 'partner_b',
+    name: 'En attente...',
+    avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
+    role: 'Partenaire 2',
+  };
+  const activeUser = activePartnerId === 'partner_a' ? partnerA : partnerB;
   const existingPartnerRating = spot.ratings?.[activePartnerId === 'partner_a' ? 'partner_b' : 'partner_a'];
 
   const keys: CriteriaKey[] = ['comfort', 'thrill', 'romance', 'intensity', 'setting'];

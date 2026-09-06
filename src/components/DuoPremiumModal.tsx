@@ -131,8 +131,20 @@ export const DuoPremiumModal: React.FC<DuoPremiumModalProps> = ({
     }
   }, [isOpen, couple.code, activePartnerId]);
 
-  const activeUser = activePartnerId === 'partner_a' ? couple.partnerA : couple.partnerB;
-  const partnerUser = activePartnerId === 'partner_a' ? couple.partnerB : couple.partnerA;
+  const partnerA = couple?.partnerA || {
+    id: 'partner_a',
+    name: 'Partenaire 1',
+    avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+    role: 'Partenaire 1',
+  };
+  const partnerB = couple?.partnerB || {
+    id: 'partner_b',
+    name: 'En attente...',
+    avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
+    role: 'Partenaire 2',
+  };
+  const activeUser = activePartnerId === 'partner_a' ? partnerA : partnerB;
+  const partnerUser = activePartnerId === 'partner_a' ? partnerB : partnerA;
 
   // Handle subscribe with RevenueCat & Native Apple StoreKit integration
   const handleSubscribe = async (trialDaysOverride?: number) => {
@@ -769,7 +781,7 @@ export const DuoPremiumModal: React.FC<DuoPremiumModalProps> = ({
                           <Heart className="w-3.5 h-3.5 text-rose-500 fill-rose-500" />
                           {premiumState.bothSubscribed ? (
                             <span>
-                              Souscrit par <strong className="text-amber-600 dark:text-amber-400">{couple.partnerA.name}</strong> et <strong className="text-amber-600 dark:text-amber-400">{couple.partnerB.name}</strong>.
+                              Souscrit par <strong className="text-amber-600 dark:text-amber-400">{partnerA.name}</strong> et <strong className="text-amber-600 dark:text-amber-400">{partnerB.name}</strong>.
                             </span>
                           ) : premiumState.isSharedViaDuo ? (
                             <span>

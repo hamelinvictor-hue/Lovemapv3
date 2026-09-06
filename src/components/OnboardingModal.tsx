@@ -268,9 +268,10 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
         const soloCouple: CouplePair = {
           ...res.couple,
           partnerA: {
-            ...res.couple.partnerA,
+            id: 'partner_a',
+            ...(res.couple?.partnerA || {}),
             name: cleanName,
-            avatar: activeAvatar || res.couple.partnerA.avatar,
+            avatar: activeAvatar || res.couple?.partnerA?.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
             role: 'Jardinier du Jardin Secret',
           },
         };

@@ -350,6 +350,35 @@ export function saveSpots(spots: Spot[]): void {
   }
 }
 
+export function normalizeCouple(c: Partial<CouplePair> | null | undefined): CouplePair {
+  if (!c || typeof c !== 'object') return INITIAL_COUPLE;
+  return {
+    ...INITIAL_COUPLE,
+    ...c,
+    code: c.code && c.code !== 'LOVE-NEW' ? c.code : INITIAL_COUPLE.code,
+    partnerA: {
+      ...INITIAL_COUPLE.partnerA,
+      ...(c.partnerA || {}),
+      id: 'partner_a',
+      name: c.partnerA?.name || INITIAL_COUPLE.partnerA.name,
+      avatar: c.partnerA?.avatar || INITIAL_COUPLE.partnerA.avatar,
+      role: c.partnerA?.role || INITIAL_COUPLE.partnerA.role,
+    },
+    partnerB: {
+      ...INITIAL_COUPLE.partnerB,
+      ...(c.partnerB || {}),
+      id: 'partner_b',
+      name: c.partnerB?.name || INITIAL_COUPLE.partnerB.name,
+      avatar: c.partnerB?.avatar || INITIAL_COUPLE.partnerB.avatar,
+      role: c.partnerB?.role || INITIAL_COUPLE.partnerB.role,
+    },
+    anniversaryDate: c.anniversaryDate || INITIAL_COUPLE.anniversaryDate,
+    secretPin: c.secretPin || INITIAL_COUPLE.secretPin,
+    isPinLocked: typeof c.isPinLocked === 'boolean' ? c.isPinLocked : false,
+    status: c.status || 'active',
+  };
+}
+
 export function getStoredCouple(): CouplePair {
   try {
     const data = localStorage.getItem(COUPLE_KEY);
@@ -357,12 +386,10 @@ export function getStoredCouple(): CouplePair {
       localStorage.setItem(COUPLE_KEY, JSON.stringify(INITIAL_COUPLE));
       return INITIAL_COUPLE;
     }
-    const parsed = JSON.parse(data) as CouplePair;
-    if (!parsed.code || parsed.code === 'LOVE-NEW') {
-      parsed.code = INITIAL_COUPLE.code;
-      localStorage.setItem(COUPLE_KEY, JSON.stringify(parsed));
-    }
-    return parsed;
+    const parsed = JSON.parse(data) as Partial<CouplePair>;
+    const normalized = normalizeCouple(parsed);
+    localStorage.setItem(COUPLE_KEY, JSON.stringify(normalized));
+    return normalized;
   } catch (err) {
     return INITIAL_COUPLE;
   }
@@ -370,7 +397,8 @@ export function getStoredCouple(): CouplePair {
 
 export function saveCouple(couple: CouplePair): void {
   try {
-    localStorage.setItem(COUPLE_KEY, JSON.stringify(couple));
+    const normalized = normalizeCouple(couple);
+    localStorage.setItem(COUPLE_KEY, JSON.stringify(normalized));
   } catch (err) {
     console.error('Failed to save couple', err);
   }

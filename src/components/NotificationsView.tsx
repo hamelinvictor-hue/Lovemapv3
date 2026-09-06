@@ -26,8 +26,20 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
   onMarkAllRead,
   onMarkRead,
 }) => {
-  const activeUser = activePartnerId === 'partner_a' ? couple.partnerA : couple.partnerB;
-  const partnerUser = activePartnerId === 'partner_a' ? couple.partnerB : couple.partnerA;
+  const partnerA = couple?.partnerA || {
+    id: 'partner_a',
+    name: 'Partenaire 1',
+    avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+    role: 'Partenaire 1',
+  };
+  const partnerB = couple?.partnerB || {
+    id: 'partner_b',
+    name: 'En attente...',
+    avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
+    role: 'Partenaire 2',
+  };
+  const activeUser = activePartnerId === 'partner_a' ? partnerA : partnerB;
+  const partnerUser = activePartnerId === 'partner_a' ? partnerB : partnerA;
 
   // Sort so newest/most recent notification is at the TOP
   const sortedNotifications = [...notifications].sort((a, b) => {

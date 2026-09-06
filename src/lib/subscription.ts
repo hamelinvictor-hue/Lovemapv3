@@ -24,8 +24,8 @@ export function isSubscriptionActive(sub?: UserSubscription): boolean {
 }
 
 export function getDuoPremiumState(couple: CouplePair, activePartnerId: PartnerId): PremiumState {
-  const partnerA = couple.partnerA;
-  const partnerB = couple.partnerB;
+  const partnerA = couple?.partnerA;
+  const partnerB = couple?.partnerB;
   const now = Date.now();
 
   const subA = partnerA?.subscription;
@@ -37,7 +37,6 @@ export function getDuoPremiumState(couple: CouplePair, activePartnerId: PartnerI
   // Case: BOTH users have their own active subscription
   if (isAActive && isBActive && subA && subB) {
     const activeSub = activePartnerId === 'partner_a' ? subA : subB;
-    const partnerSub = activePartnerId === 'partner_a' ? subB : subA;
     // Latest expiry date between both partners for maximum protection
     const latestExpiry =
       new Date(subA.expiresAt).getTime() > new Date(subB.expiresAt).getTime()
@@ -63,7 +62,7 @@ export function getDuoPremiumState(couple: CouplePair, activePartnerId: PartnerI
       isPremium: true,
       isSharedViaDuo: !isOwner,
       bothSubscribed: false,
-      subscriberName: partnerA.name || 'Votre partenaire',
+      subscriberName: partnerA?.name || 'Votre partenaire',
       subscriberPartnerId: 'partner_a',
       plan: subA.plan,
       expiresAt: subA.expiresAt,
@@ -78,7 +77,7 @@ export function getDuoPremiumState(couple: CouplePair, activePartnerId: PartnerI
       isPremium: true,
       isSharedViaDuo: !isOwner,
       bothSubscribed: false,
-      subscriberName: partnerB.name || 'Votre partenaire',
+      subscriberName: partnerB?.name || 'Votre partenaire',
       subscriberPartnerId: 'partner_b',
       plan: subB.plan,
       expiresAt: subB.expiresAt,

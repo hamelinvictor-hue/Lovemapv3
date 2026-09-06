@@ -34,7 +34,19 @@ export const Header: React.FC<HeaderProps> = ({
   onToggleAppMode,
 }) => {
   const { t } = useTranslation();
-  const activeUser = activePartnerId === 'partner_a' ? couple.partnerA : couple.partnerB;
+  const partnerA = couple?.partnerA || {
+    id: 'partner_a',
+    name: 'Partenaire 1',
+    avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+    role: 'Partenaire 1',
+  };
+  const partnerB = couple?.partnerB || {
+    id: 'partner_b',
+    name: 'En attente...',
+    avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
+    role: 'Partenaire 2',
+  };
+  const activeUser = activePartnerId === 'partner_a' ? partnerA : partnerB;
   const isSolo = appMode === 'solo';
 
   return (
@@ -71,14 +83,14 @@ export const Header: React.FC<HeaderProps> = ({
               <div className="relative flex items-center">
                 {/* Partner A avatar */}
                 <img
-                  src={couple.partnerA.avatar}
-                  alt={couple.partnerA.name}
+                  src={partnerA.avatar}
+                  alt={partnerA.name}
                   className="w-8 h-8 sm:w-9 sm:h-9 rounded-full object-cover ring-2 ring-white dark:ring-slate-900 shadow-sm z-10 transition-transform group-hover:scale-105"
                 />
                 {/* Partner B avatar */}
                 <img
-                  src={couple.partnerB.avatar}
-                  alt={couple.partnerB.name}
+                  src={partnerB.avatar}
+                  alt={partnerB.name}
                   className="w-8 h-8 sm:w-9 sm:h-9 rounded-full object-cover ring-2 ring-white dark:ring-slate-900 shadow-sm -ml-3 z-0 transition-transform group-hover:scale-105"
                 />
                 {/* Fusion Heart Badge */}
@@ -111,11 +123,11 @@ export const Header: React.FC<HeaderProps> = ({
               ) : (
                 <div className="flex items-center gap-1 min-w-0">
                   <span className="font-extrabold text-slate-900 dark:text-white text-xs sm:text-sm tracking-tight truncate max-w-[70px] sm:max-w-[120px]">
-                    {couple.partnerA.name}
+                    {partnerA.name}
                   </span>
                   <Heart className="w-3 h-3 text-rose-500 fill-rose-500 shrink-0 animate-pulse mx-0.5" />
                   <span className="font-extrabold text-slate-900 dark:text-white text-xs sm:text-sm tracking-tight truncate max-w-[70px] sm:max-w-[120px]">
-                    {couple.partnerB.name}
+                    {partnerB.name}
                   </span>
                 </div>
               )}

@@ -176,7 +176,7 @@ export default function App() {
   const [questionnaireSpot, setQuestionnaireSpot] = useState<Spot | null>(null);
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [isLocked, setIsLocked] = useState(() => Boolean(couple.isPinLocked && getDuoPremiumState(couple, getActivePartner()).isPremium));
+  const [isLocked, setIsLocked] = useState(() => Boolean(couple?.isPinLocked && getDuoPremiumState(couple, getActivePartner()).isPremium));
   const [showDuoCodeModal, setShowDuoCodeModal] = useState<string | null>(null);
   const [brokenDuoNotice, setBrokenDuoNotice] = useState<string | null>(null);
 
@@ -205,7 +205,20 @@ export default function App() {
       expiresAt.setFullYear(expiresAt.getFullYear() + 1);
     }
 
-    const subscriberProfile = isSubscriberA ? couple.partnerA : couple.partnerB;
+    const currentPartnerA = couple?.partnerA || {
+      id: 'partner_a',
+      name: 'Partenaire 1',
+      avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+      role: 'Partenaire 1',
+    };
+    const currentPartnerB = couple?.partnerB || {
+      id: 'partner_b',
+      name: 'En attente...',
+      avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
+      role: 'Partenaire 2',
+    };
+
+    const subscriberProfile = isSubscriberA ? currentPartnerA : currentPartnerB;
     const updatedProfile: UserProfile = {
       ...subscriberProfile,
       subscription: active
@@ -221,8 +234,8 @@ export default function App() {
 
     const updatedCouple: CouplePair = {
       ...couple,
-      partnerA: isSubscriberA ? updatedProfile : couple.partnerA,
-      partnerB: !isSubscriberA ? updatedProfile : couple.partnerB,
+      partnerA: isSubscriberA ? updatedProfile : currentPartnerA,
+      partnerB: !isSubscriberA ? updatedProfile : currentPartnerB,
     };
 
     setCouple(updatedCouple);
@@ -542,8 +555,8 @@ export default function App() {
             isPinLocked: false,
             partnerA: {
               id: 'partner_a',
-              name: couple.partnerB?.name || 'Moi',
-              avatar: couple.partnerB?.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+              name: couple?.partnerB?.name || 'Moi',
+              avatar: couple?.partnerB?.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
               role: 'Partenaire 1',
             },
             partnerB: {
@@ -659,7 +672,9 @@ export default function App() {
   const handleSwitchPartner = (newId: PartnerId) => {
     setActivePartnerId(newId);
     setActivePartner(newId);
-    const user = newId === 'partner_a' ? couple.partnerA : couple.partnerB;
+    const partnerA = couple?.partnerA || { name: 'Partenaire 1' };
+    const partnerB = couple?.partnerB || { name: 'Partenaire 2' };
+    const user = newId === 'partner_a' ? partnerA : partnerB;
     showToast(`📱 Vue basculée sur le téléphone de ${user.name}`);
   };
 
@@ -688,8 +703,10 @@ export default function App() {
       showToast(`🌿 Lieu enregistré dans votre Jardin Secret !`);
     } else {
       // Create notification for partner if duo spot
-      const creatorUser = activePartnerId === 'partner_a' ? couple.partnerA : couple.partnerB;
-      const partnerUser = activePartnerId === 'partner_a' ? couple.partnerB : couple.partnerA;
+      const partnerA = couple?.partnerA || { name: 'Partenaire 1' };
+      const partnerB = couple?.partnerB || { name: 'Partenaire 2' };
+      const creatorUser = activePartnerId === 'partner_a' ? partnerA : partnerB;
+      const partnerUser = activePartnerId === 'partner_a' ? partnerB : partnerA;
       const targetPartnerId: PartnerId = activePartnerId === 'partner_a' ? 'partner_b' : 'partner_a';
 
       const now = new Date();
@@ -710,19 +727,8 @@ export default function App() {
       };
 
       saveNotificationToFirestore(couple.code, newNotif).catch(console.error);
-          import('./lib/apiConfig').then(({ sendPushNotification }) => {
-            sendPushNotification({
-              code: couple.code,
-              senderPartnerId: activePartnerId,
-              targetPartnerId: (activePartnerId === "partner_a" ? "partner_b" : "partner_a"),
-              title: newNotif.title,
-              message: newNotif.message,
-              spotId,
-              type: newNotif.type,
-            });
-          });
 
-      // Trigger OneSignal Push Notification via API backend!
+      // Trigger Push Notification via backend
       import('./lib/apiConfig').then(({ sendPushNotification }) => {
         sendPushNotification({
           code: couple.code,
@@ -809,9 +815,11 @@ export default function App() {
         saveSpotToFirestore(couple.code, finalSpot).catch(console.error);
 
         // Generate notifications for partner
-        const currentUserName = partnerId === 'partner_a' ? couple.partnerA.name : couple.partnerB.name;
+        const partnerA = couple?.partnerA || { name: 'Partenaire 1' };
+        const partnerB = couple?.partnerB || { name: 'Partenaire 2' };
+        const currentUserName = partnerId === 'partner_a' ? partnerA.name : partnerB.name;
         const targetPartnerId: PartnerId = partnerId === 'partner_a' ? 'partner_b' : 'partner_a';
-        const partnerName = partnerId === 'partner_a' ? couple.partnerB.name : couple.partnerA.name;
+        const partnerName = partnerId === 'partner_a' ? partnerB.name : partnerA.name;
         const now = new Date();
         const dateStr = now.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' });
         const timeStr = now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
@@ -917,9 +925,11 @@ export default function App() {
 
         // If Duo spot and ratings were updated by creator -> re-validation required by partner!
         if (!spot.isSolo && scoresChanged) {
+          const partnerA = couple?.partnerA || { name: 'Partenaire 1' };
+          const partnerB = couple?.partnerB || { name: 'Partenaire 2' };
           const targetPartnerId: PartnerId = activePartnerId === 'partner_a' ? 'partner_b' : 'partner_a';
-          const creatorUser = activePartnerId === 'partner_a' ? couple.partnerA : couple.partnerB;
-          const partnerUser = activePartnerId === 'partner_a' ? couple.partnerB : couple.partnerA;
+          const creatorUser = activePartnerId === 'partner_a' ? partnerA : partnerB;
+          const partnerUser = activePartnerId === 'partner_a' ? partnerB : partnerA;
 
           // Keep creator's updated rating, but reset partner's rating to trigger new validation questionnaire
           newRatings = {
@@ -1024,11 +1034,13 @@ export default function App() {
 
   // Break Duo handler
   const handleBreakCouple = async () => {
-    const breakerName = couple[activePartnerId === 'partner_a' ? 'partnerA' : 'partnerB']?.name || 'Votre partenaire';
-    const oldCode = couple.code;
+    const breakerName = couple?.[activePartnerId === 'partner_a' ? 'partnerA' : 'partnerB']?.name || 'Votre partenaire';
+    const oldCode = couple?.code;
 
     try {
-      await breakCoupleInFirestore(oldCode, breakerName);
+      if (oldCode) {
+        await breakCoupleInFirestore(oldCode, breakerName);
+      }
     } catch (e) {
       console.error('Error breaking duo in Firestore:', e);
     }
@@ -1047,7 +1059,7 @@ export default function App() {
       partnerA: {
         id: 'partner_a',
         name: breakerName,
-        avatar: couple[activePartnerId === 'partner_a' ? 'partnerA' : 'partnerB']?.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+        avatar: couple?.[activePartnerId === 'partner_a' ? 'partnerA' : 'partnerB']?.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
         role: 'Partenaire 1',
       },
       partnerB: {
@@ -1073,8 +1085,10 @@ export default function App() {
   const handleJoinDuoCode = async (codeToJoin: string) => {
     try {
       const user = await ensureGuestUser();
-      const myName = activePartnerId === 'partner_a' ? couple.partnerA.name : couple.partnerB.name;
-      const myAvatar = activePartnerId === 'partner_a' ? couple.partnerA.avatar : couple.partnerB.avatar;
+      const partnerA = couple?.partnerA || { name: 'Partenaire 1', avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150' };
+      const partnerB = couple?.partnerB || { name: 'Partenaire 2', avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150' };
+      const myName = activePartnerId === 'partner_a' ? partnerA.name : partnerB.name;
+      const myAvatar = activePartnerId === 'partner_a' ? partnerA.avatar : partnerB.avatar;
 
       const synced = await joinCoupleInFirestore(
         user,
@@ -1471,8 +1485,8 @@ export default function App() {
         <DuoCodeModal
           isOpen={!!showDuoCodeModal}
           onClose={() => setShowDuoCodeModal(null)}
-          code={showDuoCodeModal || couple.code}
-          creatorName={activePartnerId === 'partner_a' ? couple.partnerA.name : couple.partnerB.name}
+          code={showDuoCodeModal || couple?.code || ''}
+          creatorName={activePartnerId === 'partner_a' ? (couple?.partnerA?.name || 'Partenaire 1') : (couple?.partnerB?.name || 'Partenaire 2')}
         />
 
         {/* Broken Duo Popup Modal for Partner */}
