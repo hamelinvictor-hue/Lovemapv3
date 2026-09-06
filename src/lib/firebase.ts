@@ -1728,9 +1728,19 @@ export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void
     }
   );
 
+  let lastKnownSpotUpdate = -2;
+
   // 2. Direct fetch helper on mobile resume / window focus
   const fetchSpotsDirect = async () => {
     try {
+      // Sync baseline to prevent missing updates that arrive just before or during fetch
+      const coupleDoc = await restGetDoc(`couples/${cleanCode}`);
+      if (coupleDoc && coupleDoc.lastSpotUpdate) {
+        lastKnownSpotUpdate = Number(coupleDoc.lastSpotUpdate);
+      } else {
+        lastKnownSpotUpdate = -1;
+      }
+
       const restSpots = await restListDocs(`couples/${cleanCode}/spots`);
       if (restSpots && restSpots.length > 0) {
         callback(restSpots as Spot[]);
@@ -1772,16 +1782,14 @@ export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void
   // 3. Ultra-low cost Liveness Poller
   // Checks only the couple document (1 read) every 10 seconds.
   // If we detect the lastSpotUpdate timestamp changed, we THEN trigger a full spots sync.
-  let lastKnownSpotUpdate = 0;
   const livenessPoller = setInterval(async () => {
     try {
       const coupleDoc = await restGetDoc(`couples/${cleanCode}`);
       if (coupleDoc && coupleDoc.lastSpotUpdate) {
         const remoteUpdate = Number(coupleDoc.lastSpotUpdate);
-        if (lastKnownSpotUpdate === 0) {
-          lastKnownSpotUpdate = remoteUpdate;
+        if (lastKnownSpotUpdate === -2) {
+          // fetchSpotsDirect hasn't initialized it yet, wait for it
         } else if (remoteUpdate > lastKnownSpotUpdate) {
-          lastKnownSpotUpdate = remoteUpdate;
           console.log('[Firebase] Liveness poller detected spot change, fetching...');
           fetchSpotsDirect();
         }
@@ -1844,9 +1852,19 @@ export function subscribeToNotifications(code: string, callback: (notifs: Notifi
     }
   );
 
+  let lastKnownNotifUpdate = -2;
+
   // 2. Direct fetch on mobile resume / focus
   const fetchNotifsDirect = async () => {
     try {
+      // Sync baseline to prevent missing updates that arrive just before or during fetch
+      const coupleDoc = await restGetDoc(`couples/${cleanCode}`);
+      if (coupleDoc && coupleDoc.lastNotificationUpdate) {
+        lastKnownNotifUpdate = Number(coupleDoc.lastNotificationUpdate);
+      } else {
+        lastKnownNotifUpdate = -1;
+      }
+
       const restNotifs = await restListDocs(`couples/${cleanCode}/notifications`);
       if (restNotifs && restNotifs.length > 0) {
         const notifs = restNotifs as NotificationItem[];
@@ -1889,16 +1907,14 @@ export function subscribeToNotifications(code: string, callback: (notifs: Notifi
   }
 
   // 3. Ultra-low cost Liveness Poller
-  let lastKnownNotifUpdate = 0;
   const livenessPoller = setInterval(async () => {
     try {
       const coupleDoc = await restGetDoc(`couples/${cleanCode}`);
       if (coupleDoc && coupleDoc.lastNotificationUpdate) {
         const remoteUpdate = Number(coupleDoc.lastNotificationUpdate);
-        if (lastKnownNotifUpdate === 0) {
-          lastKnownNotifUpdate = remoteUpdate;
+        if (lastKnownNotifUpdate === -2) {
+          // fetchNotifsDirect hasn't initialized it yet
         } else if (remoteUpdate > lastKnownNotifUpdate) {
-          lastKnownNotifUpdate = remoteUpdate;
           console.log('[Firebase] Liveness poller detected notif change, fetching...');
           fetchNotifsDirect();
         }
