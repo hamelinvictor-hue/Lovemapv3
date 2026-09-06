@@ -947,8 +947,55 @@ export async function createCoupleInFirestore(
     }
   }
 
-  const code = generateCoupleCode();
+  let code = generateCoupleCode();
+  let existingPartnerB: UserProfile | undefined;
+  
+  try {
+    const saved = localStorage.getItem('lovemap_couple_v1');
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (parsed.code && parsed.code !== 'LOVE-NEW') {
+        code = parsed.code;
+      }
+      if (parsed.partnerB) {
+        existingPartnerB = parsed.partnerB;
+      }
+    }
+  } catch (e) {}
+
   const coupleRef = doc(db, 'couples', code);
+
+  // If the local code already exists in DB (e.g., created by Guest mode), we MERGE the new Google user into it
+  // This prevents creating duplicate rooms for the same user when they upgrade from Guest to Google/Apple
+  const snap = await getDoc(coupleRef).catch(() => null);
+  if (snap && snap.exists()) {
+    const existingData = snap.data() as CouplePair & { memberUids?: string[], ownerEmail?: string };
+    const existingMembers = existingData.memberUids || [];
+    const updatedMembers = Array.from(new Set([...existingMembers, user.uid]));
+    
+    const updatedCouple: CouplePair = {
+      ...existingData,
+      partnerA: {
+        ...existingData.partnerA,
+        name: partnerName.trim() || user.displayName || 'Partenaire 1',
+        avatar: avatarUrl || user.photoURL || existingData.partnerA?.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
+      }
+    };
+
+    const updatePayload = cleanFirestoreData({
+      ...updatedCouple,
+      memberUids: updatedMembers,
+      ownerUid: user.uid,
+      ownerEmail: user.email || existingData.ownerEmail || '',
+      partnerAUid: user.uid,
+      partnerAEmail: user.email || '',
+      updatedAt: new Date().toISOString(),
+    });
+    
+    await setDoc(coupleRef, updatePayload, { merge: true }).catch(() => {});
+    verifiedRoomsCache.add(code);
+    return { couple: updatedCouple, isExisting: true };
+  }
 
   const partnerA: UserProfile = {
     id: 'partner_a',
@@ -957,7 +1004,7 @@ export async function createCoupleInFirestore(
     role: 'Créateur du journal',
   };
 
-  const partnerB: UserProfile = {
+  const partnerB: UserProfile = existingPartnerB || {
     id: 'partner_b',
     name: 'En attente...',
     avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150&auto=format&fit=crop&q=80',
@@ -987,7 +1034,12 @@ export async function createCoupleInFirestore(
   });
 
   // Single clean write
-  setDoc(coupleRef, coupleData).catch(console.warn);
+  try {
+    await setDoc(coupleRef, coupleData);
+  } catch (err: any) {
+    console.error('[DUO-SYNC-ERROR] createCoupleInFirestore setDoc failed:', err?.code, err?.message);
+    throw new Error("Erreur de création de duo sur le réseau. Veuillez réessayer.");
+  }
   verifiedRoomsCache.add(code);
   console.log('[createCouple] Couple room registered in Firestore:', code);
   
@@ -1055,12 +1107,11 @@ export async function joinCoupleInFirestore(
   for (const cand of candidates) {
     try {
       console.log(`[SYNC-DEBUG] Checking candidate: ${cand}`);
-      // Use REST API to bypass SDK WebSockets initialization hang on iOS WKWebView
-      const data = await restGetDoc(`couples/${cand}`);
-      if (data) {
-        targetData = data;
+      const snap = await withTimeout(getDoc(doc(db, 'couples', cand)), 10000, null);
+      if (snap && snap.exists()) {
+        targetData = snap.data();
         targetCode = cand;
-        console.log('[SYNC-DEBUG] Found couple document via REST:', cand);
+        console.log('[SYNC-DEBUG] Found couple document via SDK:', cand);
         break;
       }
     } catch (e: any) {
@@ -1167,17 +1218,63 @@ export async function findUserCoupleInFirestore(
 
   try {
     const couplesRef = collection(db, 'couples');
+    let foundDoc: any = null;
+    let partnerId: PartnerId = 'partner_a';
     
-    // Single targeted query with limit(1) to minimize read quota
+    // 1. Single targeted query by UID to minimize read quota
     const q = query(couplesRef, where('memberUids', 'array-contains', user.uid), limit(1));
-    const snap = await withTimeout(getDocs(q), 2500, null);
+    const snap = await withTimeout(getDocs(q), 5000, null);
 
     if (snap && !snap.empty) {
-      const docData = snap.docs[0].data();
-      let partnerId: PartnerId = 'partner_a';
+      foundDoc = snap.docs[0];
+      const docData = foundDoc.data();
       if (docData.partnerBUid === user.uid) partnerId = 'partner_b';
+    } else if (user.email) {
+      // 2. Fallback: search by ownerEmail
+      const qEmail = query(couplesRef, where('ownerEmail', '==', user.email), limit(1));
+      const snapEmail = await withTimeout(getDocs(qEmail), 5000, null);
+      if (snapEmail && !snapEmail.empty) {
+        foundDoc = snapEmail.docs[0];
+        const docData = foundDoc.data();
+        if (docData.partnerBEmail === user.email) partnerId = 'partner_b';
+      } else {
+        // 3. Fallback: search by partnerAEmail
+        const qA = query(couplesRef, where('partnerAEmail', '==', user.email), limit(1));
+        const snapA = await withTimeout(getDocs(qA), 5000, null);
+        if (snapA && !snapA.empty) {
+          foundDoc = snapA.docs[0];
+        } else {
+          // 4. Fallback: search by partnerBEmail
+          const qB = query(couplesRef, where('partnerBEmail', '==', user.email), limit(1));
+          const snapB = await withTimeout(getDocs(qB), 5000, null);
+          if (snapB && !snapB.empty) {
+            foundDoc = snapB.docs[0];
+            partnerId = 'partner_b';
+          }
+        }
+      }
+    }
+
+    if (foundDoc) {
+      const docData = foundDoc.data();
+      const existingMembers = docData.memberUids || [];
       
-      verifiedRoomsCache.add(docData.code || snap.docs[0].id);
+      // If we found it via email but UID is missing, merge the new UID in
+      if (!existingMembers.includes(user.uid)) {
+        const updatedMembers = Array.from(new Set([...existingMembers, user.uid]));
+        const updatePayload: any = { memberUids: updatedMembers };
+        
+        if (partnerId === 'partner_a' && !docData.partnerAUid) {
+          updatePayload.partnerAUid = user.uid;
+        } else if (partnerId === 'partner_b' && !docData.partnerBUid) {
+          updatePayload.partnerBUid = user.uid;
+        }
+        
+        await setDoc(doc(db, 'couples', foundDoc.id), updatePayload, { merge: true }).catch(() => {});
+        docData.memberUids = updatedMembers;
+      }
+
+      verifiedRoomsCache.add(docData.code || foundDoc.id);
       return {
         couple: docData as CouplePair,
         partnerId,
@@ -1474,10 +1571,13 @@ export async function deleteUserAccountInFirestore(user: User | null, code?: str
   if (firebaseAuthUser && typeof firebaseAuthUser.delete === 'function') {
     try {
       console.log('[SYNC-DEBUG] Attempting firebaseAuthUser.delete()...');
-      await withTimeout(firebaseAuthUser.delete(), 2000, null);
+      await firebaseAuthUser.delete();
       console.log('[SYNC-DEBUG] firebaseAuthUser.delete() completed.');
     } catch (delErr: any) {
       console.error('[DUO-SYNC-ERROR]', delErr?.code, delErr?.message);
+      if (delErr?.code === 'auth/requires-recent-login') {
+        throw new Error("Sécurité : Veuillez vous déconnecter puis vous reconnecter pour pouvoir supprimer votre compte.");
+      }
       console.warn('[SYNC-DEBUG] Notice during firebaseAuthUser.delete():', delErr?.code || delErr?.message || delErr);
     }
   }

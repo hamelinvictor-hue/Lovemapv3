@@ -518,9 +518,9 @@ export default function App() {
     return () => unsub();
   }, []);
 
-  // Ensure couple room registration in Firestore & RevenueCat
+  // Ensure couple room registration in Firestore & RevenueCat (ONLY after onboarding is completed)
   useEffect(() => {
-    if (couple.code) {
+    if (couple.code && !isOnboardingOpen && getHasCompletedOnboarding()) {
       ensureCoupleRoomInFirestore(couple.code, couple, activePartnerId)
         .then((updatedCouple) => {
           if (updatedCouple.code !== couple.code) {
@@ -531,7 +531,7 @@ export default function App() {
         })
         .catch(console.error);
     }
-  }, [couple.code]);
+  }, [couple.code, isOnboardingOpen]);
 
   // Real-time Firestore Sync listeners for active Couple Code
   useEffect(() => {
