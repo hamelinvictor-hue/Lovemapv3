@@ -42,6 +42,7 @@ import {
   serverTimestamp,
   deleteDoc,
   writeBatch,
+  runTransaction,
 } from 'firebase/firestore';
 import { Spot, CouplePair, NotificationItem, PartnerId, UserProfile } from '../types';
 import { INITIAL_SPOTS } from '../data/initialData';
@@ -67,33 +68,21 @@ try {
 }
 export const auth = authInstance;
 
-// Initialize Firestore with persistentLocalCache (IndexedDB) to cache reads and eliminate repeated network reads
+// Initialize Firestore strictly with memoryLocalCache() to eliminate WKWebView IndexedDB locking on iOS
 let firestoreInstance;
 try {
   firestoreInstance = initializeFirestore(
     app,
     {
-      localCache: persistentLocalCache({
-        tabManager: persistentMultipleTabManager(),
-      }),
+      localCache: memoryLocalCache(),
     },
     firebaseConfig.firestoreDatabaseId || undefined
   );
-} catch (initErr) {
-  try {
-    firestoreInstance = initializeFirestore(
-      app,
-      {
-        localCache: memoryLocalCache(),
-      },
-      firebaseConfig.firestoreDatabaseId || undefined
-    );
-  } catch (memErr) {
-    console.warn('initializeFirestore error, falling back to getFirestore:', memErr);
-    firestoreInstance = firebaseConfig.firestoreDatabaseId
-      ? getFirestore(app, firebaseConfig.firestoreDatabaseId)
-      : getFirestore(app);
-  }
+} catch (initErr: any) {
+  console.error('[SYNC-DEBUG] initializeFirestore error, falling back to getFirestore:', initErr?.code, initErr?.message);
+  firestoreInstance = firebaseConfig.firestoreDatabaseId
+    ? getFirestore(app, firebaseConfig.firestoreDatabaseId)
+    : getFirestore(app);
 }
 
 // Check for redirect result on initialization for iOS PWA/Web (skip on Native to prevent auth hanging)
@@ -1044,6 +1033,8 @@ export async function joinCoupleInFirestore(
   partnerName: string = 'Sam',
   avatarUrl?: string
 ): Promise<{ couple: CouplePair; spots: Spot[]; notifications: NotificationItem[] } | null> {
+  console.log('[SYNC-DEBUG] joinCoupleInFirestore starting for user:', user.uid, 'code:', code);
+  
   if (!code || !code.trim()) {
     throw new Error('Veuillez saisir un code de couple valide.');
   }
@@ -1054,7 +1045,7 @@ export async function joinCoupleInFirestore(
   }
 
   const candidates = getCoupleCodeCandidates(code);
-  console.log('[joinCouple] Searching for couple room with candidates:', candidates);
+  console.log('[SYNC-DEBUG] Searching for couple room with candidates:', candidates);
 
   let targetData: any = null;
   let targetCode = rawClean;
@@ -1062,69 +1053,94 @@ export async function joinCoupleInFirestore(
   // 1. Direct document lookup by candidate codes
   for (const cand of candidates) {
     try {
+      console.log(`[SYNC-DEBUG] Checking candidate: ${cand}`);
       const snap = await withTimeout(getDoc(doc(db, 'couples', cand)), 1500, null);
       if (snap && snap.exists()) {
         targetData = snap.data();
         targetCode = cand;
-        console.log('[joinCouple] Found couple document:', cand);
+        console.log('[SYNC-DEBUG] Found couple document:', cand);
         break;
       }
-    } catch (e) {}
+    } catch (e: any) {
+      console.warn(`[SYNC-DEBUG] Candidate ${cand} check error:`, e?.code, e?.message);
+    }
   }
 
   // 2. Query fallback if direct lookup didn't find it
   if (!targetData) {
     try {
+      console.log('[SYNC-DEBUG] Falling back to query search');
       const q = query(collection(db, 'couples'), where('code', 'in', candidates.slice(0, 10)), limit(1));
       const querySnap = await withTimeout(getDocs(q), 2000, null);
       if (querySnap && !querySnap.empty) {
         targetData = querySnap.docs[0].data();
         targetCode = querySnap.docs[0].id;
-        console.log('[joinCouple] Found couple document by query:', targetCode);
+        console.log('[SYNC-DEBUG] Found couple document by query:', targetCode);
       }
-    } catch (queryErr) {
-      console.warn('[joinCouple] Query fallback notice:', queryErr);
+    } catch (queryErr: any) {
+      console.warn('[SYNC-DEBUG] Query fallback notice:', queryErr?.code, queryErr?.message);
     }
   }
 
   if (!targetData) {
+    console.error(`[DUO-SYNC-ERROR] not-found Code de duo introuvable (${rawClean})`);
     throw new Error(`Code de duo introuvable (${rawClean}). Vérifiez que le code correspond bien à celui affiché sur le téléphone de votre partenaire.`);
   }
 
-  const existingMembers = targetData.memberUids || [];
-  const updatedMembers = user.uid ? Array.from(new Set([...existingMembers, user.uid])) : existingMembers;
+  // 3. Atomic Transaction for pairing
+  let couple: CouplePair;
+  try {
+    const coupleRef = doc(db, 'couples', targetCode);
+    console.log('[SYNC-DEBUG] Starting atomic runTransaction for room:', targetCode);
+    
+    couple = await runTransaction(db, async (transaction) => {
+      const docSnap = await transaction.get(coupleRef);
+      if (!docSnap.exists()) {
+        throw new Error("Document introuvable pendant la transaction.");
+      }
+      
+      const currentData = docSnap.data();
+      const existingMembers = currentData.memberUids || [];
+      const updatedMembers = user.uid ? Array.from(new Set([...existingMembers, user.uid])) : existingMembers;
 
-  const partnerB = {
-    id: 'partner_b',
-    name: partnerName.trim() || 'Partenaire 2',
-    avatar: avatarUrl || targetData.partnerB?.avatar || 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
-    role: 'Partenaire 2',
-  };
+      const partnerB = {
+        id: 'partner_b',
+        name: partnerName.trim() || 'Partenaire 2',
+        avatar: avatarUrl || currentData.partnerB?.avatar || 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
+        role: 'Partenaire 2',
+      };
 
-  const updateData = cleanFirestoreData({
-    partnerB,
-    partnerBUid: user.uid,
-    partnerBEmail: user.email || '',
-    memberUids: updatedMembers,
-    isCodeUsed: true,
-    updatedAt: new Date().toISOString(),
-  });
+      const updateData = cleanFirestoreData({
+        partnerB,
+        partnerBUid: user.uid,
+        partnerBEmail: user.email || '',
+        memberUids: updatedMembers,
+        isCodeUsed: true,
+        updatedAt: new Date().toISOString(),
+      });
 
-  // Single clean write
-  const coupleRef = doc(db, 'couples', targetCode);
-  await setDoc(coupleRef, updateData, { merge: true });
-  verifiedRoomsCache.add(targetCode);
+      transaction.set(coupleRef, updateData, { merge: true });
 
-  const couple: CouplePair = {
-    ...targetData,
-    ...updateData,
-    code: targetCode,
-  };
+      return {
+        ...currentData,
+        ...updateData,
+        code: targetCode,
+      } as CouplePair;
+    });
+
+    verifiedRoomsCache.add(targetCode);
+    console.log('[SYNC-DEBUG] Transaction successful for room:', targetCode);
+
+  } catch (error: any) {
+    console.error("[DUO-SYNC-ERROR]", error?.code, error?.message);
+    throw new Error("Erreur lors de la synchronisation de la liaison : " + (error?.message || "Erreur inconnue"));
+  }
 
   // Fetch existing spots & notifications
   let spots: Spot[] = [];
   let notifications: NotificationItem[] = [];
   try {
+    console.log('[SYNC-DEBUG] Fetching initial subcollections');
     const spotsSnap = await withTimeout(getDocs(collection(db, 'couples', targetCode, 'spots')), 2000, null);
     if (spotsSnap) {
       spots = spotsSnap.docs.map(d => d.data() as Spot);
@@ -1133,9 +1149,11 @@ export async function joinCoupleInFirestore(
     if (notifsSnap) {
       notifications = notifsSnap.docs.map(d => d.data() as NotificationItem);
     }
-  } catch {}
+  } catch (err: any) {
+    console.warn('[SYNC-DEBUG] Notice while fetching subcollections:', err?.code, err?.message);
+  }
 
-  console.log('[joinCouple] Successfully paired to room:', couple.code);
+  console.log('[SYNC-DEBUG] joinCouple Successfully paired to room:', couple.code);
   return { couple, spots, notifications };
 }
 
@@ -1374,7 +1392,7 @@ export async function deleteUserAccountInFirestore(user: User | null, code?: str
   const targetUid = targetUser?.uid;
   const targetEmail = targetUser?.email;
 
-  console.log('[Native Debug] deleteUserAccountInFirestore called for:', {
+  console.log('[SYNC-DEBUG] deleteUserAccountInFirestore called for:', {
     targetUid,
     targetEmail,
     code,
@@ -1408,26 +1426,30 @@ export async function deleteUserAccountInFirestore(user: User | null, code?: str
         snap.forEach((d: any) => coupleCodesToDelete.add(d.id));
       }
     }
-  } catch (findErr) {
-    console.warn('[Native Debug] Error looking up couple docs to delete:', findErr);
+  } catch (findErr: any) {
+    console.error('[DUO-SYNC-ERROR]', findErr?.code, findErr?.message);
+    console.warn('[SYNC-DEBUG] Error looking up couple docs to delete:', findErr);
   }
 
   // Delete all identified couple collections, spots, and notifications in parallel
   for (const cCode of coupleCodesToDelete) {
-    console.log('[Native Debug] Deleting couple document and subcollections for:', cCode);
-    // 1. Instant REST and SDK document delete
-    restDeleteDoc(`couples/${cCode}`).catch(() => {});
-    deleteDoc(doc(db, 'couples', cCode)).catch(() => {});
+    console.log('[SYNC-DEBUG] Deleting couple document and subcollections for:', cCode);
+    try {
+      await deleteDoc(doc(db, 'couples', cCode));
+    } catch (e: any) {
+      console.error('[DUO-SYNC-ERROR] Failed to delete couple doc:', e?.code, e?.message);
+    }
     
     // Subcollections cleanup in background
     (async () => {
-      const spots = await restListDocs(`couples/${cCode}/spots`).catch(() => []);
-      for (const s of spots) {
-        if (s.id) restDeleteDoc(`couples/${cCode}/spots/${s.id}`).catch(() => {});
-      }
-      const notifs = await restListDocs(`couples/${cCode}/notifications`).catch(() => []);
-      for (const n of notifs) {
-        if (n.id) restDeleteDoc(`couples/${cCode}/notifications/${n.id}`).catch(() => {});
+      try {
+        const spotsSnap = await getDocs(collection(db, 'couples', cCode, 'spots'));
+        for (const s of spotsSnap.docs) await deleteDoc(s.ref);
+        
+        const notifsSnap = await getDocs(collection(db, 'couples', cCode, 'notifications'));
+        for (const n of notifsSnap.docs) await deleteDoc(n.ref);
+      } catch (err: any) {
+         console.warn('[SYNC-DEBUG] Notice cleaning subcollections:', err?.code, err?.message);
       }
     })().catch(() => {});
   }
@@ -1449,27 +1471,29 @@ export async function deleteUserAccountInFirestore(user: User | null, code?: str
   const firebaseAuthUser = auth.currentUser || (targetUser && typeof (targetUser as any).delete === 'function' ? targetUser : null);
   if (firebaseAuthUser && typeof firebaseAuthUser.delete === 'function') {
     try {
-      console.log('[Native Debug] Attempting firebaseAuthUser.delete()...');
+      console.log('[SYNC-DEBUG] Attempting firebaseAuthUser.delete()...');
       await withTimeout(firebaseAuthUser.delete(), 2000, null);
-      console.log('[Native Debug] firebaseAuthUser.delete() completed.');
+      console.log('[SYNC-DEBUG] firebaseAuthUser.delete() completed.');
     } catch (delErr: any) {
-      console.warn('[Native Debug] Notice during firebaseAuthUser.delete():', delErr?.code || delErr?.message || delErr);
+      console.error('[DUO-SYNC-ERROR]', delErr?.code, delErr?.message);
+      console.warn('[SYNC-DEBUG] Notice during firebaseAuthUser.delete():', delErr?.code || delErr?.message || delErr);
     }
   }
 
   // 4. Native Plugins sign out (Google / Apple tokens cached on device)
   try {
     await withTimeout(triggerNativeSignOut(), 1500, null);
-  } catch (nsErr) {
-    console.warn('[Native Debug] triggerNativeSignOut error:', nsErr);
+  } catch (nsErr: any) {
+    console.warn('[SYNC-DEBUG] triggerNativeSignOut error:', nsErr);
   }
 
   // 5. Firebase Auth signOut
   try {
     await withTimeout(signOut(auth), 1500, null);
-    console.log('[Native Debug] Firebase signOut completed.');
-  } catch (soErr) {
-    console.warn('[Native Debug] signOut error:', soErr);
+    console.log('[SYNC-DEBUG] Firebase signOut completed.');
+  } catch (soErr: any) {
+    console.error('[DUO-SYNC-ERROR]', soErr?.code, soErr?.message);
+    console.warn('[SYNC-DEBUG] signOut error:', soErr);
   }
 }
 
