@@ -1469,16 +1469,18 @@ export async function updateCoupleInFirestore(code: string, updated: CouplePair)
   const cleanCode = code.trim().toUpperCase();
   const { spots, notifications, ...coreCouple } = updated;
   const cleaned = cleanFirestoreData({ ...coreCouple, updatedAt: new Date().toISOString() });
+  
+  // 1. Instantly write via REST to guarantee delivery regardless of SDK WebSocket state
+  restSetDoc(`couples/${cleanCode}`, cleaned).catch(() => {});
+
+  // 2. Pass to SDK for offline local cache resolution (non-blocking)
   try {
     const docRef = doc(db, 'couples', cleanCode);
-    await setDoc(docRef, cleaned, { merge: true });
-    // Mirror update via REST for instant cross-network sync
-    restSetDoc(`couples/${cleanCode}`, cleaned).catch(() => {});
+    setDoc(docRef, cleaned, { merge: true }).catch(() => {});
     verifiedRoomsCache.add(cleanCode);
     console.log('[Firebase] Couple updated successfully');
   } catch (err) {
-    console.warn('[Firebase] Updating couple via REST fallback:', err);
-    await restSetDoc(`couples/${cleanCode}`, cleaned);
+    console.warn('[Firebase] Updating couple SDK warning:', err);
   }
 }
 
@@ -1657,53 +1659,47 @@ export function subscribeToCouple(code: string, callback: (couple: CouplePair | 
   };
 }
 
-// Save spot to Firestore (SDK write + REST mirror + couple touch)
+// Save spot to Firestore (REST first + SDK background sync)
 export async function saveSpotToFirestore(code: string, spot: Spot) {
   if (!code) return false;
   const cleanCode = code.trim().toUpperCase();
   const cleanedSpot = cleanFirestoreData(spot);
+  
+  // 1. Instantly write via REST to guarantee delivery regardless of SDK WebSocket state
+  restSetDoc(`couples/${cleanCode}/spots/${spot.id}`, cleanedSpot)
+    .then((ok) => {
+      if (ok) restSetDoc(`couples/${cleanCode}`, { updatedAt: new Date().toISOString(), lastSpotUpdate: Date.now() }).catch(() => {});
+    })
+    .catch(() => {});
+
+  // 2. Pass to SDK for offline local cache resolution (non-blocking)
   try {
     const docRef = doc(db, 'couples', cleanCode, 'spots', spot.id);
-    await setDoc(docRef, cleanedSpot, { merge: true });
-    // Mirror write via REST for immediate persistence
-    restSetDoc(`couples/${cleanCode}/spots/${spot.id}`, cleanedSpot).catch(() => {});
-    // Touch couple document updatedAt so both SDK and REST listeners trigger
-    restSetDoc(`couples/${cleanCode}`, { updatedAt: new Date().toISOString(), lastSpotUpdate: Date.now() }).catch(() => {});
+    setDoc(docRef, cleanedSpot, { merge: true }).catch(() => {}); // Fire and forget
     console.log('[Firebase] Spot saved successfully:', spot.id);
     return true;
   } catch (err) {
-    console.warn('[Firebase] Falling back to REST for saving spot:', err);
-    try {
-      await restSetDoc(`couples/${cleanCode}/spots/${spot.id}`, cleanedSpot);
-      restSetDoc(`couples/${cleanCode}`, { updatedAt: new Date().toISOString(), lastSpotUpdate: Date.now() }).catch(() => {});
-      return true;
-    } catch (restErr) {
-      console.error('[Firebase] Failed to save spot via REST:', restErr);
-      return false;
-    }
+    return false;
   }
 }
 
-// Delete spot from Firestore
+// Delete spot from Firestore (REST first + SDK background sync)
 export async function deleteSpotFromFirestore(code: string, spotId: string) {
   if (!code || !spotId) return false;
   const cleanCode = code.trim().toUpperCase();
+  
+  restDeleteDoc(`couples/${cleanCode}/spots/${spotId}`)
+    .then(() => {
+      restSetDoc(`couples/${cleanCode}`, { updatedAt: new Date().toISOString(), lastSpotUpdate: Date.now() }).catch(() => {});
+    })
+    .catch(() => {});
+
   try {
-    await deleteDoc(doc(db, 'couples', cleanCode, 'spots', spotId));
-    restDeleteDoc(`couples/${cleanCode}/spots/${spotId}`).catch(() => {});
-    restSetDoc(`couples/${cleanCode}`, { updatedAt: new Date().toISOString(), lastSpotUpdate: Date.now() }).catch(() => {});
+    deleteDoc(doc(db, 'couples', cleanCode, 'spots', spotId)).catch(() => {});
     console.log('[Firebase] Spot deleted successfully:', spotId);
     return true;
   } catch (err) {
-    console.warn('[Firebase] Falling back to REST for deleting spot:', err);
-    try {
-      await restDeleteDoc(`couples/${cleanCode}/spots/${spotId}`);
-      restSetDoc(`couples/${cleanCode}`, { updatedAt: new Date().toISOString(), lastSpotUpdate: Date.now() }).catch(() => {});
-      return true;
-    } catch (restErr) {
-      console.error('[Firebase] Failed to delete spot via REST:', restErr);
-      return false;
-    }
+    return false;
   }
 }
 
@@ -1768,20 +1764,17 @@ export async function saveNotificationToFirestore(code: string, notif: Notificat
   if (!code) return false;
   const cleanCode = code.trim().toUpperCase();
   const cleanedNotif = cleanFirestoreData(notif);
+  
+  // 1. Instantly write via REST
+  restSetDoc(`couples/${cleanCode}/notifications/${notif.id}`, cleanedNotif).catch(() => {});
+
+  // 2. Pass to SDK for offline local cache resolution (non-blocking)
   try {
     const docRef = doc(db, 'couples', cleanCode, 'notifications', notif.id);
-    await setDoc(docRef, cleanedNotif, { merge: true });
-    restSetDoc(`couples/${cleanCode}/notifications/${notif.id}`, cleanedNotif).catch(() => {});
+    setDoc(docRef, cleanedNotif, { merge: true }).catch(() => {});
     return true;
   } catch (err) {
-    console.warn('[Firebase] Falling back to REST for saving notification:', err);
-    try {
-      await restSetDoc(`couples/${cleanCode}/notifications/${notif.id}`, cleanedNotif);
-      return true;
-    } catch (restErr) {
-      console.error('[Firebase] Failed to save notification via REST:', restErr);
-      return false;
-    }
+    return false;
   }
 }
 
