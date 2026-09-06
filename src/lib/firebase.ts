@@ -1464,19 +1464,21 @@ export async function findUserCoupleInFirestore(
   return null;
 }
 
-// Update couple configuration (e.g. names, pin, anniversary)
+// Update couple configuration (e.g. names, pin, anniversary, subscription)
 export async function updateCoupleInFirestore(code: string, updated: CouplePair) {
+  const cleanCode = code.trim().toUpperCase();
+  const { spots, notifications, ...coreCouple } = updated;
+  const cleaned = cleanFirestoreData({ ...coreCouple, updatedAt: new Date().toISOString() });
   try {
-    const cleanCode = code.trim().toUpperCase();
     const docRef = doc(db, 'couples', cleanCode);
-    const { spots, notifications, ...coreCouple } = updated;
-    const cleaned = cleanFirestoreData({ ...coreCouple, updatedAt: new Date().toISOString() });
     await setDoc(docRef, cleaned, { merge: true });
+    // Mirror update via REST for instant cross-network sync
+    restSetDoc(`couples/${cleanCode}`, cleaned).catch(() => {});
     verifiedRoomsCache.add(cleanCode);
     console.log('[Firebase] Couple updated successfully');
   } catch (err) {
-    console.error('[Firebase] Failed to update couple:', err);
-    throw err;
+    console.warn('[Firebase] Updating couple via REST fallback:', err);
+    await restSetDoc(`couples/${cleanCode}`, cleaned);
   }
 }
 
@@ -1655,58 +1657,141 @@ export function subscribeToCouple(code: string, callback: (couple: CouplePair | 
   };
 }
 
-// Save spot to Firestore (Single clean SDK write with merge)
+// Save spot to Firestore (SDK write + REST mirror + couple touch)
 export async function saveSpotToFirestore(code: string, spot: Spot) {
+  if (!code) return false;
+  const cleanCode = code.trim().toUpperCase();
+  const cleanedSpot = cleanFirestoreData(spot);
   try {
-    const cleanCode = code.trim().toUpperCase();
-    const cleanedSpot = cleanFirestoreData(spot);
     const docRef = doc(db, 'couples', cleanCode, 'spots', spot.id);
     await setDoc(docRef, cleanedSpot, { merge: true });
+    // Mirror write via REST for immediate persistence
+    restSetDoc(`couples/${cleanCode}/spots/${spot.id}`, cleanedSpot).catch(() => {});
+    // Touch couple document updatedAt so both SDK and REST listeners trigger
+    restSetDoc(`couples/${cleanCode}`, { updatedAt: new Date().toISOString(), lastSpotUpdate: Date.now() }).catch(() => {});
     console.log('[Firebase] Spot saved successfully:', spot.id);
     return true;
   } catch (err) {
-    console.error('[Firebase] Failed to save spot:', err);
-    throw err;
+    console.warn('[Firebase] Falling back to REST for saving spot:', err);
+    try {
+      await restSetDoc(`couples/${cleanCode}/spots/${spot.id}`, cleanedSpot);
+      restSetDoc(`couples/${cleanCode}`, { updatedAt: new Date().toISOString(), lastSpotUpdate: Date.now() }).catch(() => {});
+      return true;
+    } catch (restErr) {
+      console.error('[Firebase] Failed to save spot via REST:', restErr);
+      return false;
+    }
   }
 }
 
-// Delete spot from Firestore (Single clean SDK delete)
+// Delete spot from Firestore
 export async function deleteSpotFromFirestore(code: string, spotId: string) {
+  if (!code || !spotId) return false;
+  const cleanCode = code.trim().toUpperCase();
   try {
-    const cleanCode = code.trim().toUpperCase();
     await deleteDoc(doc(db, 'couples', cleanCode, 'spots', spotId));
+    restDeleteDoc(`couples/${cleanCode}/spots/${spotId}`).catch(() => {});
+    restSetDoc(`couples/${cleanCode}`, { updatedAt: new Date().toISOString(), lastSpotUpdate: Date.now() }).catch(() => {});
     console.log('[Firebase] Spot deleted successfully:', spotId);
     return true;
   } catch (err) {
-    console.error('[Firebase] Failed to delete spot:', err);
-    throw err;
+    console.warn('[Firebase] Falling back to REST for deleting spot:', err);
+    try {
+      await restDeleteDoc(`couples/${cleanCode}/spots/${spotId}`);
+      restSetDoc(`couples/${cleanCode}`, { updatedAt: new Date().toISOString(), lastSpotUpdate: Date.now() }).catch(() => {});
+      return true;
+    } catch (restErr) {
+      console.error('[Firebase] Failed to delete spot via REST:', restErr);
+      return false;
+    }
   }
 }
 
-// Subscribe to spots real-time changes
+// Subscribe to spots real-time changes with initial fetch and visibility refresh
 export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void) {
   if (!code) return () => {};
   const cleanCode = code.trim().toUpperCase();
   const spotsRef = collection(db, 'couples', cleanCode, 'spots');
-  return onSnapshot(spotsRef, (snapshot) => {
-    const spots = snapshot.docs.map(d => d.data() as Spot);
-    callback(spots);
-  }, (err) => {
-    console.error('[Firebase] Error listening to spots:', err);
-  });
+
+  // Direct fetch helper
+  const fetchSpotsDirect = async () => {
+    try {
+      const snap = await withTimeout(getDocs(spotsRef), 5000, null);
+      if (snap && !snap.empty) {
+        const list = snap.docs.map((d) => d.data() as Spot);
+        callback(list);
+      }
+    } catch (e) {
+      // Ignore background network transient
+    }
+  };
+
+  // Immediate initial load
+  fetchSpotsDirect();
+
+  // 1. Real-time onSnapshot listener
+  const unsubSnapshot = onSnapshot(
+    spotsRef,
+    (snapshot) => {
+      const spots = snapshot.docs.map((d) => d.data() as Spot);
+      callback(spots);
+    },
+    (err) => {
+      console.warn('[Firebase] Error listening to spots:', err);
+    }
+  );
+
+  // 2. React to mobile resume / window focus events
+  const onVisibilityChange = () => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+      fetchSpotsDirect();
+    }
+  };
+  const onFocus = () => {
+    fetchSpotsDirect();
+  };
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('focus', onFocus);
+  }
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', onVisibilityChange);
+  }
+
+  // 3. Periodic light background poll (every 10 seconds) to ensure mobile WKWebView stay in sync
+  const pollTimer = setInterval(fetchSpotsDirect, 10000);
+
+  return () => {
+    unsubSnapshot();
+    clearInterval(pollTimer);
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('focus', onFocus);
+    }
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    }
+  };
 }
 
-// Save notification to Firestore (Single clean SDK write with merge)
+// Save notification to Firestore
 export async function saveNotificationToFirestore(code: string, notif: NotificationItem) {
+  if (!code) return false;
+  const cleanCode = code.trim().toUpperCase();
+  const cleanedNotif = cleanFirestoreData(notif);
   try {
-    const cleanCode = code.trim().toUpperCase();
-    const cleanedNotif = cleanFirestoreData(notif);
     const docRef = doc(db, 'couples', cleanCode, 'notifications', notif.id);
     await setDoc(docRef, cleanedNotif, { merge: true });
+    restSetDoc(`couples/${cleanCode}/notifications/${notif.id}`, cleanedNotif).catch(() => {});
     return true;
   } catch (err) {
-    console.error('[Firebase] Failed to save notification:', err);
-    throw err;
+    console.warn('[Firebase] Falling back to REST for saving notification:', err);
+    try {
+      await restSetDoc(`couples/${cleanCode}/notifications/${notif.id}`, cleanedNotif);
+      return true;
+    } catch (restErr) {
+      console.error('[Firebase] Failed to save notification via REST:', restErr);
+      return false;
+    }
   }
 }
 
@@ -1715,13 +1800,65 @@ export function subscribeToNotifications(code: string, callback: (notifs: Notifi
   if (!code) return () => {};
   const cleanCode = code.trim().toUpperCase();
   const notifsRef = collection(db, 'couples', cleanCode, 'notifications');
-  return onSnapshot(notifsRef, (snapshot) => {
-    const notifs = snapshot.docs.map(d => d.data() as NotificationItem);
-    notifs.sort((a, b) => new Date((b as any).createdAt).getTime() - new Date((a as any).createdAt).getTime());
-    callback(notifs);
-  }, (err) => {
-    console.error('[Firebase] Error listening to notifications:', err);
-  });
+
+  // Direct fetch helper
+  const fetchNotifsDirect = async () => {
+    try {
+      const snap = await withTimeout(getDocs(notifsRef), 5000, null);
+      if (snap && !snap.empty) {
+        const notifs = snap.docs.map((d) => d.data() as NotificationItem);
+        notifs.sort((a, b) => new Date((b as any).createdAt || 0).getTime() - new Date((a as any).createdAt || 0).getTime());
+        callback(notifs);
+      }
+    } catch (e) {}
+  };
+
+  // Immediate initial load
+  fetchNotifsDirect();
+
+  // 1. Real-time onSnapshot listener
+  const unsubSnapshot = onSnapshot(
+    notifsRef,
+    (snapshot) => {
+      const notifs = snapshot.docs.map((d) => d.data() as NotificationItem);
+      notifs.sort((a, b) => new Date((b as any).createdAt || 0).getTime() - new Date((a as any).createdAt || 0).getTime());
+      callback(notifs);
+    },
+    (err) => {
+      console.warn('[Firebase] Error listening to notifications:', err);
+    }
+  );
+
+  // 2. React to mobile resume / window focus events
+  const onVisibilityChange = () => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+      fetchNotifsDirect();
+    }
+  };
+  const onFocus = () => {
+    fetchNotifsDirect();
+  };
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('focus', onFocus);
+  }
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', onVisibilityChange);
+  }
+
+  // 3. Periodic light background poll (every 10 seconds)
+  const pollTimer = setInterval(fetchNotifsDirect, 10000);
+
+  return () => {
+    unsubSnapshot();
+    clearInterval(pollTimer);
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('focus', onFocus);
+    }
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    }
+  };
 }
 
 // Purge all created accounts, couples, spots and notifications in Firestore DB

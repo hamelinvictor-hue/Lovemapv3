@@ -32,16 +32,24 @@ export async function sendPushNotification(payload: {
 }) {
   try {
     const url = getBackendApiUrl('/api/push/send');
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
     const res = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(payload),
+      signal: controller.signal,
     });
+    clearTimeout(timeoutId);
+    if (!res.ok) {
+      console.log('[Push] Notification backend status:', res.status);
+      return null;
+    }
     return await res.json();
-  } catch (err) {
-    console.warn('[Push] Error sending push notification:', err);
+  } catch (err: any) {
+    console.log('[Push] Notification dispatch note:', err?.message || 'Network unreachable');
     return null;
   }
 }

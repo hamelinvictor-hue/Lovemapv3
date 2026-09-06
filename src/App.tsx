@@ -278,6 +278,19 @@ export default function App() {
         saveNotificationToFirestore(couple.code, premiumNotif).catch((e) => {
           console.warn('Error pushing premium activation notification to Firestore:', e);
         });
+
+        // Trigger Push Notification to partner for premium activation
+        import('./lib/apiConfig').then(({ sendPushNotification }) => {
+          sendPushNotification({
+            code: couple.code,
+            senderPartnerId: subscriberPartnerId,
+            targetPartnerId: partnerIdToNotify,
+            title: premiumNotif.title,
+            message: premiumNotif.message,
+            spotId: '',
+            type: premiumNotif.type,
+          });
+        });
       }
 
       showToast(plan === 'monthly' ? '👑 Pass Duo Premium (1 mois) activé !' : '👑 Pass Duo Premium (1 an) activé !');
