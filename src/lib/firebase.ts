@@ -959,6 +959,7 @@ export async function ensureCoupleRoomInFirestore(
       });
 
       // Write room to Firestore cleanly once
+      await restSetDoc(`couples/${cleanCode}`, newRoom);
       setDoc(coupleRef, newRoom, { merge: true }).catch(() => {});
       verifiedRoomsCache.add(cleanCode);
       return coupleWithCleanCode;
@@ -974,6 +975,7 @@ export async function ensureCoupleRoomInFirestore(
           updatedAt: new Date().toISOString(),
         });
 
+        await restSetDoc(`couples/${cleanCode}`, updatePayload);
         setDoc(coupleRef, updatePayload, { merge: true }).catch(() => {});
       }
       verifiedRoomsCache.add(cleanCode);
@@ -1070,7 +1072,7 @@ export async function createCoupleInFirestore(
     });
     
     // Save via REST (instant, 50ms) + non-blocking JS SDK
-    restSetDoc(`couples/${code}`, updatePayload).catch(() => {});
+    await restSetDoc(`couples/${code}`, updatePayload);
     withTimeout(setDoc(coupleRef, updatePayload, { merge: true }), 1500, null).catch(() => {});
     verifiedRoomsCache.add(code);
     return { couple: updatedCouple, isExisting: true };
@@ -1114,9 +1116,9 @@ export async function createCoupleInFirestore(
 
   // Fast write: instant REST save (50ms) + bounded JS SDK write (max 1500ms so UI never hangs)
   try {
-    restSetDoc(`couples/${code}`, coupleData).catch((e) => {
-      console.warn('[REST] createCouple notice:', e);
-    });
+    const ok = await restSetDoc(`couples/${code}`, coupleData, false);
+    if (!ok) console.warn('[REST] createCouple failed via REST');
+    
     await withTimeout(setDoc(coupleRef, coupleData), 1500, null).catch(() => {});
   } catch (err: any) {
     console.warn('[createCouple] Non-fatal setDoc notice (proceeding):', err);
@@ -1454,7 +1456,8 @@ export async function findUserCoupleInFirestore(
           updatePayload.partnerBUid = user.uid;
         }
         
-        await setDoc(doc(db, 'couples', foundDoc.id), updatePayload, { merge: true }).catch(() => {});
+        await restSetDoc(`couples/${foundDoc.id}`, updatePayload);
+        setDoc(doc(db, 'couples', foundDoc.id), updatePayload, { merge: true }).catch(() => {});
         docData.memberUids = updatedMembers;
       }
 
@@ -1505,16 +1508,14 @@ export async function savePushTokenToFirestore(code: string, partnerId: PartnerI
   try {
     await ensureGuestUser();
     const coupleRef = doc(db, 'couples', cleanCode);
-    await setDoc(
-      coupleRef,
-      cleanFirestoreData({
-        [partnerId === 'partner_a' ? 'partnerA' : 'partnerB']: {
-          pushToken: token,
-        },
-        updatedAt: serverTimestamp(),
-      }),
-      { merge: true }
-    );
+    const updatePayload = cleanFirestoreData({
+      [partnerId === 'partner_a' ? 'partnerA' : 'partnerB']: {
+        pushToken: token,
+      },
+      updatedAt: new Date().toISOString(),
+    });
+    await restSetDoc(`couples/${cleanCode}`, updatePayload);
+    setDoc(coupleRef, updatePayload, { merge: true }).catch(() => {});
     savedPushTokensCache.set(cacheKey, token);
     console.log('[savePushTokenToFirestore] Device push token saved for', partnerId);
   } catch (e) {
@@ -1554,18 +1555,16 @@ export async function breakCoupleInFirestore(code: string, breakerName: string) 
     }
 
     // Mark room as broken
-    await withTimeout(
-      setDoc(
-        coupleRef,
-        cleanFirestoreData({
-          ...brokenPayload,
-          updatedAt: serverTimestamp(),
-        }),
-        { merge: true }
-      ),
+    const payload = cleanFirestoreData({
+      ...brokenPayload,
+      updatedAt: new Date().toISOString(),
+    });
+    await restSetDoc(`couples/${cleanCode}`, payload);
+    withTimeout(
+      setDoc(coupleRef, payload, { merge: true }),
       3000,
       null
-    );
+    ).catch(() => {});
   } catch (err) {
     console.warn('Error breaking couple in Firestore:', err);
   }
