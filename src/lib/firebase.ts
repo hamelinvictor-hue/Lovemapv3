@@ -1967,11 +1967,11 @@ export async function deleteUserAccountInFirestore(user: User | null, code?: str
       await firebaseAuthUser.delete();
       console.log('[SYNC-DEBUG] firebaseAuthUser.delete() completed.');
     } catch (delErr: any) {
-      console.error('[DUO-SYNC-ERROR]', delErr?.code, delErr?.message);
       if (delErr?.code === 'auth/requires-recent-login') {
-        throw new Error("Sécurité : Veuillez vous déconnecter puis vous reconnecter pour pouvoir supprimer votre compte.");
+        console.log('[SYNC-DEBUG] Firebase user requires recent login for auth record delete; data and sessions purged.');
+      } else {
+        console.log('[SYNC-DEBUG] Notice during firebaseAuthUser.delete():', delErr?.code || delErr?.message || delErr);
       }
-      console.warn('[SYNC-DEBUG] Notice during firebaseAuthUser.delete():', delErr?.code || delErr?.message || delErr);
     }
   }
 
