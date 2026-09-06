@@ -33,6 +33,7 @@ import {
   saveHasPromptedFirstSpotRating,
   getHasPromptedFirstSpotPaywall,
   saveHasPromptedFirstSpotPaywall,
+  saveStoredAuthUser,
 } from './lib/storage';
 import {
   subscribeToCouple,
@@ -525,6 +526,17 @@ export default function App() {
       } else {
         const eff = getEffectiveUser();
         setAuthUser(eff && !eff.isAnonymous ? eff : null);
+        if (eff && !eff.isAnonymous) {
+          const result = await findUserCoupleInFirestore(eff);
+          if (result) {
+            setCouple(result.couple);
+            setActivePartnerId(result.partnerId);
+            setActivePartner(result.partnerId);
+            saveCouple(result.couple);
+            saveHasCompletedOnboarding(true);
+            setIsOnboardingOpen(false);
+          }
+        }
       }
     });
     return () => unsub();
