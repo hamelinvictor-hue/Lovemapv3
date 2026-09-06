@@ -215,13 +215,13 @@ export async function restDeleteDoc(docPath: string): Promise<boolean> {
   }
 }
 
-export async function restListDocs(collectionPath: string): Promise<any[]> {
+export async function restListDocs(collectionPath: string): Promise<any[] | null> {
   try {
     const cleanPath = collectionPath.startsWith('/') ? collectionPath.slice(1) : collectionPath;
     const res = await fetch(`${FIRESTORE_REST_BASE}/${cleanPath}?key=${firebaseConfig.apiKey}`, {
       headers: { 'Content-Type': 'application/json' },
     });
-    if (!res.ok) return [];
+    if (!res.ok) return null;
     const json = await res.json();
     return (json.documents || []).map((d: any) => {
       const data = fromFirestoreDoc(d);
@@ -230,7 +230,7 @@ export async function restListDocs(collectionPath: string): Promise<any[]> {
       return { ...data, id: data?.id || id };
     });
   } catch (e) {
-    return [];
+    return null;
   }
 }
 
@@ -1672,11 +1672,11 @@ export async function saveSpotToFirestore(code: string, spot: Spot) {
   const cleanedSpot = cleanFirestoreData(spot);
   
   // 1. Instantly write via REST to guarantee delivery regardless of SDK WebSocket state
-  restSetDoc(`couples/${cleanCode}/spots/${spot.id}`, cleanedSpot)
-    .then((ok) => {
-      if (ok) restSetDoc(`couples/${cleanCode}`, { updatedAt: new Date().toISOString(), lastSpotUpdate: Date.now() }).catch(() => {});
-    })
-    .catch(() => {});
+  // merge: false ensures we can CREATE the document if it doesn't exist via REST PATCH
+  restSetDoc(`couples/${cleanCode}/spots/${spot.id}`, cleanedSpot, false).catch(() => {});
+  
+  // ALWAYS trigger the couple liveness poller timestamp so the other device wakes up
+  restSetDoc(`couples/${cleanCode}`, { updatedAt: new Date().toISOString(), lastSpotUpdate: Date.now() }).catch(() => {});
 
   // 2. Pass to SDK for offline local cache resolution (non-blocking)
   try {
@@ -1694,11 +1694,9 @@ export async function deleteSpotFromFirestore(code: string, spotId: string) {
   if (!code || !spotId) return false;
   const cleanCode = code.trim().toUpperCase();
   
-  restDeleteDoc(`couples/${cleanCode}/spots/${spotId}`)
-    .then(() => {
-      restSetDoc(`couples/${cleanCode}`, { updatedAt: new Date().toISOString(), lastSpotUpdate: Date.now() }).catch(() => {});
-    })
-    .catch(() => {});
+  restDeleteDoc(`couples/${cleanCode}/spots/${spotId}`).catch(() => {});
+  
+  restSetDoc(`couples/${cleanCode}`, { updatedAt: new Date().toISOString(), lastSpotUpdate: Date.now() }).catch(() => {});
 
   try {
     deleteDoc(doc(db, 'couples', cleanCode, 'spots', spotId)).catch(() => {});
@@ -1741,7 +1739,7 @@ export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void
       }
 
       const restSpots = await restListDocs(`couples/${cleanCode}/spots`);
-      if (restSpots && restSpots.length > 0) {
+      if (restSpots !== null) {
         callback(restSpots as Spot[]);
         return;
       }
@@ -1787,7 +1785,8 @@ export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void
       if (coupleDoc && coupleDoc.lastSpotUpdate) {
         const remoteUpdate = Number(coupleDoc.lastSpotUpdate);
         if (lastKnownSpotUpdate === -2) {
-          // fetchSpotsDirect hasn't initialized it yet, wait for it
+          // Just initialize it if it was still -2 for some reason
+          lastKnownSpotUpdate = remoteUpdate;
         } else if (remoteUpdate > lastKnownSpotUpdate) {
           console.log('[Firebase] Liveness poller detected spot change, fetching...');
           fetchSpotsDirect();
@@ -1795,6 +1794,9 @@ export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void
       }
     } catch (e) {}
   }, 10000);
+
+  // Initialize immediately to set baseline and bypass frozen iOS boot socket
+  fetchSpotsDirect();
 
   return () => {
     unsubSnapshot();
@@ -1816,11 +1818,11 @@ export async function saveNotificationToFirestore(code: string, notif: Notificat
   const cleanedNotif = cleanFirestoreData(notif);
   
   // 1. Instantly write via REST
-  restSetDoc(`couples/${cleanCode}/notifications/${notif.id}`, cleanedNotif)
-    .then((ok) => {
-      if (ok) restSetDoc(`couples/${cleanCode}`, { updatedAt: new Date().toISOString(), lastNotificationUpdate: Date.now() }).catch(() => {});
-    })
-    .catch(() => {});
+  // merge: false ensures we can CREATE the document if it doesn't exist via REST PATCH
+  restSetDoc(`couples/${cleanCode}/notifications/${notif.id}`, cleanedNotif, false).catch(() => {});
+  
+  // ALWAYS trigger the couple liveness poller timestamp so the other device wakes up
+  restSetDoc(`couples/${cleanCode}`, { updatedAt: new Date().toISOString(), lastNotificationUpdate: Date.now() }).catch(() => {});
 
   // 2. Pass to SDK for offline local cache resolution (non-blocking)
   try {
@@ -1865,7 +1867,7 @@ export function subscribeToNotifications(code: string, callback: (notifs: Notifi
       }
 
       const restNotifs = await restListDocs(`couples/${cleanCode}/notifications`);
-      if (restNotifs && restNotifs.length > 0) {
+      if (restNotifs !== null) {
         const notifs = restNotifs as NotificationItem[];
         notifs.sort((a, b) => new Date((b as any).createdAt || 0).getTime() - new Date((a as any).createdAt || 0).getTime());
         callback(notifs);
@@ -1912,7 +1914,8 @@ export function subscribeToNotifications(code: string, callback: (notifs: Notifi
       if (coupleDoc && coupleDoc.lastNotificationUpdate) {
         const remoteUpdate = Number(coupleDoc.lastNotificationUpdate);
         if (lastKnownNotifUpdate === -2) {
-          // fetchNotifsDirect hasn't initialized it yet
+          // Just initialize it
+          lastKnownNotifUpdate = remoteUpdate;
         } else if (remoteUpdate > lastKnownNotifUpdate) {
           console.log('[Firebase] Liveness poller detected notif change, fetching...');
           fetchNotifsDirect();
@@ -1920,6 +1923,9 @@ export function subscribeToNotifications(code: string, callback: (notifs: Notifi
       }
     } catch (e) {}
   }, 10000);
+
+  // Initialize immediately
+  fetchNotifsDirect();
 
   return () => {
     unsubSnapshot();
