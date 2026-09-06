@@ -1184,11 +1184,18 @@ export async function joinCoupleInFirestore(
   let targetData: any = null;
   let targetCode = rawClean;
 
-  // 1. Direct document lookup by candidate codes
+  // 1. Direct document lookup by candidate codes (REST-first + SDK)
   for (const cand of candidates) {
     try {
-      console.log(`[SYNC-DEBUG] Checking candidate: ${cand}`);
-      const snap = await withTimeout(getDoc(doc(db, 'couples', cand)), 10000, null);
+      console.log(`[SYNC-DEBUG] Checking candidate via REST: ${cand}`);
+      const restDoc = await restGetDoc(`couples/${cand}`);
+      if (restDoc) {
+        targetData = restDoc;
+        targetCode = cand;
+        console.log('[SYNC-DEBUG] Found couple document via REST:', cand);
+        break;
+      }
+      const snap = await withTimeout(getDoc(doc(db, 'couples', cand)), 2000, null);
       if (snap && snap.exists()) {
         targetData = snap.data();
         targetCode = cand;
@@ -1205,7 +1212,7 @@ export async function joinCoupleInFirestore(
     try {
       console.log('[SYNC-DEBUG] Falling back to query search');
       const q = query(collection(db, 'couples'), where('code', 'in', candidates.slice(0, 10)), limit(1));
-      const querySnap = await withTimeout(getDocs(q), 10000, null);
+      const querySnap = await withTimeout(getDocs(q), 3000, null);
       if (querySnap && !querySnap.empty) {
         targetData = querySnap.docs[0].data();
         targetCode = querySnap.docs[0].id;
@@ -1221,52 +1228,42 @@ export async function joinCoupleInFirestore(
     throw new Error(`Code de duo introuvable (${rawClean}). Vérifiez que le code correspond bien à celui affiché sur le téléphone de votre partenaire.`);
   }
 
-  // 3. Atomic Transaction for pairing
+  // 3. Pairing update (REST-first for instant write + background SDK sync)
   let couple: CouplePair;
   try {
-    const coupleRef = doc(db, 'couples', targetCode);
-    console.log('[SYNC-DEBUG] Starting atomic runTransaction for room:', targetCode);
-    
-    couple = await runTransaction(db, async (transaction) => {
-      const docSnap = await transaction.get(coupleRef);
-      if (!docSnap.exists()) {
-        throw new Error("Document introuvable pendant la transaction.");
-      }
-      
-      const currentData = docSnap.data();
-      const existingMembers = currentData.memberUids || [];
-      const updatedMembers = user.uid ? Array.from(new Set([...existingMembers, user.uid])) : existingMembers;
+    const existingMembers = targetData.memberUids || [];
+    const updatedMembers = user.uid ? Array.from(new Set([...existingMembers, user.uid])) : existingMembers;
 
-      const partnerB = {
-        id: 'partner_b',
-        name: partnerName.trim() || 'Partenaire 2',
-        avatar: avatarUrl || currentData.partnerB?.avatar || 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
-        role: 'Partenaire 2',
-      };
+    const partnerB = {
+      id: 'partner_b',
+      name: partnerName.trim() || user.displayName || 'Partenaire 2',
+      avatar: avatarUrl || user.photoURL || targetData.partnerB?.avatar || 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
+      role: 'Partenaire 2',
+    };
 
-      const updateData = cleanFirestoreData({
-        partnerB,
-        partnerBUid: user.uid,
-        partnerBEmail: user.email || '',
-        memberUids: updatedMembers,
-        isCodeUsed: true,
-        updatedAt: new Date().toISOString(),
-      });
-
-      transaction.set(coupleRef, updateData, { merge: true });
-
-      return {
-        ...currentData,
-        ...updateData,
-        code: targetCode,
-      } as unknown as CouplePair;
+    const updateData = cleanFirestoreData({
+      partnerB,
+      partnerBUid: user.uid,
+      partnerBEmail: user.email || '',
+      memberUids: updatedMembers,
+      isCodeUsed: true,
+      updatedAt: new Date().toISOString(),
     });
 
-    verifiedRoomsCache.add(targetCode);
-    console.log('[SYNC-DEBUG] Transaction successful for room:', targetCode);
+    couple = {
+      ...targetData,
+      ...updateData,
+      code: targetCode,
+    } as unknown as CouplePair;
 
-    // Fast sync via REST to ensure immediate availability
-    restSetDoc(`couples/${targetCode}`, couple).catch(() => {});
+    // Direct instant REST write
+    await restSetDoc(`couples/${targetCode}`, updateData, true);
+
+    // Non-blocking SDK setDoc to update local cache
+    setDoc(doc(db, 'couples', targetCode), updateData, { merge: true }).catch(() => {});
+
+    verifiedRoomsCache.add(targetCode);
+    console.log('[SYNC-DEBUG] Successfully paired to room:', targetCode);
 
     // Broadcast Partner Joined event notification to trigger partner's realtime listener
     const joinNotif: NotificationItem = {
@@ -1289,24 +1286,34 @@ export async function joinCoupleInFirestore(
     throw new Error("Erreur lors de la synchronisation de la liaison : " + (error?.message || "Erreur inconnue"));
   }
 
-  // Fetch existing spots & notifications
+  // Fetch existing spots & notifications (REST-first)
   let spots: Spot[] = [];
   let notifications: NotificationItem[] = [];
   try {
-    console.log('[SYNC-DEBUG] Fetching initial subcollections');
-    const spotsSnap = await withTimeout(getDocs(collection(db, 'couples', targetCode, 'spots')), 10000, null);
-    if (spotsSnap) {
-      spots = spotsSnap.docs.map(d => d.data() as Spot);
+    console.log('[SYNC-DEBUG] Fetching initial subcollections via REST');
+    const restSpots = await restListDocs(`couples/${targetCode}/spots`);
+    if (restSpots && restSpots.length > 0) {
+      spots = restSpots as Spot[];
+    } else {
+      const spotsSnap = await withTimeout(getDocs(collection(db, 'couples', targetCode, 'spots')), 3000, null);
+      if (spotsSnap) {
+        spots = spotsSnap.docs.map(d => d.data() as Spot);
+      }
     }
-    const notifsSnap = await withTimeout(getDocs(collection(db, 'couples', targetCode, 'notifications')), 10000, null);
-    if (notifsSnap) {
-      notifications = notifsSnap.docs.map(d => d.data() as NotificationItem);
+    const restNotifs = await restListDocs(`couples/${targetCode}/notifications`);
+    if (restNotifs && restNotifs.length > 0) {
+      notifications = restNotifs as NotificationItem[];
+    } else {
+      const notifsSnap = await withTimeout(getDocs(collection(db, 'couples', targetCode, 'notifications')), 3000, null);
+      if (notifsSnap) {
+        notifications = notifsSnap.docs.map(d => d.data() as NotificationItem);
+      }
     }
   } catch (err: any) {
     console.warn('[SYNC-DEBUG] Notice while fetching subcollections:', err?.code, err?.message);
   }
 
-  console.log('[SYNC-DEBUG] joinCouple Successfully paired to room:', couple.code);
+  console.log('[SYNC-DEBUG] joinCouple Successfully finished for room:', couple.code);
   return { couple, spots, notifications };
 }
 
@@ -1724,7 +1731,12 @@ export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void
   // 2. Direct fetch helper on mobile resume / window focus
   const fetchSpotsDirect = async () => {
     try {
-      const snap = await withTimeout(getDocs(spotsRef), 6000, null);
+      const restSpots = await restListDocs(`couples/${cleanCode}/spots`);
+      if (restSpots && restSpots.length > 0) {
+        callback(restSpots as Spot[]);
+        return;
+      }
+      const snap = await withTimeout(getDocs(spotsRef), 3000, null);
       if (snap) {
         const list = snap.docs.map((d) => d.data() as Spot);
         callback(list);
@@ -1800,7 +1812,14 @@ export function subscribeToNotifications(code: string, callback: (notifs: Notifi
   // 2. Direct fetch on mobile resume / focus
   const fetchNotifsDirect = async () => {
     try {
-      const snap = await withTimeout(getDocs(notifsRef), 6000, null);
+      const restNotifs = await restListDocs(`couples/${cleanCode}/notifications`);
+      if (restNotifs && restNotifs.length > 0) {
+        const notifs = restNotifs as NotificationItem[];
+        notifs.sort((a, b) => new Date((b as any).createdAt || 0).getTime() - new Date((a as any).createdAt || 0).getTime());
+        callback(notifs);
+        return;
+      }
+      const snap = await withTimeout(getDocs(notifsRef), 3000, null);
       if (snap) {
         const notifs = snap.docs.map((d) => d.data() as NotificationItem);
         notifs.sort((a, b) => new Date((b as any).createdAt || 0).getTime() - new Date((a as any).createdAt || 0).getTime());
