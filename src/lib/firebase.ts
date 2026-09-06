@@ -1262,6 +1262,25 @@ export async function joinCoupleInFirestore(
     verifiedRoomsCache.add(targetCode);
     console.log('[SYNC-DEBUG] Transaction successful for room:', targetCode);
 
+    // Fast sync via REST to ensure immediate availability
+    restSetDoc(`couples/${targetCode}`, couple).catch(() => {});
+
+    // Broadcast Partner Joined event notification to trigger partner's realtime listener
+    const joinNotif: NotificationItem = {
+      id: `notif-join-${Date.now()}`,
+      type: 'spot_validated',
+      spotId: 'duo-connected',
+      senderId: 'partner_b',
+      targetPartnerId: 'partner_a',
+      title: '💖 Duo Connecté !',
+      message: `${partnerName.trim() || 'Votre partenaire'} a rejoint votre espace Duo avec succès !`,
+      timestamp: new Date().toISOString(),
+      isRead: false,
+    };
+    saveNotificationToFirestore(targetCode, joinNotif).catch((e) => {
+      console.warn('Notice broadcasting join notification:', e);
+    });
+
   } catch (error: any) {
     console.error("[DUO-SYNC-ERROR]", error?.code, error?.message);
     throw new Error("Erreur lors de la synchronisation de la liaison : " + (error?.message || "Erreur inconnue"));
@@ -1538,20 +1557,99 @@ export async function breakCoupleInFirestore(code: string, breakerName: string) 
   }
 }
 
-// Subscribe to couple data real-time changes
+// Subscribe to couple data real-time changes with resilience for mobile sleep/wake
 export function subscribeToCouple(code: string, callback: (couple: CouplePair | null) => void) {
   if (!code) return () => {};
   const cleanCode = code.trim().toUpperCase();
   const coupleRef = doc(db, 'couples', cleanCode);
-  return onSnapshot(coupleRef, (docSnap) => {
-    if (docSnap.exists()) {
-      callback(docSnap.data() as CouplePair);
-    } else {
+
+  let isPartnerJoined = false;
+  let pollInterval: any = null;
+
+  const handleUpdate = (data: CouplePair | null) => {
+    if (!data) {
       callback(null);
+      return;
     }
-  }, (err) => {
-    console.error('[Firebase] Error listening to couple:', err);
-  });
+    const joined = Boolean(
+      data.isCodeUsed ||
+      (data.partnerB && data.partnerB.name && data.partnerB.name !== 'En attente...')
+    );
+    if (joined && !isPartnerJoined) {
+      isPartnerJoined = true;
+      if (pollInterval) {
+        clearInterval(pollInterval);
+        pollInterval = null;
+      }
+    }
+    callback(data);
+  };
+
+  // 1. Standard Firestore onSnapshot listener
+  const unsubSnapshot = onSnapshot(
+    coupleRef,
+    (docSnap) => {
+      if (docSnap.exists()) {
+        handleUpdate(docSnap.data() as CouplePair);
+      } else {
+        handleUpdate(null);
+      }
+    },
+    (err) => {
+      console.warn('[Firebase] Error listening to couple:', err);
+    }
+  );
+
+  // Direct fast REST fetch (immune to WebChannel socket drops on iOS)
+  const fetchDirect = async () => {
+    try {
+      const restDoc = await restGetDoc(`couples/${cleanCode}`);
+      if (restDoc) {
+        handleUpdate(restDoc as CouplePair);
+      }
+    } catch (e) {}
+  };
+
+  // 2. React to mobile resume / window focus events
+  const onVisibilityChange = () => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+      fetchDirect();
+    }
+  };
+  const onFocus = () => {
+    fetchDirect();
+  };
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('focus', onFocus);
+  }
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', onVisibilityChange);
+  }
+
+  // 3. Pairing poll: ONLY active while waiting for partner to join
+  // Checks every 3.5 seconds and immediately self-terminates when partner connects
+  pollInterval = setInterval(() => {
+    if (isPartnerJoined) {
+      if (pollInterval) {
+        clearInterval(pollInterval);
+        pollInterval = null;
+      }
+      return;
+    }
+    fetchDirect();
+  }, 3500);
+
+  return () => {
+    unsubSnapshot();
+    if (pollInterval) clearInterval(pollInterval);
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('focus', onFocus);
+    }
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    }
+  };
 }
 
 // Save spot to Firestore (Single clean SDK write with merge)

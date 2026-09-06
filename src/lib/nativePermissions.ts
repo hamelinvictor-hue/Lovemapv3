@@ -834,3 +834,27 @@ export async function triggerNativeSignOut(): Promise<void> {
     }
   }
 }
+
+/**
+ * Native App Resume listener (Capacitor App state change)
+ */
+export function onNativeAppResume(callback: () => void): () => void {
+  if (!isCapacitorNative()) return () => {};
+  try {
+    let handle: any = null;
+    App.addListener('appStateChange', (state) => {
+      if (state && state.isActive) {
+        callback();
+      }
+    }).then((h) => {
+      handle = h;
+    }).catch(() => {});
+    return () => {
+      if (handle && typeof handle.remove === 'function') {
+        handle.remove();
+      }
+    };
+  } catch (e) {
+    return () => {};
+  }
+}

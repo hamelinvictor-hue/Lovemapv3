@@ -56,6 +56,7 @@ import {
   ensureCoupleRoomInFirestore,
   purgeAllFirestoreData,
   getEffectiveUser,
+  restGetDoc,
 } from './lib/firebase';
 import type { User } from 'firebase/auth';
 import { getBackendApiUrl } from './lib/apiConfig';
@@ -98,6 +99,7 @@ import {
   triggerNativeStoreReview,
   dispatchExternalSystemNotification,
   setupNativeNotificationHandlers,
+  onNativeAppResume,
 } from './lib/nativePermissions';
 import { Heart, Sparkles, CheckCircle2, Bell, Smartphone, KeyRound, HeartOff, AlertTriangle } from 'lucide-react';
 
@@ -596,14 +598,53 @@ export default function App() {
         }
 
         setCouple((prev) => {
-          const merged = { ...prev, ...remoteCouple };
-          // If code is used and partner B has joined, close the share modal
-          if (merged.isCodeUsed || (merged.partnerB && merged.partnerB.name !== 'En attente...')) {
+          const wasWaiting = !prev.isCodeUsed || !prev.partnerB || prev.partnerB.name === 'En attente...';
+          const nowJoined = Boolean(
+            remoteCouple.isCodeUsed ||
+            (remoteCouple.partnerB && remoteCouple.partnerB.name && remoteCouple.partnerB.name !== 'En attente...')
+          );
+
+          if (wasWaiting && nowJoined) {
+            triggerHaptic('success');
+            const partnerName = remoteCouple.partnerB?.name || 'Votre partenaire';
+            showToast(`💖 ${partnerName} a rejoint l'espace Duo !`);
+            setShowDuoCodeModal(null);
+          } else if (nowJoined) {
             setShowDuoCodeModal(null);
           }
+
+          const merged = { ...prev, ...remoteCouple };
           saveCouple(merged);
           return merged;
         });
+      }
+    });
+
+    // Native App Resume listener (Capacitor): fast check when user returns from sharing code
+    const unsubResume = onNativeAppResume(() => {
+      if (couple.code) {
+        restGetDoc(`couples/${couple.code}`).then((remote) => {
+          if (remote) {
+            setCouple((prev) => {
+              const wasWaiting = !prev.isCodeUsed || !prev.partnerB || prev.partnerB.name === 'En attente...';
+              const nowJoined = Boolean(
+                remote.isCodeUsed ||
+                (remote.partnerB && remote.partnerB.name && remote.partnerB.name !== 'En attente...')
+              );
+              if (wasWaiting && nowJoined) {
+                triggerHaptic('success');
+                const partnerName = remote.partnerB?.name || 'Votre partenaire';
+                showToast(`💖 ${partnerName} a rejoint l'espace Duo !`);
+                setShowDuoCodeModal(null);
+              } else if (nowJoined) {
+                setShowDuoCodeModal(null);
+              }
+              const merged = { ...prev, ...remote };
+              saveCouple(merged);
+              return merged;
+            });
+          }
+        }).catch(() => {});
       }
     });
 
@@ -650,6 +691,7 @@ export default function App() {
 
     return () => {
       unsubCouple();
+      unsubResume();
       unsubSpots();
       unsubNotifs();
     };
