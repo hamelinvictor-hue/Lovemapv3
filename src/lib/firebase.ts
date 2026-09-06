@@ -1707,29 +1707,13 @@ export async function deleteSpotFromFirestore(code: string, spotId: string) {
   }
 }
 
-// Subscribe to spots real-time changes with initial fetch and visibility refresh
+// Subscribe to spots real-time changes with visibility refresh
 export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void) {
   if (!code) return () => {};
   const cleanCode = code.trim().toUpperCase();
   const spotsRef = collection(db, 'couples', cleanCode, 'spots');
 
-  // Direct fetch helper
-  const fetchSpotsDirect = async () => {
-    try {
-      const snap = await withTimeout(getDocs(spotsRef), 5000, null);
-      if (snap && !snap.empty) {
-        const list = snap.docs.map((d) => d.data() as Spot);
-        callback(list);
-      }
-    } catch (e) {
-      // Ignore background network transient
-    }
-  };
-
-  // Immediate initial load
-  fetchSpotsDirect();
-
-  // 1. Real-time onSnapshot listener
+  // 1. Real-time onSnapshot listener (manages live WebSocket + local offline cache)
   const unsubSnapshot = onSnapshot(
     spotsRef,
     (snapshot) => {
@@ -1737,11 +1721,21 @@ export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void
       callback(spots);
     },
     (err) => {
-      console.warn('[Firebase] Error listening to spots:', err);
+      console.warn('[Firebase] Snapshot notice listening to spots:', err);
     }
   );
 
-  // 2. React to mobile resume / window focus events
+  // 2. Direct fetch helper on mobile resume / window focus
+  const fetchSpotsDirect = async () => {
+    try {
+      const snap = await withTimeout(getDocs(spotsRef), 6000, null);
+      if (snap) {
+        const list = snap.docs.map((d) => d.data() as Spot);
+        callback(list);
+      }
+    } catch (e) {}
+  };
+
   const onVisibilityChange = () => {
     if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
       fetchSpotsDirect();
@@ -1758,12 +1752,8 @@ export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void
     document.addEventListener('visibilitychange', onVisibilityChange);
   }
 
-  // 3. Periodic light background poll (every 10 seconds) to ensure mobile WKWebView stay in sync
-  const pollTimer = setInterval(fetchSpotsDirect, 10000);
-
   return () => {
     unsubSnapshot();
-    clearInterval(pollTimer);
     if (typeof window !== 'undefined') {
       window.removeEventListener('focus', onFocus);
     }
@@ -1795,26 +1785,11 @@ export async function saveNotificationToFirestore(code: string, notif: Notificat
   }
 }
 
-// Subscribe to notifications real-time changes
+// Subscribe to notifications real-time changes with visibility refresh
 export function subscribeToNotifications(code: string, callback: (notifs: NotificationItem[]) => void) {
   if (!code) return () => {};
   const cleanCode = code.trim().toUpperCase();
   const notifsRef = collection(db, 'couples', cleanCode, 'notifications');
-
-  // Direct fetch helper
-  const fetchNotifsDirect = async () => {
-    try {
-      const snap = await withTimeout(getDocs(notifsRef), 5000, null);
-      if (snap && !snap.empty) {
-        const notifs = snap.docs.map((d) => d.data() as NotificationItem);
-        notifs.sort((a, b) => new Date((b as any).createdAt || 0).getTime() - new Date((a as any).createdAt || 0).getTime());
-        callback(notifs);
-      }
-    } catch (e) {}
-  };
-
-  // Immediate initial load
-  fetchNotifsDirect();
 
   // 1. Real-time onSnapshot listener
   const unsubSnapshot = onSnapshot(
@@ -1825,11 +1800,22 @@ export function subscribeToNotifications(code: string, callback: (notifs: Notifi
       callback(notifs);
     },
     (err) => {
-      console.warn('[Firebase] Error listening to notifications:', err);
+      console.warn('[Firebase] Snapshot notice listening to notifications:', err);
     }
   );
 
-  // 2. React to mobile resume / window focus events
+  // 2. Direct fetch on mobile resume / focus
+  const fetchNotifsDirect = async () => {
+    try {
+      const snap = await withTimeout(getDocs(notifsRef), 6000, null);
+      if (snap) {
+        const notifs = snap.docs.map((d) => d.data() as NotificationItem);
+        notifs.sort((a, b) => new Date((b as any).createdAt || 0).getTime() - new Date((a as any).createdAt || 0).getTime());
+        callback(notifs);
+      }
+    } catch (e) {}
+  };
+
   const onVisibilityChange = () => {
     if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
       fetchNotifsDirect();
@@ -1846,12 +1832,8 @@ export function subscribeToNotifications(code: string, callback: (notifs: Notifi
     document.addEventListener('visibilitychange', onVisibilityChange);
   }
 
-  // 3. Periodic light background poll (every 10 seconds)
-  const pollTimer = setInterval(fetchNotifsDirect, 10000);
-
   return () => {
     unsubSnapshot();
-    clearInterval(pollTimer);
     if (typeof window !== 'undefined') {
       window.removeEventListener('focus', onFocus);
     }
