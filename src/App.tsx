@@ -384,8 +384,11 @@ export default function App() {
         }
       },
       onAppStateChange: (isActive) => {
-        if (isActive && couple?.code) {
-          console.log('[Native App] Returned to active foreground, sync refreshed');
+        if (isActive) {
+          console.log('[Native App] Returned to active foreground, dispatching sync event');
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new Event('native-app-resume'));
+          }
         }
       },
     });

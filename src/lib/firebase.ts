@@ -1744,6 +1744,9 @@ export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void
     } catch (e) {}
   };
 
+  // Immediate first load
+  fetchSpotsDirect();
+
   const onVisibilityChange = () => {
     if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
       fetchSpotsDirect();
@@ -1753,8 +1756,14 @@ export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void
     fetchSpotsDirect();
   };
 
+  // Triggered by Capacitor AppState changes in App.tsx
+  const onNativeResume = () => {
+    fetchSpotsDirect();
+  };
+
   if (typeof window !== 'undefined') {
     window.addEventListener('focus', onFocus);
+    window.addEventListener('native-app-resume', onNativeResume);
   }
   if (typeof document !== 'undefined') {
     document.addEventListener('visibilitychange', onVisibilityChange);
@@ -1764,6 +1773,7 @@ export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void
     unsubSnapshot();
     if (typeof window !== 'undefined') {
       window.removeEventListener('focus', onFocus);
+      window.removeEventListener('native-app-resume', onNativeResume);
     }
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', onVisibilityChange);
@@ -1828,6 +1838,9 @@ export function subscribeToNotifications(code: string, callback: (notifs: Notifi
     } catch (e) {}
   };
 
+  // Immediate first load
+  fetchNotifsDirect();
+
   const onVisibilityChange = () => {
     if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
       fetchNotifsDirect();
@@ -1837,8 +1850,14 @@ export function subscribeToNotifications(code: string, callback: (notifs: Notifi
     fetchNotifsDirect();
   };
 
+  // Triggered by Capacitor AppState changes in App.tsx
+  const onNativeResume = () => {
+    fetchNotifsDirect();
+  };
+
   if (typeof window !== 'undefined') {
     window.addEventListener('focus', onFocus);
+    window.addEventListener('native-app-resume', onNativeResume);
   }
   if (typeof document !== 'undefined') {
     document.addEventListener('visibilitychange', onVisibilityChange);
@@ -1848,6 +1867,7 @@ export function subscribeToNotifications(code: string, callback: (notifs: Notifi
     unsubSnapshot();
     if (typeof window !== 'undefined') {
       window.removeEventListener('focus', onFocus);
+      window.removeEventListener('native-app-resume', onNativeResume);
     }
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', onVisibilityChange);
