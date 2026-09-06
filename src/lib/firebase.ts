@@ -398,20 +398,20 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
           fullName = `${nativeApple.givenName || ''} ${nativeApple.familyName || ''}`.trim() || label;
         }
 
-        console.log('[Native Debug] Native Apple auth token received. Establishing instant user session...');
-        const jwtPayload = decodeJwtPayload(nativeApple.identityToken);
-        const rawUid = nativeApple.appleUserId || jwtPayload?.sub || `apple_${Date.now()}`;
-        const finalUid = rawUid.startsWith('apple_') ? rawUid : `apple_${rawUid}`;
-        const finalEmail = nativeApple.email || jwtPayload?.email || null;
+        console.log('[Native Debug] Native Apple auth token received. Authenticating with Firebase...');
+        const credOptions: any = { idToken: nativeApple.identityToken };
+        if (nativeApple.rawNonce) {
+          credOptions.rawNonce = nativeApple.rawNonce;
+        }
+        const credential = appleProvider.credential(credOptions);
+        
+        const userCredential = await signInWithCredential(auth, credential);
+        const user = userCredential.user;
+        console.log('[Native Debug] Firebase Apple auth successful, real UID:', user.uid);
 
-        const user = buildSyntheticUser({
-          uid: finalUid,
-          displayName: fullName,
-          email: finalEmail,
-          photoURL: defaultPhoto,
-          providerId: 'apple.com',
-          isAnonymous: false,
-        });
+        if (nativeApple.givenName || nativeApple.familyName) {
+          updateProfile(user, { displayName: fullName }).catch(() => {});
+        }
 
         saveStoredAuthUser({
           uid: user.uid,
@@ -421,25 +421,6 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
           providerId: 'apple.com',
           isAnonymous: false,
         });
-
-        // Background Firebase Auth credential synchronization (non-blocking, zero UI delay)
-        const credOptions: any = { idToken: nativeApple.identityToken };
-        if (nativeApple.rawNonce) {
-          credOptions.rawNonce = nativeApple.rawNonce;
-        }
-        const credential = appleProvider.credential(credOptions);
-        signInWithCredential(auth, credential)
-          .then((res) => {
-            if (res?.user) {
-              console.log('[Native Debug] Background signInWithCredential Apple success:', res.user.uid);
-              if (nativeApple.givenName || nativeApple.familyName) {
-                updateProfile(res.user, { displayName: fullName }).catch(() => {});
-              }
-            }
-          })
-          .catch((authErr) => {
-            console.warn('[Native Debug] Notice during background Apple credential sync:', authErr);
-          });
 
         return user;
       }
@@ -451,18 +432,15 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
           fullName = nativeGoogle.displayName;
         }
 
-        console.log('[Native Debug] Native Google auth token received. Establishing instant user session...');
-        const jwtPayload = decodeJwtPayload(nativeGoogle.idToken);
-        const googleSub = (nativeGoogle as any).id || jwtPayload?.sub || Date.now();
+        console.log('[Native Debug] Native Google auth token received. Authenticating with Firebase...');
+        const credential = GoogleAuthProvider.credential(nativeGoogle.idToken);
+        const userCredential = await signInWithCredential(auth, credential);
+        const user = userCredential.user;
+        console.log('[Native Debug] Firebase Google auth successful, real UID:', user.uid);
 
-        const user = buildSyntheticUser({
-          uid: `google_${googleSub}`,
-          displayName: fullName,
-          email: nativeGoogle.email || null,
-          photoURL: defaultPhoto,
-          providerId: 'google.com',
-          isAnonymous: false,
-        });
+        if (nativeGoogle.displayName && !user.displayName) {
+          updateProfile(user, { displayName: nativeGoogle.displayName }).catch(() => {});
+        }
 
         saveStoredAuthUser({
           uid: user.uid,
@@ -472,18 +450,6 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
           providerId: 'google.com',
           isAnonymous: false,
         });
-
-        // Background Firebase Auth credential synchronization (non-blocking)
-        const credential = GoogleAuthProvider.credential(nativeGoogle.idToken);
-        signInWithCredential(auth, credential)
-          .then((res) => {
-            if (res?.user) {
-              console.log('[Native Debug] Background signInWithCredential Google success:', res.user.uid);
-            }
-          })
-          .catch((gErr) => {
-            console.warn('[Native Debug] Notice during background Google credential sync:', gErr);
-          });
 
         return user;
       }
@@ -1229,7 +1195,48 @@ export async function findUserCoupleInFirestore(
       foundDoc = snap.docs[0];
       const docData = foundDoc.data();
       if (docData.partnerBUid === user.uid) partnerId = 'partner_b';
-    } else if (user.email) {
+    } else {
+      // 1b. Check ownerUid, partnerAUid, partnerBUid
+      const qOwner = query(couplesRef, where('ownerUid', '==', user.uid), limit(1));
+      const snapOwner = await withTimeout(getDocs(qOwner), 4000, null);
+      if (snapOwner && !snapOwner.empty) {
+        foundDoc = snapOwner.docs[0];
+      } else {
+        const qPartnerA = query(couplesRef, where('partnerAUid', '==', user.uid), limit(1));
+        const snapPA = await withTimeout(getDocs(qPartnerA), 3000, null);
+        if (snapPA && !snapPA.empty) {
+          foundDoc = snapPA.docs[0];
+        } else {
+          const qPartnerB = query(couplesRef, where('partnerBUid', '==', user.uid), limit(1));
+          const snapPB = await withTimeout(getDocs(qPartnerB), 3000, null);
+          if (snapPB && !snapPB.empty) {
+            foundDoc = snapPB.docs[0];
+            partnerId = 'partner_b';
+          }
+        }
+      }
+    }
+
+    // 1c. Provider data fallback (for rooms created with Apple/Google sub)
+    if (!foundDoc && user.providerData && user.providerData.length > 0) {
+      for (const provider of user.providerData) {
+        if (provider.uid) {
+          const candidateUids = [provider.uid, `apple_${provider.uid}`, `google_${provider.uid}`];
+          for (const cand of candidateUids) {
+            if (!foundDoc) {
+              const qCand = query(couplesRef, where('memberUids', 'array-contains', cand), limit(1));
+              const snapCand = await withTimeout(getDocs(qCand), 3000, null);
+              if (snapCand && !snapCand.empty) {
+                foundDoc = snapCand.docs[0];
+                break;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (!foundDoc && user.email) {
       // 2. Fallback: search by ownerEmail
       const qEmail = query(couplesRef, where('ownerEmail', '==', user.email), limit(1));
       const snapEmail = await withTimeout(getDocs(qEmail), 5000, null);

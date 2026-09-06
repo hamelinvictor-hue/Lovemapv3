@@ -37,6 +37,7 @@ interface AuthModalProps {
   initialMode?: 'login' | 'register';
   canClose?: boolean;
   onOpenOnboarding?: () => void;
+  onAuthUserChange?: (user: User) => void;
 }
 
 export const AuthModal: React.FC<AuthModalProps> = ({
@@ -48,6 +49,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   initialMode = 'login',
   canClose = true,
   onOpenOnboarding,
+  onAuthUserChange,
 }) => {
   const [currentUser, setCurrentUser] = useState<User | null>(() => getEffectiveUser());
   const [mode, setMode] = useState<'login' | 'register'>(initialMode);
@@ -94,6 +96,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const handleSyncUserCouple = async (u: User, successToast: string) => {
     try {
       setCurrentUser(u);
+      onAuthUserChange?.(u);
       let existing = null;
       try {
         existing = await findUserCoupleInFirestore(u);

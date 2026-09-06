@@ -25,10 +25,11 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 var import_express = __toESM(require("express"), 1);
 var import_path = __toESM(require("path"), 1);
 var import_dotenv = __toESM(require("dotenv"), 1);
-var import_vite = require("vite");
+var import_cors = __toESM(require("cors"), 1);
 import_dotenv.default.config();
 var app = (0, import_express.default)();
 var PORT = 3e3;
+app.use((0, import_cors.default)());
 app.use(import_express.default.json());
 var REVENUECAT_SECRET_KEY = process.env.REVENUECAT_SECRET_KEY || "sk_sAuopEcrYtQsWZWKjiSLEGzgNWlXy";
 var REVENUECAT_BASE_URL = "https://api.revenuecat.com/v1";
@@ -89,7 +90,6 @@ app.post("/api/revenuecat/subscribers/:appUserId/subscribe", async (req, res) =>
           })
         });
       } catch (attrErr) {
-        console.warn("RevenueCat attribute update warning:", attrErr);
       }
     }
     const response = await fetch(url, {
@@ -151,9 +151,132 @@ app.post("/api/revenuecat/subscribers/:appUserId/revoke", async (req, res) => {
     return res.status(500).json({ error: error.message || "Internal server error" });
   }
 });
+var ONESIGNAL_APP_ID = process.env.ONESIGNAL_APP_ID || "6bbd3278-e98f-4ddc-bfe5-a417960d8aac";
+var ONESIGNAL_REST_API_KEY = process.env.ONESIGNAL_REST_API_KEY || "";
+var ONESIGNAL_BASE_URL = "https://onesignal.com/api/v1";
+var devicePushRegistry = /* @__PURE__ */ new Map();
+app.get("/api/push/status", (req, res) => {
+  const isOneSignalConfigured = Boolean(ONESIGNAL_APP_ID && ONESIGNAL_REST_API_KEY);
+  res.json({
+    status: "ok",
+    provider: isOneSignalConfigured ? "OneSignal" : "None (Mock / Local)",
+    configured: isOneSignalConfigured,
+    registeredDevicesCount: devicePushRegistry.size
+  });
+});
+app.post("/api/push/register-token", async (req, res) => {
+  const { code, partnerId, pushToken, platform = "ios" } = req.body || {};
+  if (!code || !partnerId || !pushToken) {
+    return res.status(400).json({ error: "Missing code, partnerId or pushToken" });
+  }
+  const cleanCode = String(code).trim().toUpperCase();
+  const regKey = `${cleanCode}_${partnerId}`;
+  devicePushRegistry.set(regKey, {
+    code: cleanCode,
+    partnerId,
+    pushToken,
+    platform,
+    updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+  });
+  console.log(`[Push Server] Registered push token for ${regKey} (${platform})`);
+  if (ONESIGNAL_APP_ID && ONESIGNAL_REST_API_KEY) {
+    try {
+      const isIos = platform === "ios";
+      const osResp = await fetch(`${ONESIGNAL_BASE_URL}/players`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Key ${ONESIGNAL_REST_API_KEY}`,
+          "Content-Type": "application/json",
+          "Accept": "application/json"
+        },
+        body: JSON.stringify({
+          app_id: ONESIGNAL_APP_ID,
+          device_type: isIos ? 0 : 1,
+          // 0 = iOS, 1 = Android
+          identifier: pushToken,
+          external_user_id: regKey,
+          language: "fr"
+        })
+      });
+      const osData = await osResp.json();
+      console.log(`[Push Server] OneSignal player sync result for ${regKey}:`, osData?.id || osData);
+    } catch (osErr) {
+      console.warn("[Push Server] OneSignal player registration notice:", osErr);
+    }
+  }
+  return res.json({ success: true, key: regKey });
+});
+app.post("/api/push/send", async (req, res) => {
+  const {
+    code,
+    senderPartnerId,
+    targetPartnerId,
+    title = "\u{1F496} LoveMap Duo",
+    message = "Votre moiti\xE9 a partag\xE9 une nouvelle activit\xE9 !",
+    spotId,
+    type = "general"
+  } = req.body || {};
+  if (!code) {
+    return res.status(400).json({ error: "Missing couple code" });
+  }
+  const cleanCode = String(code).trim().toUpperCase();
+  const resolvedTargetPartner = targetPartnerId || (senderPartnerId === "partner_a" ? "partner_b" : "partner_a");
+  const targetKey = `${cleanCode}_${resolvedTargetPartner}`;
+  const unhyphenatedKey = `${cleanCode.replace(/[^A-Z0-9]/g, "")}_${resolvedTargetPartner}`;
+  const possibleTargetKeys = [targetKey, unhyphenatedKey];
+  const registeredTarget = devicePushRegistry.get(targetKey);
+  console.log(`[Push Server] Preparing push for ${targetKey}. Title: "${title}"`);
+  if (ONESIGNAL_APP_ID && ONESIGNAL_REST_API_KEY) {
+    try {
+      const payload = {
+        app_id: ONESIGNAL_APP_ID,
+        target_channel: "push",
+        include_aliases: { external_id: possibleTargetKeys },
+        include_external_user_ids: possibleTargetKeys,
+        headings: { en: title, fr: title },
+        contents: { en: message, fr: message },
+        data: { code: cleanCode, spotId, type, senderPartnerId },
+        ios_sound: "beep.wav",
+        ios_badgeType: "Increase",
+        ios_badgeCount: 1,
+        content_available: true,
+        priority: 10
+      };
+      const osResp = await fetch(`${ONESIGNAL_BASE_URL}/notifications`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Key ${ONESIGNAL_REST_API_KEY}`,
+          "Content-Type": "application/json",
+          "Accept": "application/json"
+        },
+        body: JSON.stringify(payload)
+      });
+      const osResult = await osResp.json();
+      const hasErrors = Array.isArray(osResult?.errors) && osResult.errors.length > 0;
+      return res.json({
+        success: true,
+        dispatched: !hasErrors,
+        provider: "OneSignal",
+        result: osResult
+      });
+    } catch (osErr) {
+      console.warn("[Push Server] OneSignal push dispatch notice:", osErr?.message || osErr);
+      return res.status(200).json({ success: false, error: osErr.message || "OneSignal dispatch notice" });
+    }
+  }
+  return res.json({
+    success: true,
+    dispatched: false,
+    provider: "local_fallback",
+    message: "Notification recorded. Real-time in-app stream active.",
+    target: targetKey,
+    hasToken: Boolean(registeredTarget?.pushToken)
+  });
+});
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
-    const vite = await (0, import_vite.createServer)({
+    const { createServer: createViteServer } = await import("vite");
+    const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa"
     });

@@ -450,7 +450,7 @@ export default function App() {
     return () => clearInterval(interval);
   }, [couple.code, activePartnerId]);
 
-  const handleCompleteOnboarding = (mode: AppMode, syncedCouple?: CouplePair, partnerId?: PartnerId) => {
+  const handleCompleteOnboarding = (mode: AppMode, syncedCouple?: CouplePair, partnerId?: PartnerId, authenticatedUser?: User) => {
     saveHasCompletedOnboarding(true);
     setIsOnboardingOpen(false);
     setIsAuthMandatory(false);
@@ -464,6 +464,18 @@ export default function App() {
     if (partnerId) {
       setActivePartnerId(partnerId);
       setActivePartner(partnerId);
+    }
+    const current = authenticatedUser || auth.currentUser || getEffectiveUser();
+    if (current && !current.isAnonymous) {
+      setAuthUser(current);
+      saveStoredAuthUser({
+        uid: current.uid,
+        displayName: current.displayName || 'Utilisateur',
+        email: current.email || null,
+        photoURL: current.photoURL || null,
+        providerId: current.providerData?.[0]?.providerId || 'apple.com',
+        isAnonymous: false,
+      });
     }
     if (mode === 'solo') {
       showToast('🌿 Jardin Secret activé : Vos repères personnels secrets !');
@@ -1468,6 +1480,7 @@ export default function App() {
             }
           }}
           onToast={showToast}
+          onAuthUserChange={setAuthUser}
           onOpenOnboarding={() => {
             setIsAuthOpen(false);
             setIsOnboardingOpen(true);

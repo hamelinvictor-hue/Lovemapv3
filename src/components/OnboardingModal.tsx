@@ -42,7 +42,7 @@ interface OnboardingModalProps {
   isOpen: boolean;
   initialStep?: 1 | 2 | 3 | 4 | 5;
   onClose?: () => void;
-  onComplete: (mode: AppMode, couple?: CouplePair, partnerId?: PartnerId) => void;
+  onComplete: (mode: AppMode, couple?: CouplePair, partnerId?: PartnerId, authenticatedUser?: User) => void;
   onToast: (msg: string) => void;
 }
 
@@ -242,7 +242,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
             );
             if (synced && synced.couple) {
               onToast(`Rejoint l'espace Duo (${synced.couple.code}) avec succès 💖 !`);
-              onComplete('duo', synced.couple, 'partner_b');
+              onComplete('duo', synced.couple, 'partner_b', u);
               return;
             }
           } catch (joinErr: any) {
@@ -258,7 +258,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
         } else {
           onToast(`Espace Duo créé avec succès (${res.couple.code}) !`);
         }
-        onComplete('duo', res.couple, 'partner_a');
+        onComplete('duo', res.couple, 'partner_a', u);
       } else {
         // Solo mode
         const u = userParam || (await ensureGuestUser(userName.trim() || 'Utilisateur'));
@@ -285,7 +285,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
         }
 
         onToast(`Jardin Secret activé pour ${cleanName} 🌿 !`);
-        onComplete('solo', soloCouple, 'partner_a');
+        onComplete('solo', soloCouple, 'partner_a', u);
       }
     } catch (err: any) {
       console.error('Erreur lors de la configuration du compte/Duo:', err);
