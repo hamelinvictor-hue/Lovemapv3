@@ -75,7 +75,8 @@ try {
     app,
     {
       localCache: memoryLocalCache(),
-    },
+      experimentalForceLongPolling: true,
+    } as any,
     firebaseConfig.firestoreDatabaseId || undefined
   );
 } catch (initErr: any) {
@@ -1054,11 +1055,12 @@ export async function joinCoupleInFirestore(
   for (const cand of candidates) {
     try {
       console.log(`[SYNC-DEBUG] Checking candidate: ${cand}`);
-      const snap = await withTimeout(getDoc(doc(db, 'couples', cand)), 1500, null);
-      if (snap && snap.exists()) {
-        targetData = snap.data();
+      // Use REST API to bypass SDK WebSockets initialization hang on iOS WKWebView
+      const data = await restGetDoc(`couples/${cand}`);
+      if (data) {
+        targetData = data;
         targetCode = cand;
-        console.log('[SYNC-DEBUG] Found couple document:', cand);
+        console.log('[SYNC-DEBUG] Found couple document via REST:', cand);
         break;
       }
     } catch (e: any) {
@@ -1071,7 +1073,7 @@ export async function joinCoupleInFirestore(
     try {
       console.log('[SYNC-DEBUG] Falling back to query search');
       const q = query(collection(db, 'couples'), where('code', 'in', candidates.slice(0, 10)), limit(1));
-      const querySnap = await withTimeout(getDocs(q), 2000, null);
+      const querySnap = await withTimeout(getDocs(q), 10000, null);
       if (querySnap && !querySnap.empty) {
         targetData = querySnap.docs[0].data();
         targetCode = querySnap.docs[0].id;
@@ -1125,7 +1127,7 @@ export async function joinCoupleInFirestore(
         ...currentData,
         ...updateData,
         code: targetCode,
-      } as CouplePair;
+      } as unknown as CouplePair;
     });
 
     verifiedRoomsCache.add(targetCode);
@@ -1141,11 +1143,11 @@ export async function joinCoupleInFirestore(
   let notifications: NotificationItem[] = [];
   try {
     console.log('[SYNC-DEBUG] Fetching initial subcollections');
-    const spotsSnap = await withTimeout(getDocs(collection(db, 'couples', targetCode, 'spots')), 2000, null);
+    const spotsSnap = await withTimeout(getDocs(collection(db, 'couples', targetCode, 'spots')), 10000, null);
     if (spotsSnap) {
       spots = spotsSnap.docs.map(d => d.data() as Spot);
     }
-    const notifsSnap = await withTimeout(getDocs(collection(db, 'couples', targetCode, 'notifications')), 2000, null);
+    const notifsSnap = await withTimeout(getDocs(collection(db, 'couples', targetCode, 'notifications')), 10000, null);
     if (notifsSnap) {
       notifications = notifsSnap.docs.map(d => d.data() as NotificationItem);
     }
@@ -1420,7 +1422,7 @@ export async function deleteUserAccountInFirestore(user: User | null, code?: str
       lookupPromises.push(getDocs(query(couplesCol, where('partnerBEmail', '==', targetEmail))).catch(() => null));
     }
 
-    const results = await withTimeout(Promise.all(lookupPromises), 3000, []);
+    const results = await withTimeout(Promise.all(lookupPromises), 10000, []);
     for (const snap of results) {
       if (snap) {
         snap.forEach((d: any) => coupleCodesToDelete.add(d.id));
