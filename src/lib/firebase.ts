@@ -168,8 +168,9 @@ export function fromFirestoreDoc(docObj: any): any {
 export async function restGetDoc(docPath: string): Promise<any | null> {
   try {
     const cleanPath = docPath.startsWith('/') ? docPath.slice(1) : docPath;
-    const res = await fetch(`${FIRESTORE_REST_BASE}/${cleanPath}?key=${firebaseConfig.apiKey}`, {
+    const res = await fetch(`${FIRESTORE_REST_BASE}/${cleanPath}?key=${firebaseConfig.apiKey}&_t=${Date.now()}`, {
       headers: { 'Content-Type': 'application/json' },
+      cache: 'no-store',
     });
     if (res.status === 404) return null;
     if (!res.ok) return null;
@@ -196,6 +197,7 @@ export async function restSetDoc(docPath: string, data: any, merge: boolean = tr
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ fields }),
+      cache: 'no-store',
     });
     return res.ok;
   } catch (e) {
@@ -208,6 +210,7 @@ export async function restDeleteDoc(docPath: string): Promise<boolean> {
     const cleanPath = docPath.startsWith('/') ? docPath.slice(1) : docPath;
     const res = await fetch(`${FIRESTORE_REST_BASE}/${cleanPath}?key=${firebaseConfig.apiKey}`, {
       method: 'DELETE',
+      cache: 'no-store',
     });
     return res.ok || res.status === 404;
   } catch (e) {
@@ -218,8 +221,9 @@ export async function restDeleteDoc(docPath: string): Promise<boolean> {
 export async function restListDocs(collectionPath: string): Promise<any[] | null> {
   try {
     const cleanPath = collectionPath.startsWith('/') ? collectionPath.slice(1) : collectionPath;
-    const res = await fetch(`${FIRESTORE_REST_BASE}/${cleanPath}?key=${firebaseConfig.apiKey}`, {
+    const res = await fetch(`${FIRESTORE_REST_BASE}/${cleanPath}?key=${firebaseConfig.apiKey}&_t=${Date.now()}`, {
       headers: { 'Content-Type': 'application/json' },
+      cache: 'no-store',
     });
     if (!res.ok) return null;
     const json = await res.json();
