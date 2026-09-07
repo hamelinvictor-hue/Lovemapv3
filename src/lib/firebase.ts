@@ -1115,7 +1115,7 @@ export async function joinCoupleInFirestore(
         console.log('[SYNC-DEBUG] Found couple document via REST:', cand);
         break;
       }
-      const snap = await withTimeout(getDoc(doc(db, 'couples', cand)), 2000, null);
+      const snap = await withTimeout(getDoc(doc(db, 'couples', cand)), 10000, null);
       if (snap && snap.exists()) {
         targetData = snap.data();
         targetCode = cand;
@@ -1132,7 +1132,7 @@ export async function joinCoupleInFirestore(
     try {
       console.log('[SYNC-DEBUG] Falling back to query search');
       const q = query(collection(db, 'couples'), where('code', 'in', candidates.slice(0, 10)), limit(1));
-      const querySnap = await withTimeout(getDocs(q), 3000, null);
+      const querySnap = await withTimeout(getDocs(q), 10000, null);
       if (querySnap && !querySnap.empty) {
         targetData = querySnap.docs[0].data();
         targetCode = querySnap.docs[0].id;
@@ -1148,70 +1148,72 @@ export async function joinCoupleInFirestore(
     throw new Error(`Code de duo introuvable (${rawClean}). Vérifiez que le code correspond bien à celui affiché sur le téléphone de votre partenaire.`);
   }
 
-  // 3. Pairing update via ATOMIC TRANSACTION (runTransaction)
+  // 3. Pairing update via ATOMIC TRANSACTION with REST Fallback
   let couple: CouplePair;
+  const coupleRef = doc(db, 'couples', targetCode);
+
+  const existingMembers = targetData.memberUids || [];
+  const updatedMembers = user.uid ? Array.from(new Set([...existingMembers, user.uid])) : existingMembers;
+  
+  const partnerB = {
+    id: 'partner_b',
+    name: partnerName.trim() || user.displayName || 'Partenaire 2',
+    avatar: avatarUrl || user.photoURL || targetData.partnerB?.avatar || 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
+    role: 'Partenaire 2',
+  };
+  
+  const updateData = cleanFirestoreData({
+    partnerB,
+    partnerBUid: user.uid,
+    partnerBEmail: user.email || '',
+    memberUids: updatedMembers,
+    isCodeUsed: true,
+    updatedAt: new Date().toISOString(),
+  });
+
   try {
     console.log('[SYNC-DEBUG] Starting atomic transaction to join room:', targetCode);
-    const coupleRef = doc(db, 'couples', targetCode);
-    
     couple = await runTransaction(db, async (transaction) => {
       const sfDoc = await transaction.get(coupleRef);
       if (!sfDoc.exists()) {
         throw new Error("Document introuvable pour la transaction.");
       }
-      
-      const currentData = sfDoc.data() as CouplePair & { memberUids?: string[] };
-      const existingMembers = currentData.memberUids || [];
-      const updatedMembers = user.uid ? Array.from(new Set([...existingMembers, user.uid])) : existingMembers;
-      
-      const partnerB = {
-        id: 'partner_b',
-        name: partnerName.trim() || user.displayName || 'Partenaire 2',
-        avatar: avatarUrl || user.photoURL || currentData.partnerB?.avatar || 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
-        role: 'Partenaire 2',
-      };
-      
-      const updateData = cleanFirestoreData({
-        partnerB,
-        partnerBUid: user.uid,
-        partnerBEmail: user.email || '',
-        memberUids: updatedMembers,
-        isCodeUsed: true,
-        updatedAt: new Date().toISOString(),
-      });
-      
       transaction.update(coupleRef, updateData);
-      
       return {
-        ...currentData,
+        ...sfDoc.data(),
         ...updateData,
         code: targetCode,
       } as unknown as CouplePair;
     });
-
-    verifiedRoomsCache.add(targetCode);
     console.log('[SYNC-DEBUG] Successfully paired to room via runTransaction:', targetCode);
-
-    // Broadcast Partner Joined event notification to trigger partner's realtime listener
-    const joinNotif: NotificationItem = {
-      id: `notif-join-${Date.now()}`,
-      type: 'spot_validated',
-      spotId: 'duo-connected',
-      senderId: 'partner_b',
-      targetPartnerId: 'partner_a',
-      title: '💖 Duo Connecté !',
-      message: `${partnerName.trim() || 'Votre partenaire'} a rejoint votre espace Duo avec succès !`,
-      timestamp: new Date().toISOString(),
-      isRead: false,
-    };
-    saveNotificationToFirestore(targetCode, joinNotif).catch((e) => {
-      console.warn('Notice broadcasting join notification:', e);
-    });
-
   } catch (error: any) {
-    console.error("[DUO-SYNC-ERROR] runTransaction failed:", error?.code, error?.message);
-    throw new Error("Erreur lors de la synchronisation de la liaison (Transaction) : " + (error?.message || "Erreur inconnue"));
+    console.warn("[DUO-SYNC-ERROR] runTransaction failed, falling back to REST/merge:", error?.code, error?.message);
+    // Fallback to REST write if WebSockets are dead on iOS
+    await restSetDoc(`couples/${targetCode}`, updateData, true);
+    setDoc(coupleRef, updateData, { merge: true }).catch(() => {});
+    
+    couple = {
+      ...targetData,
+      ...updateData,
+      code: targetCode,
+    } as unknown as CouplePair;
   }
+
+  verifiedRoomsCache.add(targetCode);
+
+  // Broadcast Partner Joined event notification to trigger partner's realtime listener
+  const joinNotif: NotificationItem = {
+    id: `notif-join-${Date.now()}`,
+    type: 'spot_validated',
+    spotId: 'duo-connected',
+    senderId: 'partner_b',
+    targetPartnerId: 'partner_a',
+    title: '💖 Duo Connecté !',
+    message: `${partnerName.trim() || 'Votre partenaire'} a rejoint votre espace Duo avec succès !`,
+    timestamp: new Date().toISOString(),
+    isRead: false,
+  };
+  saveNotificationToFirestore(targetCode, joinNotif).catch(() => {});
 
   // Fetch existing spots & notifications (REST-first)
   let spots: Spot[] = [];
@@ -1222,7 +1224,7 @@ export async function joinCoupleInFirestore(
     if (restSpots && restSpots.length > 0) {
       spots = restSpots as Spot[];
     } else {
-      const spotsSnap = await withTimeout(getDocs(collection(db, 'couples', targetCode, 'spots')), 3000, null);
+      const spotsSnap = await withTimeout(getDocs(collection(db, 'couples', targetCode, 'spots')), 10000, null);
       if (spotsSnap) {
         spots = spotsSnap.docs.map(d => d.data() as Spot);
       }
@@ -1231,7 +1233,7 @@ export async function joinCoupleInFirestore(
     if (restNotifs && restNotifs.length > 0) {
       notifications = restNotifs as NotificationItem[];
     } else {
-      const notifsSnap = await withTimeout(getDocs(collection(db, 'couples', targetCode, 'notifications')), 3000, null);
+      const notifsSnap = await withTimeout(getDocs(collection(db, 'couples', targetCode, 'notifications')), 10000, null);
       if (notifsSnap) {
         notifications = notifsSnap.docs.map(d => d.data() as NotificationItem);
       }
@@ -1652,7 +1654,7 @@ export function subscribeToCouple(code: string, callback: (couple: CouplePair | 
         handleUpdate(restDoc as CouplePair);
         return;
       }
-      const snap = await withTimeout(getDoc(coupleRef), 3000, null);
+      const snap = await withTimeout(getDoc(coupleRef), 10000, null);
       if (snap && snap.exists()) {
         handleUpdate(snap.data() as CouplePair);
       } else if (snap && !snap.exists()) {
@@ -1774,7 +1776,7 @@ export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void
         callback(restSpots as Spot[]);
         return;
       }
-      const snap = await withTimeout(getDocs(spotsRef), 3000, null);
+      const snap = await withTimeout(getDocs(spotsRef), 10000, null);
       if (snap) {
         const list = snap.docs.map((d) => d.data() as Spot);
         callback(list);
@@ -1866,7 +1868,7 @@ export function subscribeToNotifications(code: string, callback: (notifs: Notifi
         callback(notifs);
         return;
       }
-      const snap = await withTimeout(getDocs(notifsRef), 3000, null);
+      const snap = await withTimeout(getDocs(notifsRef), 10000, null);
       if (snap) {
         const notifs = snap.docs.map((d) => d.data() as NotificationItem);
         notifs.sort((a, b) => new Date((b as any).createdAt || 0).getTime() - new Date((a as any).createdAt || 0).getTime());
