@@ -221,18 +221,40 @@ export async function restDeleteDoc(docPath: string): Promise<boolean> {
 export async function restListDocs(collectionPath: string): Promise<any[] | null> {
   try {
     const cleanPath = collectionPath.startsWith('/') ? collectionPath.slice(1) : collectionPath;
-    const res = await fetch(`${FIRESTORE_REST_BASE}/${cleanPath}?key=${firebaseConfig.apiKey}&_t=${Date.now()}`, {
+    const parts = cleanPath.split('/');
+    if (parts.length % 2 === 0) return null; // Must be a collection path
+
+    const collectionId = parts.pop();
+    const parentPath = parts.join('/');
+    const urlPath = parentPath ? `${parentPath}:runQuery` : ':runQuery';
+
+    const res = await fetch(`${FIRESTORE_REST_BASE}/${urlPath}?key=${firebaseConfig.apiKey}`, {
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        structuredQuery: {
+          from: [{ collectionId }]
+        }
+      }),
       cache: 'no-store',
     });
+    
     if (!res.ok) return null;
     const json = await res.json();
-    return (json.documents || []).map((d: any) => {
-      const data = fromFirestoreDoc(d);
-      const nameParts = (d.name || '').split('/');
-      const id = nameParts[nameParts.length - 1];
-      return { ...data, id: data?.id || id };
-    });
+    
+    const results: any[] = [];
+    if (Array.isArray(json)) {
+      for (const item of json) {
+        if (item.document) {
+          const d = item.document;
+          const data = fromFirestoreDoc(d);
+          const nameParts = (d.name || '').split('/');
+          const id = nameParts[nameParts.length - 1];
+          results.push({ ...data, id: data?.id || id });
+        }
+      }
+    }
+    return results;
   } catch (e) {
     return null;
   }
