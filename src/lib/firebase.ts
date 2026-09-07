@@ -70,22 +70,9 @@ try {
 export const auth = authInstance;
 
 // Initialize Firestore strictly with memoryLocalCache() to eliminate WKWebView IndexedDB locking on iOS
-let firestoreInstance;
-try {
-  firestoreInstance = initializeFirestore(
-    app,
-    {
-      localCache: memoryLocalCache(),
-      experimentalForceLongPolling: true,
-    } as any,
-    firebaseConfig.firestoreDatabaseId || undefined
-  );
-} catch (initErr: any) {
-  console.error('[SYNC-DEBUG] initializeFirestore error, falling back to getFirestore:', initErr?.code, initErr?.message);
-  firestoreInstance = firebaseConfig.firestoreDatabaseId
-    ? getFirestore(app, firebaseConfig.firestoreDatabaseId)
-    : getFirestore(app);
-}
+const firestoreInstance = initializeFirestore(app, {
+  localCache: memoryLocalCache(),
+}, firebaseConfig.firestoreDatabaseId || undefined);
 
 // Check for redirect result on initialization for iOS PWA/Web (skip on Native to prevent auth hanging)
 if (!isCapacitorNative()) {
@@ -1161,42 +1148,49 @@ export async function joinCoupleInFirestore(
     throw new Error(`Code de duo introuvable (${rawClean}). Vérifiez que le code correspond bien à celui affiché sur le téléphone de votre partenaire.`);
   }
 
-  // 3. Pairing update (REST-first for instant write + background SDK sync)
+  // 3. Pairing update via ATOMIC TRANSACTION (runTransaction)
   let couple: CouplePair;
   try {
-    const existingMembers = targetData.memberUids || [];
-    const updatedMembers = user.uid ? Array.from(new Set([...existingMembers, user.uid])) : existingMembers;
-
-    const partnerB = {
-      id: 'partner_b',
-      name: partnerName.trim() || user.displayName || 'Partenaire 2',
-      avatar: avatarUrl || user.photoURL || targetData.partnerB?.avatar || 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
-      role: 'Partenaire 2',
-    };
-
-    const updateData = cleanFirestoreData({
-      partnerB,
-      partnerBUid: user.uid,
-      partnerBEmail: user.email || '',
-      memberUids: updatedMembers,
-      isCodeUsed: true,
-      updatedAt: new Date().toISOString(),
+    console.log('[SYNC-DEBUG] Starting atomic transaction to join room:', targetCode);
+    const coupleRef = doc(db, 'couples', targetCode);
+    
+    couple = await runTransaction(db, async (transaction) => {
+      const sfDoc = await transaction.get(coupleRef);
+      if (!sfDoc.exists()) {
+        throw new Error("Document introuvable pour la transaction.");
+      }
+      
+      const currentData = sfDoc.data() as CouplePair & { memberUids?: string[] };
+      const existingMembers = currentData.memberUids || [];
+      const updatedMembers = user.uid ? Array.from(new Set([...existingMembers, user.uid])) : existingMembers;
+      
+      const partnerB = {
+        id: 'partner_b',
+        name: partnerName.trim() || user.displayName || 'Partenaire 2',
+        avatar: avatarUrl || user.photoURL || currentData.partnerB?.avatar || 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
+        role: 'Partenaire 2',
+      };
+      
+      const updateData = cleanFirestoreData({
+        partnerB,
+        partnerBUid: user.uid,
+        partnerBEmail: user.email || '',
+        memberUids: updatedMembers,
+        isCodeUsed: true,
+        updatedAt: new Date().toISOString(),
+      });
+      
+      transaction.update(coupleRef, updateData);
+      
+      return {
+        ...currentData,
+        ...updateData,
+        code: targetCode,
+      } as unknown as CouplePair;
     });
 
-    couple = {
-      ...targetData,
-      ...updateData,
-      code: targetCode,
-    } as unknown as CouplePair;
-
-    // Direct instant REST write
-    await restSetDoc(`couples/${targetCode}`, updateData, true);
-
-    // Non-blocking SDK setDoc to update local cache
-    setDoc(doc(db, 'couples', targetCode), updateData, { merge: true }).catch(() => {});
-
     verifiedRoomsCache.add(targetCode);
-    console.log('[SYNC-DEBUG] Successfully paired to room:', targetCode);
+    console.log('[SYNC-DEBUG] Successfully paired to room via runTransaction:', targetCode);
 
     // Broadcast Partner Joined event notification to trigger partner's realtime listener
     const joinNotif: NotificationItem = {
@@ -1215,8 +1209,8 @@ export async function joinCoupleInFirestore(
     });
 
   } catch (error: any) {
-    console.error("[DUO-SYNC-ERROR]", error?.code, error?.message);
-    throw new Error("Erreur lors de la synchronisation de la liaison : " + (error?.message || "Erreur inconnue"));
+    console.error("[DUO-SYNC-ERROR] runTransaction failed:", error?.code, error?.message);
+    throw new Error("Erreur lors de la synchronisation de la liaison (Transaction) : " + (error?.message || "Erreur inconnue"));
   }
 
   // Fetch existing spots & notifications (REST-first)
