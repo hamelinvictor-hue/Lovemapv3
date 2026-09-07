@@ -1,3 +1,4 @@
+import { copyToClipboard } from '../lib/clipboard';
 import React, { useState } from 'react';
 import { CouplePair, PartnerId, AppMode } from '../types';
 import { triggerHaptic, triggerHeartBurst } from '../lib/feedback';
@@ -93,7 +94,7 @@ export const DuoView: React.FC<DuoViewProps> = ({
   const handleCopyCode = () => {
     triggerHaptic('medium');
     triggerHeartBurst(0.5, 0.5);
-    navigator.clipboard.writeText(couple.code);
+    copyToClipboard(couple.code);
     setCopiedCode(true);
     onToast('Code Duo copié dans le presse-papier !');
     setTimeout(() => setCopiedCode(false), 2000);

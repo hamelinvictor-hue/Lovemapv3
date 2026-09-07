@@ -1,3 +1,4 @@
+import { copyToClipboard } from '../lib/clipboard';
 import React, { useState } from 'react';
 import { X, Heart, Copy, Check, Share2, Sparkles, Send, ShieldCheck } from 'lucide-react';
 
@@ -19,7 +20,7 @@ export const DuoCodeModal: React.FC<DuoCodeModalProps> = ({
   if (!isOpen) return null;
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(code);
+    copyToClipboard(code);
     setCopied(true);
     setTimeout(() => setCopied(false), 2500);
   };

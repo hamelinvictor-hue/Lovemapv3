@@ -1,3 +1,4 @@
+import { copyToClipboard } from '../lib/clipboard';
 import React, { useState, useEffect, useRef } from 'react';
 import { CouplePair, PartnerId, AppMode } from '../types';
 import { auth, getEffectiveUser } from '../lib/firebase';
@@ -240,7 +241,7 @@ export const CoupleSettingsModal: React.FC<CoupleSettingsModalProps> = ({
   const handleCopyCode = () => {
     triggerHaptic('medium');
     triggerHeartBurst(0.5, 0.5);
-    navigator.clipboard.writeText(couple.code);
+    copyToClipboard(couple.code);
     setCopiedCode(true);
     setTimeout(() => setCopiedCode(false), 2000);
   };

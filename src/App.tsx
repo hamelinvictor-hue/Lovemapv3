@@ -54,7 +54,6 @@ import {
   joinCoupleInFirestore,
   ensureGuestUser,
   ensureCoupleRoomInFirestore,
-  purgeAllFirestoreData,
   getEffectiveUser,
   restGetDoc,
 } from './lib/firebase';
