@@ -43,8 +43,7 @@ import {
   deleteDoc,
   writeBatch,
   runTransaction,
-  enableNetwork,
-  disableNetwork,
+  
 } from 'firebase/firestore';
 import { Spot, CouplePair, NotificationItem, PartnerId, UserProfile } from '../types';
 import { INITIAL_SPOTS } from '../data/initialData';
@@ -109,44 +108,61 @@ if (!isCapacitorNative()) {
 
 export const db = firestoreInstance;
 
-if (typeof window !== 'undefined') {
-  window.addEventListener('native-app-resume', async () => {
-    console.log('[Firebase Network] Native App Resumed: forcing network enable');
-    try {
-      await enableNetwork(db);
-      console.log('[Firebase Network] Network enabled successfully');
-    } catch (e) {
-      console.warn('[Firebase Network] Error enabling network:', e);
-    }
-  });
 
-  window.addEventListener('native-app-pause', async () => {
-    console.log('[Firebase Network] Native App Paused: forcing network disable');
-    try {
-      await disableNetwork(db);
-      console.log('[Firebase Network] Network disabled successfully');
-    } catch (e) {
-      console.warn('[Firebase Network] Error disabling network:', e);
-    }
-  });
 
-  window.addEventListener('visibilitychange', async () => {
-    if (document.visibilityState === 'visible') {
-      console.log('[Firebase Network] Page visible: forcing network enable');
-      try { await enableNetwork(db); } catch (e) {}
+
+// ============================================================================
+// DIRECT FIRESTORE REST API CLIENT (Native fetch, zero WKWebView hangs, <80ms latency)
+// ============================================================================
+
+const FIRESTORE_REST_BASE = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${firebaseConfig.firestoreDatabaseId || '(default)'}/documents`;
+
+// Helper to convert Firestore format to standard JSON
+function fromFirestoreDoc(doc: any): any {
+  const data: any = {};
+  if (!doc || !doc.fields) return data;
+  for (const [key, value] of Object.entries(doc.fields)) {
+    const val = value as any;
+    if (val.stringValue !== undefined) data[key] = val.stringValue;
+    else if (val.integerValue !== undefined) data[key] = Number(val.integerValue);
+    else if (val.doubleValue !== undefined) data[key] = Number(val.doubleValue);
+    else if (val.booleanValue !== undefined) data[key] = Boolean(val.booleanValue);
+    else if (val.mapValue !== undefined) data[key] = fromFirestoreDoc({ fields: val.mapValue.fields });
+    else if (val.arrayValue !== undefined) {
+      data[key] = (val.arrayValue.values || []).map((v: any) => {
+        if (v.stringValue !== undefined) return v.stringValue;
+        if (v.mapValue !== undefined) return fromFirestoreDoc({ fields: v.mapValue.fields });
+        return v; // Simplify for now
+      });
     }
-  });
+  }
+  return data;
 }
 
-// REST API wrappers using native SDK
+function toFirestoreValue(value: any): any {
+  if (typeof value === 'string') return { stringValue: value };
+  if (typeof value === 'number') return Number.isInteger(value) ? { integerValue: value } : { doubleValue: value };
+  if (typeof value === 'boolean') return { booleanValue: value };
+  if (Array.isArray(value)) return { arrayValue: { values: value.map(toFirestoreValue) } };
+  if (value && typeof value === 'object') {
+    const fields: any = {};
+    for (const [k, v] of Object.entries(value)) {
+      if (v !== undefined) fields[k] = toFirestoreValue(v);
+    }
+    return { mapValue: { fields } };
+  }
+  return { nullValue: null };
+}
+
 export async function restGetDoc(docPath: string): Promise<any | null> {
   try {
     const cleanPath = docPath.startsWith('/') ? docPath.slice(1) : docPath;
-    const parts = cleanPath.split('/');
-    if (parts.length % 2 !== 0) return null;
-    const ref = doc(db, parts[0], ...parts.slice(1));
-    const snap = await getDoc(ref);
-    return snap.exists() ? snap.data() : null;
+    const res = await fetch(`${FIRESTORE_REST_BASE}/${cleanPath}?key=${firebaseConfig.apiKey}&_t=${Date.now()}`, {
+      cache: 'no-store',
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    return fromFirestoreDoc(json);
   } catch (e) {
     return null;
   }
@@ -155,11 +171,22 @@ export async function restGetDoc(docPath: string): Promise<any | null> {
 export async function restSetDoc(docPath: string, data: any, merge: boolean = true): Promise<boolean> {
   try {
     const cleanPath = docPath.startsWith('/') ? docPath.slice(1) : docPath;
-    const parts = cleanPath.split('/');
-    if (parts.length % 2 !== 0) return false;
-    const ref = doc(db, parts[0], ...parts.slice(1));
-    await setDoc(ref, data, { merge });
-    return true;
+    const fields: Record<string, any> = {};
+    const fieldMasks: string[] = [];
+    for (const [k, v] of Object.entries(data)) {
+      if (v !== undefined) {
+        fields[k] = toFirestoreValue(v);
+        fieldMasks.push(`updateMask.fieldPaths=${encodeURIComponent(k)}`);
+      }
+    }
+    const maskQuery = merge && fieldMasks.length > 0 ? `&${fieldMasks.join('&')}` : '';
+    const res = await fetch(`${FIRESTORE_REST_BASE}/${cleanPath}?key=${firebaseConfig.apiKey}${maskQuery}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fields }),
+      cache: 'no-store',
+    });
+    return res.ok;
   } catch (e) {
     return false;
   }
@@ -168,11 +195,11 @@ export async function restSetDoc(docPath: string, data: any, merge: boolean = tr
 export async function restDeleteDoc(docPath: string): Promise<boolean> {
   try {
     const cleanPath = docPath.startsWith('/') ? docPath.slice(1) : docPath;
-    const parts = cleanPath.split('/');
-    if (parts.length % 2 !== 0) return false;
-    const ref = doc(db, parts[0], ...parts.slice(1));
-    await deleteDoc(ref);
-    return true;
+    const res = await fetch(`${FIRESTORE_REST_BASE}/${cleanPath}?key=${firebaseConfig.apiKey}`, {
+      method: 'DELETE',
+      cache: 'no-store',
+    });
+    return res.ok;
   } catch (e) {
     return false;
   }
@@ -182,10 +209,39 @@ export async function restListDocs(collectionPath: string): Promise<any[] | null
   try {
     const cleanPath = collectionPath.startsWith('/') ? collectionPath.slice(1) : collectionPath;
     const parts = cleanPath.split('/');
-    if (parts.length % 2 === 0) return null;
-    const ref = collection(db, parts[0], ...parts.slice(1));
-    const snap = await getDocs(ref);
-    return snap.docs.map(d => d.data());
+    if (parts.length % 2 === 0) return null; // Must be a collection path
+
+    const collectionId = parts.pop();
+    const parentPath = parts.join('/');
+    const urlPath = parentPath ? `${parentPath}:runQuery` : ':runQuery';
+
+    const res = await fetch(`${FIRESTORE_REST_BASE}/${urlPath}?key=${firebaseConfig.apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        structuredQuery: {
+          from: [{ collectionId }]
+        }
+      }),
+      cache: 'no-store',
+    });
+    
+    if (!res.ok) return null;
+    const json = await res.json();
+    
+    const results: any[] = [];
+    if (Array.isArray(json)) {
+      for (const item of json) {
+        if (item.document) {
+          const d = item.document;
+          const data = fromFirestoreDoc(d);
+          const nameParts = (d.name || '').split('/');
+          const id = nameParts[nameParts.length - 1];
+          results.push({ ...data, id: data?.id || id });
+        }
+      }
+    }
+    return results;
   } catch (e) {
     return null;
   }
@@ -1195,11 +1251,117 @@ export async function joinCoupleInFirestore(
 }
 
 // Search Firestore to automatically restore an existing user's couple room upon re-login
+
+export async function restFindUserCouple(uid: string, email: string | null): Promise<any | null> {
+  try {
+    const candidates = [uid, `apple_${uid}`, `google_${uid}`];
+    if (email) candidates.push(email);
+
+    for (const cand of candidates) {
+      // 1. Try ownerUid
+      let res = await fetch(`${FIRESTORE_REST_BASE}:runQuery?key=${firebaseConfig.apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          structuredQuery: {
+            from: [{ collectionId: 'couples' }],
+            where: {
+              fieldFilter: {
+                field: { fieldPath: 'ownerUid' },
+                op: 'EQUAL',
+                value: { stringValue: cand }
+              }
+            },
+            limit: 1
+          }
+        }),
+        cache: 'no-store'
+      });
+      if (res.ok) {
+        const json = await res.json();
+        if (Array.isArray(json) && json[0]?.document) {
+           return fromFirestoreDoc(json[0].document);
+        }
+      }
+
+      // 2. Try array-contains memberUids
+      res = await fetch(`${FIRESTORE_REST_BASE}:runQuery?key=${firebaseConfig.apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          structuredQuery: {
+            from: [{ collectionId: 'couples' }],
+            where: {
+              fieldFilter: {
+                field: { fieldPath: 'memberUids' },
+                op: 'ARRAY_CONTAINS',
+                value: { stringValue: cand }
+              }
+            },
+            limit: 1
+          }
+        }),
+        cache: 'no-store'
+      });
+      if (res.ok) {
+        const json = await res.json();
+        if (Array.isArray(json) && json[0]?.document) {
+           return fromFirestoreDoc(json[0].document);
+        }
+      }
+      
+      // 3. Try ownerEmail
+      res = await fetch(`${FIRESTORE_REST_BASE}:runQuery?key=${firebaseConfig.apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          structuredQuery: {
+            from: [{ collectionId: 'couples' }],
+            where: {
+              fieldFilter: {
+                field: { fieldPath: 'ownerEmail' },
+                op: 'EQUAL',
+                value: { stringValue: cand }
+              }
+            },
+            limit: 1
+          }
+        }),
+        cache: 'no-store'
+      });
+      if (res.ok) {
+        const json = await res.json();
+        if (Array.isArray(json) && json[0]?.document) {
+           return fromFirestoreDoc(json[0].document);
+        }
+      }
+    }
+  } catch (e) {
+    return null;
+  }
+  return null;
+}
+
 export async function findUserCoupleInFirestore(
   user: User
 ): Promise<{ couple: CouplePair; partnerId: PartnerId } | null> {
   if (!user || !user.uid) return null;
 
+  try {
+    const restDoc = await restFindUserCouple(user.uid, user.email || null);
+    if (restDoc) {
+      console.log('[SYNC-DEBUG] Found existing couple via REST Query');
+      let partnerId: PartnerId = 'partner_a';
+      if (restDoc.partnerBUid === user.uid || restDoc.partnerBUid === `apple_${user.uid}` || restDoc.partnerBUid === `google_${user.uid}`) {
+         partnerId = 'partner_b';
+      }
+      return { couple: restDoc as CouplePair, partnerId };
+    }
+  } catch (e) {
+    console.warn('REST find user couple notice:', e);
+  }
+
+  // Fallback to SDK...
   try {
     const couplesRef = collection(db, 'couples');
     let foundDoc: any = null;
@@ -1452,6 +1614,7 @@ export function subscribeToCouple(code: string, callback: (couple: CouplePair | 
   const coupleRef = doc(db, 'couples', cleanCode);
 
   let isPartnerJoined = false;
+  let pollInterval: any = null;
 
   const handleUpdate = (data: CouplePair | null) => {
     if (!data) {
@@ -1464,11 +1627,16 @@ export function subscribeToCouple(code: string, callback: (couple: CouplePair | 
     );
     if (joined && !isPartnerJoined) {
       isPartnerJoined = true;
+      if (pollInterval) {
+        clearInterval(pollInterval);
+        pollInterval = null;
+      }
     }
     callback(data);
   };
 
-  return onSnapshot(
+  // 1. Standard Firestore onSnapshot listener
+  const unsubSnapshot = onSnapshot(
     coupleRef,
     (docSnap) => {
       if (docSnap.exists()) {
@@ -1481,6 +1649,60 @@ export function subscribeToCouple(code: string, callback: (couple: CouplePair | 
       console.warn('[Firebase] Error listening to couple:', err);
     }
   );
+
+  // 2. Direct fetch helper on mobile resume / window focus
+  const fetchCoupleDirect = async () => {
+    try {
+      const restDoc = await restGetDoc(`couples/${cleanCode}`);
+      if (restDoc !== null) {
+        handleUpdate(restDoc as CouplePair);
+        return;
+      }
+      const snap = await withTimeout(getDoc(coupleRef), 3000, null);
+      if (snap && snap.exists()) {
+        handleUpdate(snap.data() as CouplePair);
+      } else if (snap && !snap.exists()) {
+        handleUpdate(null);
+      }
+    } catch (e) {}
+  };
+
+  fetchCoupleDirect();
+
+  const onVisibilityChange = () => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+      fetchCoupleDirect();
+    }
+  };
+  const onFocus = () => { fetchCoupleDirect(); };
+  const onNativeResume = () => { fetchCoupleDirect(); };
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('native-app-resume', onNativeResume);
+  }
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', onVisibilityChange);
+  }
+
+  // 3. Fallback polling for initial partner join (every 3s)
+  pollInterval = setInterval(() => {
+    if (!isPartnerJoined) {
+      fetchCoupleDirect();
+    }
+  }, 3000);
+
+  return () => {
+    unsubSnapshot();
+    if (pollInterval) clearInterval(pollInterval);
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('native-app-resume', onNativeResume);
+    }
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    }
+  };
 }
 
 export async function saveSpotToFirestore(code: string, spot: Spot) {
@@ -1530,7 +1752,8 @@ export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void
   const cleanCode = code.trim().toUpperCase();
   const spotsRef = collection(db, 'couples', cleanCode, 'spots');
 
-  return onSnapshot(
+  // 1. Real-time onSnapshot listener
+  const unsubSnapshot = onSnapshot(
     spotsRef,
     (snapshot) => {
       const spots = snapshot.docs.map((d) => d.data() as Spot);
@@ -1540,6 +1763,77 @@ export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void
       console.warn('[Firebase] Snapshot notice listening to spots:', err);
     }
   );
+
+  let lastKnownSpotUpdate = -2;
+
+  // 2. Direct fetch helper
+  const fetchSpotsDirect = async () => {
+    try {
+      const coupleDoc = await restGetDoc(`couples/${cleanCode}`);
+      if (coupleDoc && coupleDoc.lastSpotUpdate) {
+        lastKnownSpotUpdate = Number(coupleDoc.lastSpotUpdate);
+      } else {
+        lastKnownSpotUpdate = -1;
+      }
+      const restSpots = await restListDocs(`couples/${cleanCode}/spots`);
+      if (restSpots !== null) {
+        callback(restSpots as Spot[]);
+        return;
+      }
+      const snap = await withTimeout(getDocs(spotsRef), 3000, null);
+      if (snap) {
+        const list = snap.docs.map((d) => d.data() as Spot);
+        callback(list);
+      }
+    } catch (e) {}
+  };
+
+  fetchSpotsDirect();
+
+  const onVisibilityChange = () => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+      fetchSpotsDirect();
+    }
+  };
+  const onFocus = () => { fetchSpotsDirect(); };
+  const onNativeResume = () => { fetchSpotsDirect(); };
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('native-app-resume', onNativeResume);
+  }
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', onVisibilityChange);
+  }
+
+  // 3. Ultra-low cost Liveness Poller
+  const livenessPoller = setInterval(async () => {
+    try {
+      const coupleDoc = await restGetDoc(`couples/${cleanCode}`);
+      if (coupleDoc && coupleDoc.lastSpotUpdate) {
+        const remoteUpdate = Number(coupleDoc.lastSpotUpdate);
+        if (lastKnownSpotUpdate === -2) {
+          lastKnownSpotUpdate = remoteUpdate;
+        } else if (remoteUpdate > lastKnownSpotUpdate) {
+          console.log('[Firebase] Liveness poller detected spot change, fetching...');
+          lastKnownSpotUpdate = remoteUpdate;
+          fetchSpotsDirect();
+        }
+      }
+    } catch (e) {}
+  }, 10000);
+
+  return () => {
+    unsubSnapshot();
+    clearInterval(livenessPoller);
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('native-app-resume', onNativeResume);
+    }
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    }
+  };
 }
 
 export function subscribeToNotifications(code: string, callback: (notifs: NotificationItem[]) => void) {
@@ -1547,7 +1841,8 @@ export function subscribeToNotifications(code: string, callback: (notifs: Notifi
   const cleanCode = code.trim().toUpperCase();
   const notifsRef = collection(db, 'couples', cleanCode, 'notifications');
 
-  return onSnapshot(
+  // 1. Real-time onSnapshot listener
+  const unsubSnapshot = onSnapshot(
     notifsRef,
     (snapshot) => {
       const notifs = snapshot.docs.map((d) => d.data() as NotificationItem);
@@ -1558,6 +1853,80 @@ export function subscribeToNotifications(code: string, callback: (notifs: Notifi
       console.warn('[Firebase] Snapshot notice listening to notifications:', err);
     }
   );
+
+  let lastKnownNotifUpdate = -2;
+
+  // 2. Direct fetch helper
+  const fetchNotifsDirect = async () => {
+    try {
+      const coupleDoc = await restGetDoc(`couples/${cleanCode}`);
+      if (coupleDoc && coupleDoc.lastNotificationUpdate) {
+        lastKnownNotifUpdate = Number(coupleDoc.lastNotificationUpdate);
+      } else {
+        lastKnownNotifUpdate = -1;
+      }
+      const restNotifs = await restListDocs(`couples/${cleanCode}/notifications`);
+      if (restNotifs !== null) {
+        const notifs = restNotifs as NotificationItem[];
+        notifs.sort((a, b) => new Date((b as any).createdAt || 0).getTime() - new Date((a as any).createdAt || 0).getTime());
+        callback(notifs);
+        return;
+      }
+      const snap = await withTimeout(getDocs(notifsRef), 3000, null);
+      if (snap) {
+        const notifs = snap.docs.map((d) => d.data() as NotificationItem);
+        notifs.sort((a, b) => new Date((b as any).createdAt || 0).getTime() - new Date((a as any).createdAt || 0).getTime());
+        callback(notifs);
+      }
+    } catch (e) {}
+  };
+
+  fetchNotifsDirect();
+
+  const onVisibilityChange = () => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+      fetchNotifsDirect();
+    }
+  };
+  const onFocus = () => { fetchNotifsDirect(); };
+  const onNativeResume = () => { fetchNotifsDirect(); };
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('native-app-resume', onNativeResume);
+  }
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', onVisibilityChange);
+  }
+
+  // 3. Ultra-low cost Liveness Poller
+  const livenessPoller = setInterval(async () => {
+    try {
+      const coupleDoc = await restGetDoc(`couples/${cleanCode}`);
+      if (coupleDoc && coupleDoc.lastNotificationUpdate) {
+        const remoteUpdate = Number(coupleDoc.lastNotificationUpdate);
+        if (lastKnownNotifUpdate === -2) {
+          lastKnownNotifUpdate = remoteUpdate;
+        } else if (remoteUpdate > lastKnownNotifUpdate) {
+          console.log('[Firebase] Liveness poller detected notif change, fetching...');
+          lastKnownNotifUpdate = remoteUpdate;
+          fetchNotifsDirect();
+        }
+      }
+    } catch (e) {}
+  }, 12000);
+
+  return () => {
+    unsubSnapshot();
+    clearInterval(livenessPoller);
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('native-app-resume', onNativeResume);
+    }
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    }
+  };
 }
 
 
@@ -1565,9 +1934,13 @@ export async function saveNotificationToFirestore(code: string, notif: Notificat
   if (!code) return false;
   const cleanCode = code.trim().toUpperCase();
   const cleanedNotif = cleanFirestoreData(notif);
+  
+  restSetDoc(`couples/${cleanCode}/notifications/${notif.id}`, cleanedNotif, false).catch(() => {});
+  restSetDoc(`couples/${cleanCode}`, { updatedAt: new Date().toISOString(), lastNotificationUpdate: Date.now() }).catch(() => {});
+  
   try {
     const docRef = doc(db, 'couples', cleanCode, 'notifications', notif.id);
-    await setDoc(docRef, cleanedNotif, { merge: true });
+    setDoc(docRef, cleanedNotif, { merge: true }).catch(() => {});
     return true;
   } catch (err) {
     return false;
@@ -1577,8 +1950,12 @@ export async function saveNotificationToFirestore(code: string, notif: Notificat
 export async function deleteNotificationFromFirestore(code: string, notifId: string) {
   if (!code || !notifId) return false;
   const cleanCode = code.trim().toUpperCase();
+  
+  restDeleteDoc(`couples/${cleanCode}/notifications/${notifId}`).catch(() => {});
+  restSetDoc(`couples/${cleanCode}`, { updatedAt: new Date().toISOString(), lastNotificationUpdate: Date.now() }).catch(() => {});
+  
   try {
-    await deleteDoc(doc(db, 'couples', cleanCode, 'notifications', notifId));
+    deleteDoc(doc(db, 'couples', cleanCode, 'notifications', notifId)).catch(() => {});
     return true;
   } catch (err) {
     return false;
