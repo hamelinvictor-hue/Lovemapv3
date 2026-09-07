@@ -513,6 +513,7 @@ export default function App() {
       showToast(`💖 Mode Duo activé ! Code couple : ${codeToShow}`);
       // If user created a new couple code during onboarding (or partner_a)
       if (partnerId === 'partner_a' || !syncedCouple) {
+        ensureCoupleRoomInFirestore(codeToShow, syncedCouple || couple, partnerId || activePartnerId).catch(console.error);
         setShowDuoCodeModal(codeToShow);
       }
     }
@@ -583,7 +584,7 @@ export default function App() {
         })
         .catch(console.error);
     }
-  }, [couple.code, isOnboardingOpen]);
+  }, [couple.code, isOnboardingOpen, isSettingsOpen, showDuoCodeModal]);
 
   // Real-time Firestore Sync listeners for active Couple Code (with Capacitor AppState)
   useEffect(() => {
@@ -624,6 +625,9 @@ export default function App() {
             };
             setCouple(freshCouple);
             saveCouple(freshCouple);
+            ensureGuestUser().then(user => {
+              createCoupleInFirestore(user, freshCouple.partnerA.name, freshCouple.partnerA.avatar).catch(console.error);
+            });
             return;
           }
 
@@ -708,6 +712,9 @@ export default function App() {
         console.log('[App.tsx] Application en premier plan -> Relance de onSnapshot');
         startListeners();
         // Also fire the resume fetch for completeness
+        // Ensure it exists in Firestore if it was only created locally
+        ensureCoupleRoomInFirestore(couple.code, couple, activePartnerId).catch(console.warn);
+
         restGetDoc(`couples/${couple.code}`).then((remote) => {
           if (remote) {
             setCouple((prev) => {
@@ -1185,9 +1192,9 @@ export default function App() {
     saveCouple(freshCouple);
     setActivePartnerId('partner_a');
 
-    if (auth.currentUser) {
-      createCoupleInFirestore(auth.currentUser, breakerName, freshCouple.partnerA.avatar).catch(console.error);
-    }
+    ensureGuestUser().then(user => {
+      createCoupleInFirestore(user, breakerName, freshCouple.partnerA.avatar).catch(console.error);
+    });
 
     showToast('Le Duo a été cassé. Toutes les données du duo ont été supprimées des deux côtés. Un nouveau code à partager est prêt.');
   };
