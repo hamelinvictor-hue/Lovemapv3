@@ -389,6 +389,11 @@ export default function App() {
           if (typeof window !== 'undefined') {
             window.dispatchEvent(new Event('native-app-resume'));
           }
+        } else {
+          console.log('[Native App] Sent to background, dispatching pause event');
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new Event('native-app-pause'));
+          }
         }
       },
     });

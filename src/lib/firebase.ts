@@ -43,6 +43,8 @@ import {
   deleteDoc,
   writeBatch,
   runTransaction,
+  enableNetwork,
+  disableNetwork,
 } from 'firebase/firestore';
 import { Spot, CouplePair, NotificationItem, PartnerId, UserProfile } from '../types';
 import { INITIAL_SPOTS } from '../data/initialData';
@@ -107,75 +109,44 @@ if (!isCapacitorNative()) {
 
 export const db = firestoreInstance;
 
-// ============================================================================
-// DIRECT FIRESTORE REST API CLIENT (Native fetch, zero WKWebView hangs, <80ms latency)
-// ============================================================================
-const FIRESTORE_REST_BASE = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${firebaseConfig.firestoreDatabaseId || '(default)'}/documents`;
-
-export function toFirestoreValue(val: any): any {
-  if (val === null || val === undefined) return { nullValue: null };
-  if (typeof val === 'boolean') return { booleanValue: val };
-  if (typeof val === 'number') {
-    if (Number.isInteger(val)) return { integerValue: String(val) };
-    return { doubleValue: val };
-  }
-  if (typeof val === 'string') return { stringValue: val };
-  if (Array.isArray(val)) {
-    return { arrayValue: { values: val.map(toFirestoreValue) } };
-  }
-  if (typeof val === 'object') {
-    const fields: Record<string, any> = {};
-    for (const [k, v] of Object.entries(val)) {
-      if (v !== undefined) {
-        fields[k] = toFirestoreValue(v);
-      }
+if (typeof window !== 'undefined') {
+  window.addEventListener('native-app-resume', async () => {
+    console.log('[Firebase Network] Native App Resumed: forcing network enable');
+    try {
+      await enableNetwork(db);
+      console.log('[Firebase Network] Network enabled successfully');
+    } catch (e) {
+      console.warn('[Firebase Network] Error enabling network:', e);
     }
-    return { mapValue: { fields } };
-  }
-  return { stringValue: String(val) };
-}
+  });
 
-export function fromFirestoreValue(val: any): any {
-  if (!val) return null;
-  if ('stringValue' in val) return val.stringValue;
-  if ('booleanValue' in val) return val.booleanValue;
-  if ('integerValue' in val) return Number(val.integerValue);
-  if ('doubleValue' in val) return Number(val.doubleValue);
-  if ('nullValue' in val) return null;
-  if ('arrayValue' in val) {
-    return (val.arrayValue.values || []).map(fromFirestoreValue);
-  }
-  if ('mapValue' in val) {
-    const obj: Record<string, any> = {};
-    for (const [k, v] of Object.entries(val.mapValue.fields || {})) {
-      obj[k] = fromFirestoreValue(v);
+  window.addEventListener('native-app-pause', async () => {
+    console.log('[Firebase Network] Native App Paused: forcing network disable');
+    try {
+      await disableNetwork(db);
+      console.log('[Firebase Network] Network disabled successfully');
+    } catch (e) {
+      console.warn('[Firebase Network] Error disabling network:', e);
     }
-    return obj;
-  }
-  if ('timestampValue' in val) return val.timestampValue;
-  return null;
+  });
+
+  window.addEventListener('visibilitychange', async () => {
+    if (document.visibilityState === 'visible') {
+      console.log('[Firebase Network] Page visible: forcing network enable');
+      try { await enableNetwork(db); } catch (e) {}
+    }
+  });
 }
 
-export function fromFirestoreDoc(docObj: any): any {
-  if (!docObj || !docObj.fields) return null;
-  const result: Record<string, any> = {};
-  for (const [k, v] of Object.entries(docObj.fields)) {
-    result[k] = fromFirestoreValue(v);
-  }
-  return result;
-}
-
+// REST API wrappers using native SDK
 export async function restGetDoc(docPath: string): Promise<any | null> {
   try {
     const cleanPath = docPath.startsWith('/') ? docPath.slice(1) : docPath;
-    const res = await fetch(`${FIRESTORE_REST_BASE}/${cleanPath}?key=${firebaseConfig.apiKey}&_t=${Date.now()}`, {
-      headers: { 'Content-Type': 'application/json' },
-      cache: 'no-store',
-    });
-    if (res.status === 404) return null;
-    if (!res.ok) return null;
-    const json = await res.json();
-    return fromFirestoreDoc(json);
+    const parts = cleanPath.split('/');
+    if (parts.length % 2 !== 0) return null;
+    const ref = doc(db, parts[0], ...parts.slice(1));
+    const snap = await getDoc(ref);
+    return snap.exists() ? snap.data() : null;
   } catch (e) {
     return null;
   }
@@ -184,22 +155,11 @@ export async function restGetDoc(docPath: string): Promise<any | null> {
 export async function restSetDoc(docPath: string, data: any, merge: boolean = true): Promise<boolean> {
   try {
     const cleanPath = docPath.startsWith('/') ? docPath.slice(1) : docPath;
-    const fields: Record<string, any> = {};
-    const fieldMasks: string[] = [];
-    for (const [k, v] of Object.entries(data)) {
-      if (v !== undefined) {
-        fields[k] = toFirestoreValue(v);
-        fieldMasks.push(`updateMask.fieldPaths=${encodeURIComponent(k)}`);
-      }
-    }
-    const maskQuery = merge && fieldMasks.length > 0 ? `&${fieldMasks.join('&')}` : '';
-    const res = await fetch(`${FIRESTORE_REST_BASE}/${cleanPath}?key=${firebaseConfig.apiKey}${maskQuery}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fields }),
-      cache: 'no-store',
-    });
-    return res.ok;
+    const parts = cleanPath.split('/');
+    if (parts.length % 2 !== 0) return false;
+    const ref = doc(db, parts[0], ...parts.slice(1));
+    await setDoc(ref, data, { merge });
+    return true;
   } catch (e) {
     return false;
   }
@@ -208,11 +168,11 @@ export async function restSetDoc(docPath: string, data: any, merge: boolean = tr
 export async function restDeleteDoc(docPath: string): Promise<boolean> {
   try {
     const cleanPath = docPath.startsWith('/') ? docPath.slice(1) : docPath;
-    const res = await fetch(`${FIRESTORE_REST_BASE}/${cleanPath}?key=${firebaseConfig.apiKey}`, {
-      method: 'DELETE',
-      cache: 'no-store',
-    });
-    return res.ok || res.status === 404;
+    const parts = cleanPath.split('/');
+    if (parts.length % 2 !== 0) return false;
+    const ref = doc(db, parts[0], ...parts.slice(1));
+    await deleteDoc(ref);
+    return true;
   } catch (e) {
     return false;
   }
@@ -222,39 +182,10 @@ export async function restListDocs(collectionPath: string): Promise<any[] | null
   try {
     const cleanPath = collectionPath.startsWith('/') ? collectionPath.slice(1) : collectionPath;
     const parts = cleanPath.split('/');
-    if (parts.length % 2 === 0) return null; // Must be a collection path
-
-    const collectionId = parts.pop();
-    const parentPath = parts.join('/');
-    const urlPath = parentPath ? `${parentPath}:runQuery` : ':runQuery';
-
-    const res = await fetch(`${FIRESTORE_REST_BASE}/${urlPath}?key=${firebaseConfig.apiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        structuredQuery: {
-          from: [{ collectionId }]
-        }
-      }),
-      cache: 'no-store',
-    });
-    
-    if (!res.ok) return null;
-    const json = await res.json();
-    
-    const results: any[] = [];
-    if (Array.isArray(json)) {
-      for (const item of json) {
-        if (item.document) {
-          const d = item.document;
-          const data = fromFirestoreDoc(d);
-          const nameParts = (d.name || '').split('/');
-          const id = nameParts[nameParts.length - 1];
-          results.push({ ...data, id: data?.id || id });
-        }
-      }
-    }
-    return results;
+    if (parts.length % 2 === 0) return null;
+    const ref = collection(db, parts[0], ...parts.slice(1));
+    const snap = await getDocs(ref);
+    return snap.docs.map(d => d.data());
   } catch (e) {
     return null;
   }
@@ -289,89 +220,7 @@ export async function withTimeout<T, F = T>(promise: Promise<T>, timeoutMs: numb
   }
 }
 
-// ---------------------------------------------------------------------------
-// High-Speed REST Fallback for Firestore on iOS WKWebView / Capacitor
-// Standard HTTP fetch completely bypasses WKWebView gRPC/WebChannel stalls
-// ---------------------------------------------------------------------------
-function decodeFirestoreRestValue(v: any): any {
-  if (!v) return null;
-  if (v.stringValue !== undefined) return v.stringValue;
-  if (v.booleanValue !== undefined) return v.booleanValue;
-  if (v.integerValue !== undefined) return parseInt(v.integerValue, 10);
-  if (v.doubleValue !== undefined) return parseFloat(v.doubleValue);
-  if (v.timestampValue !== undefined) return v.timestampValue;
-  if (v.nullValue !== undefined) return null;
-  if (v.mapValue !== undefined) {
-    const res: Record<string, any> = {};
-    for (const [k, val] of Object.entries(v.mapValue.fields || {})) {
-      res[k] = decodeFirestoreRestValue(val);
-    }
-    return res;
-  }
-  if (v.arrayValue !== undefined) {
-    return (v.arrayValue.values || []).map(decodeFirestoreRestValue);
-  }
-  return null;
-}
 
-function decodeFirestoreRestDoc(docData: any): any {
-  if (!docData || !docData.fields) return null;
-  const res: Record<string, any> = {
-    id: (docData.name || '').split('/').pop(),
-  };
-  for (const [k, val] of Object.entries(docData.fields || {})) {
-    res[k] = decodeFirestoreRestValue(val);
-  }
-  return res;
-}
-
-function encodeFirestoreRestValue(val: any): any {
-  if (val === null || val === undefined) return { nullValue: null };
-  if (typeof val === 'boolean') return { booleanValue: val };
-  if (typeof val === 'number') {
-    return Number.isInteger(val) ? { integerValue: val.toString() } : { doubleValue: val };
-  }
-  if (typeof val === 'string') return { stringValue: val };
-  if (Array.isArray(val)) {
-    return { arrayValue: { values: val.map(encodeFirestoreRestValue) } };
-  }
-  if (typeof val === 'object') {
-    // If it's a serverTimestamp placeholder
-    if (val._methodName === 'serverTimestamp') {
-      return { timestampValue: new Date().toISOString() };
-    }
-    const fields: Record<string, any> = {};
-    for (const [k, v] of Object.entries(val)) {
-      if (v !== undefined) fields[k] = encodeFirestoreRestValue(v);
-    }
-    return { mapValue: { fields } };
-  }
-  return { stringValue: String(val) };
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// Convert a stored auth user to a User-like object
 export function buildSyntheticUser(data: StoredAuthUser): User {
   return {
     uid: data.uid,
@@ -1603,7 +1452,6 @@ export function subscribeToCouple(code: string, callback: (couple: CouplePair | 
   const coupleRef = doc(db, 'couples', cleanCode);
 
   let isPartnerJoined = false;
-  let pollInterval: any = null;
 
   const handleUpdate = (data: CouplePair | null) => {
     if (!data) {
@@ -1616,16 +1464,11 @@ export function subscribeToCouple(code: string, callback: (couple: CouplePair | 
     );
     if (joined && !isPartnerJoined) {
       isPartnerJoined = true;
-      if (pollInterval) {
-        clearInterval(pollInterval);
-        pollInterval = null;
-      }
     }
     callback(data);
   };
 
-  // 1. Standard Firestore onSnapshot listener
-  const unsubSnapshot = onSnapshot(
+  return onSnapshot(
     coupleRef,
     (docSnap) => {
       if (docSnap.exists()) {
@@ -1638,60 +1481,8 @@ export function subscribeToCouple(code: string, callback: (couple: CouplePair | 
       console.warn('[Firebase] Error listening to couple:', err);
     }
   );
-
-  // Direct fast REST fetch (immune to WebChannel socket drops on iOS)
-  const fetchDirect = async () => {
-    try {
-      const restDoc = await restGetDoc(`couples/${cleanCode}`);
-      if (restDoc) {
-        handleUpdate(restDoc as CouplePair);
-      }
-    } catch (e) {}
-  };
-
-  // 2. React to mobile resume / window focus events
-  const onVisibilityChange = () => {
-    if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
-      fetchDirect();
-    }
-  };
-  const onFocus = () => {
-    fetchDirect();
-  };
-
-  if (typeof window !== 'undefined') {
-    window.addEventListener('focus', onFocus);
-  }
-  if (typeof document !== 'undefined') {
-    document.addEventListener('visibilitychange', onVisibilityChange);
-  }
-
-  // 3. Pairing poll: ONLY active while waiting for partner to join
-  // Checks every 3.5 seconds and immediately self-terminates when partner connects
-  pollInterval = setInterval(() => {
-    if (isPartnerJoined) {
-      if (pollInterval) {
-        clearInterval(pollInterval);
-        pollInterval = null;
-      }
-      return;
-    }
-    fetchDirect();
-  }, 3500);
-
-  return () => {
-    unsubSnapshot();
-    if (pollInterval) clearInterval(pollInterval);
-    if (typeof window !== 'undefined') {
-      window.removeEventListener('focus', onFocus);
-    }
-    if (typeof document !== 'undefined') {
-      document.removeEventListener('visibilitychange', onVisibilityChange);
-    }
-  };
 }
 
-// Save spot to Firestore (REST first + SDK background sync)
 export async function saveSpotToFirestore(code: string, spot: Spot) {
   if (!code) return false;
   const cleanCode = code.trim().toUpperCase();
@@ -1739,8 +1530,7 @@ export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void
   const cleanCode = code.trim().toUpperCase();
   const spotsRef = collection(db, 'couples', cleanCode, 'spots');
 
-  // 1. Real-time onSnapshot listener (manages live WebSocket + local offline cache)
-  const unsubSnapshot = onSnapshot(
+  return onSnapshot(
     spotsRef,
     (snapshot) => {
       const spots = snapshot.docs.map((d) => d.data() as Spot);
@@ -1750,124 +1540,14 @@ export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void
       console.warn('[Firebase] Snapshot notice listening to spots:', err);
     }
   );
-
-  let lastKnownSpotUpdate = -2;
-
-  // 2. Direct fetch helper on mobile resume / window focus
-  const fetchSpotsDirect = async () => {
-    try {
-      // Sync baseline to prevent missing updates that arrive just before or during fetch
-      const coupleDoc = await restGetDoc(`couples/${cleanCode}`);
-      if (coupleDoc && coupleDoc.lastSpotUpdate) {
-        lastKnownSpotUpdate = Number(coupleDoc.lastSpotUpdate);
-      } else {
-        lastKnownSpotUpdate = -1;
-      }
-
-      const restSpots = await restListDocs(`couples/${cleanCode}/spots`);
-      if (restSpots !== null) {
-        callback(restSpots as Spot[]);
-        return;
-      }
-      const snap = await withTimeout(getDocs(spotsRef), 3000, null);
-      if (snap) {
-        const list = snap.docs.map((d) => d.data() as Spot);
-        callback(list);
-      }
-    } catch (e) {}
-  };
-
-  // Immediate first load
-  fetchSpotsDirect();
-
-  const onVisibilityChange = () => {
-    if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
-      fetchSpotsDirect();
-    }
-  };
-  const onFocus = () => {
-    fetchSpotsDirect();
-  };
-
-  // Triggered by Capacitor AppState changes in App.tsx
-  const onNativeResume = () => {
-    fetchSpotsDirect();
-  };
-
-  if (typeof window !== 'undefined') {
-    window.addEventListener('focus', onFocus);
-    window.addEventListener('native-app-resume', onNativeResume);
-  }
-  if (typeof document !== 'undefined') {
-    document.addEventListener('visibilitychange', onVisibilityChange);
-  }
-
-  // 3. Ultra-low cost Liveness Poller
-  // Checks only the couple document (1 read) every 10 seconds.
-  // If we detect the lastSpotUpdate timestamp changed, we THEN trigger a full spots sync.
-  const livenessPoller = setInterval(async () => {
-    try {
-      const coupleDoc = await restGetDoc(`couples/${cleanCode}`);
-      if (coupleDoc && coupleDoc.lastSpotUpdate) {
-        const remoteUpdate = Number(coupleDoc.lastSpotUpdate);
-        if (lastKnownSpotUpdate === -2) {
-          // Just initialize it if it was still -2 for some reason
-          lastKnownSpotUpdate = remoteUpdate;
-        } else if (remoteUpdate > lastKnownSpotUpdate) {
-          console.log('[Firebase] Liveness poller detected spot change, fetching...');
-          fetchSpotsDirect();
-        }
-      }
-    } catch (e) {}
-  }, 10000);
-
-  // Initialize immediately to set baseline and bypass frozen iOS boot socket
-  fetchSpotsDirect();
-
-  return () => {
-    unsubSnapshot();
-    clearInterval(livenessPoller);
-    if (typeof window !== 'undefined') {
-      window.removeEventListener('focus', onFocus);
-      window.removeEventListener('native-app-resume', onNativeResume);
-    }
-    if (typeof document !== 'undefined') {
-      document.removeEventListener('visibilitychange', onVisibilityChange);
-    }
-  };
 }
 
-// Save notification to Firestore
-export async function saveNotificationToFirestore(code: string, notif: NotificationItem) {
-  if (!code) return false;
-  const cleanCode = code.trim().toUpperCase();
-  const cleanedNotif = cleanFirestoreData(notif);
-  
-  // 1. Instantly write via REST
-  // merge: false ensures we can CREATE the document if it doesn't exist via REST PATCH
-  restSetDoc(`couples/${cleanCode}/notifications/${notif.id}`, cleanedNotif, false).catch(() => {});
-  
-  // ALWAYS trigger the couple liveness poller timestamp so the other device wakes up
-  restSetDoc(`couples/${cleanCode}`, { updatedAt: new Date().toISOString(), lastNotificationUpdate: Date.now() }).catch(() => {});
-
-  // 2. Pass to SDK for offline local cache resolution (non-blocking)
-  try {
-    const docRef = doc(db, 'couples', cleanCode, 'notifications', notif.id);
-    setDoc(docRef, cleanedNotif, { merge: true }).catch(() => {});
-    return true;
-  } catch (err) {
-    return false;
-  }
-}
-
-// Subscribe to notifications real-time changes with visibility refresh
 export function subscribeToNotifications(code: string, callback: (notifs: NotificationItem[]) => void) {
   if (!code) return () => {};
   const cleanCode = code.trim().toUpperCase();
   const notifsRef = collection(db, 'couples', cleanCode, 'notifications');
 
-  // 1. Real-time onSnapshot listener
-  const unsubSnapshot = onSnapshot(
+  return onSnapshot(
     notifsRef,
     (snapshot) => {
       const notifs = snapshot.docs.map((d) => d.data() as NotificationItem);
@@ -1878,112 +1558,33 @@ export function subscribeToNotifications(code: string, callback: (notifs: Notifi
       console.warn('[Firebase] Snapshot notice listening to notifications:', err);
     }
   );
-
-  let lastKnownNotifUpdate = -2;
-
-  // 2. Direct fetch on mobile resume / focus
-  const fetchNotifsDirect = async () => {
-    try {
-      // Sync baseline to prevent missing updates that arrive just before or during fetch
-      const coupleDoc = await restGetDoc(`couples/${cleanCode}`);
-      if (coupleDoc && coupleDoc.lastNotificationUpdate) {
-        lastKnownNotifUpdate = Number(coupleDoc.lastNotificationUpdate);
-      } else {
-        lastKnownNotifUpdate = -1;
-      }
-
-      const restNotifs = await restListDocs(`couples/${cleanCode}/notifications`);
-      if (restNotifs !== null) {
-        const notifs = restNotifs as NotificationItem[];
-        notifs.sort((a, b) => new Date((b as any).createdAt || 0).getTime() - new Date((a as any).createdAt || 0).getTime());
-        callback(notifs);
-        return;
-      }
-      const snap = await withTimeout(getDocs(notifsRef), 3000, null);
-      if (snap) {
-        const notifs = snap.docs.map((d) => d.data() as NotificationItem);
-        notifs.sort((a, b) => new Date((b as any).createdAt || 0).getTime() - new Date((a as any).createdAt || 0).getTime());
-        callback(notifs);
-      }
-    } catch (e) {}
-  };
-
-  // Immediate first load
-  fetchNotifsDirect();
-
-  const onVisibilityChange = () => {
-    if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
-      fetchNotifsDirect();
-    }
-  };
-  const onFocus = () => {
-    fetchNotifsDirect();
-  };
-
-  // Triggered by Capacitor AppState changes in App.tsx
-  const onNativeResume = () => {
-    fetchNotifsDirect();
-  };
-
-  if (typeof window !== 'undefined') {
-    window.addEventListener('focus', onFocus);
-    window.addEventListener('native-app-resume', onNativeResume);
-  }
-  if (typeof document !== 'undefined') {
-    document.addEventListener('visibilitychange', onVisibilityChange);
-  }
-
-  // 3. Ultra-low cost Liveness Poller
-  const livenessPoller = setInterval(async () => {
-    try {
-      const coupleDoc = await restGetDoc(`couples/${cleanCode}`);
-      if (coupleDoc && coupleDoc.lastNotificationUpdate) {
-        const remoteUpdate = Number(coupleDoc.lastNotificationUpdate);
-        if (lastKnownNotifUpdate === -2) {
-          // Just initialize it
-          lastKnownNotifUpdate = remoteUpdate;
-        } else if (remoteUpdate > lastKnownNotifUpdate) {
-          console.log('[Firebase] Liveness poller detected notif change, fetching...');
-          fetchNotifsDirect();
-        }
-      }
-    } catch (e) {}
-  }, 10000);
-
-  // Initialize immediately
-  fetchNotifsDirect();
-
-  return () => {
-    unsubSnapshot();
-    clearInterval(livenessPoller);
-    if (typeof window !== 'undefined') {
-      window.removeEventListener('focus', onFocus);
-      window.removeEventListener('native-app-resume', onNativeResume);
-    }
-    if (typeof document !== 'undefined') {
-      document.removeEventListener('visibilitychange', onVisibilityChange);
-    }
-  };
 }
 
-// Purge all created accounts, couples, spots and notifications in Firestore DB
-export async function purgeAllFirestoreData() {
+
+export async function saveNotificationToFirestore(code: string, notif: NotificationItem) {
+  if (!code) return false;
+  const cleanCode = code.trim().toUpperCase();
+  const cleanedNotif = cleanFirestoreData(notif);
   try {
-    const couplesCol = collection(db, 'couples');
-    const couplesSnap = await withTimeout(getDocs(couplesCol), 3000, null);
-    if (couplesSnap) {
-      for (const cDoc of couplesSnap.docs) {
-        const code = cDoc.id;
-        restDeleteDoc(`couples/${code}`).catch(() => {});
-        deleteDoc(doc(db, 'couples', code)).catch(() => {});
-      }
-    }
+    const docRef = doc(db, 'couples', cleanCode, 'notifications', notif.id);
+    await setDoc(docRef, cleanedNotif, { merge: true });
+    return true;
   } catch (err) {
-    console.warn('Notice during Firestore purge:', err);
+    return false;
   }
 }
 
-// Delete user account
+export async function deleteNotificationFromFirestore(code: string, notifId: string) {
+  if (!code || !notifId) return false;
+  const cleanCode = code.trim().toUpperCase();
+  try {
+    await deleteDoc(doc(db, 'couples', cleanCode, 'notifications', notifId));
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
 export async function deleteUserAccountInFirestore(user: User | null, code?: string) {
   const targetUser = user || auth.currentUser || getEffectiveUser();
   const targetUid = targetUser?.uid;
