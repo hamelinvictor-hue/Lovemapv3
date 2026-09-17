@@ -639,3 +639,12 @@ export async function queryCollectionWhere<T = any>(
     });
   }
 }
+
+/**
+ * Clears local Firestore persistence
+ */
+export async function clearFirestorePersistence(): Promise<void> {
+  if (isNativeFirestore()) {
+    await FirebaseFirestore.clearPersistence();
+  }
+}

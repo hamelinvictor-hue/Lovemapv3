@@ -70,6 +70,8 @@ import { ensureSubscriberInRevenueCat } from './lib/revenuecatClient';
 import { initializePurchases, resetPurchasesSession } from './lib/purchases';
 import { triggerHaptic } from './lib/feedback';
 import { INITIAL_SPOTS, INITIAL_NOTIFICATIONS, INITIAL_COUPLE } from './data/initialData';
+import { fullTeardown, syncOneSignalUser } from './auth/lifecycle';
+import { getDocument } from './data/firestoreAdapter';
 
 import { Header } from './components/Header';
 import { Navigation, TabType } from './components/Navigation';
@@ -360,24 +362,10 @@ export default function App() {
       onPushToken: (token) => {
         if (couple?.code && activePartnerId) {
           const cleanCode = couple.code.trim().toUpperCase();
-          const targetKey = `${cleanCode}_${activePartnerId}`;
 
           savePushTokenToFirestore(cleanCode, activePartnerId, token).catch(console.warn);
 
-          // 1. Direct registration with OneSignal REST API (CORS enabled, works seamlessly inside iOS WKWebView)
-          fetch('https://onesignal.com/api/v1/players', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              app_id: '6bbd3278-e98f-4ddc-bfe5-a417960d8aac',
-              device_type: 0, // 0 = iOS APNs
-              identifier: token,
-              external_user_id: targetKey,
-              language: 'fr',
-            }),
-          }).catch((e) => console.warn('[OneSignal Direct Player Reg] Notice:', e));
-
-          // 2. Register with server push engine
+          // Register push token exclusively through secure server backend (no direct OneSignal API call from client)
           fetch(getBackendApiUrl('/api/push/register-token'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -539,11 +527,38 @@ export default function App() {
     }
   };
 
-  // Auto-restore user's couple room from Firestore upon logging in
+  // Auto-restore user's couple room from Firestore upon logging in with residual session guard
   useEffect(() => {
     const unsub = auth.onAuthStateChanged(async (user) => {
       if (user && !user.isAnonymous) {
+        // Startup guard: check if user exists on server
+        try {
+          const userDoc = await getDocument(`users/${user.uid}`);
+          if (!userDoc.exists) {
+            console.warn('[Lifecycle Guard] Residual session detected (user deleted on server). Executing fullTeardown...');
+            await fullTeardown({
+              resetState: () => {
+                setAuthUser(null);
+                setSpots([]);
+                setNotifications([]);
+                setCouple(INITIAL_COUPLE);
+                setActivePartnerId('partner_a');
+                setIsOnboardingOpen(false);
+                setIsAuthMandatory(true);
+                setAuthModalMode('login');
+                setIsAuthOpen(true);
+              },
+            });
+            showToast('Session expirée ou compte supprimé. Veuillez vous reconnecter.');
+            return;
+          }
+        } catch (guardErr) {
+          console.warn('[Lifecycle Guard] Non-fatal check notice:', guardErr);
+        }
+
         setAuthUser(user);
+        syncOneSignalUser(user.uid);
+
         const result = await findUserCoupleInFirestore(user);
         if (result) {
           setCouple(result.couple);
@@ -558,6 +573,7 @@ export default function App() {
         const eff = getEffectiveUser();
         setAuthUser(eff && !eff.isAnonymous ? eff : null);
         if (eff && !eff.isAnonymous) {
+          syncOneSignalUser(eff.uid);
           const result = await findUserCoupleInFirestore(eff);
           if (result) {
             setCouple(result.couple);
@@ -1129,29 +1145,24 @@ export default function App() {
   // Logout handler
   const handleLogout = async () => {
     console.log('[Native Debug] handleLogout triggered');
-    // Immediately close settings and open clean Auth / Login popup
     setIsSettingsOpen(false);
     setIsOnboardingOpen(false);
-    setIsAuthMandatory(true);
-    setAuthModalMode('login');
-    setIsAuthOpen(true);
+    showToast('Déconnexion en cours...');
+
+    await fullTeardown({
+      resetState: () => {
+        setAuthUser(null);
+        setSpots([]);
+        setNotifications([]);
+        setCouple(INITIAL_COUPLE);
+        setActivePartnerId('partner_a');
+        setIsAuthMandatory(true);
+        setAuthModalMode('login');
+        setIsAuthOpen(true);
+      },
+    });
+
     showToast('Vous avez été déconnecté.');
-
-    // Clear local state
-    setAuthUser(null);
-    setSpots([]);
-    setNotifications([]);
-    setCouple(INITIAL_COUPLE);
-    setActivePartnerId('partner_a');
-    clearUserSessionStorage();
-
-    try {
-      console.log('[Native Debug] Calling logoutFromFirebase...');
-      await logoutFromFirebase();
-      console.log('[Native Debug] logoutFromFirebase completed');
-    } catch (e) {
-      console.error('[Native Debug] Error in logoutFromFirebase:', e);
-    }
     console.log('[Native Debug] handleLogout finished');
   };
 
@@ -1246,36 +1257,33 @@ export default function App() {
     const currentUser = auth.currentUser || getEffectiveUser();
     const currentCode = couple.code;
 
-    // 1. Immediately close settings, reset modals and clear user session
     setIsSettingsOpen(false);
     showToast('Suppression du compte en cours...');
-
-    // Clear local state
-    setAuthUser(null);
-    setSpots([]);
-    setNotifications([]);
-    const freshCouple: CouplePair = {
-      ...INITIAL_COUPLE,
-      code: generateCoupleCode(),
-    };
-    setCouple(freshCouple);
-    setActivePartnerId('partner_a');
-    clearUserSessionStorage();
 
     try {
       console.log('[Native Debug] Calling deleteUserAccountInFirestore...');
       await deleteUserAccountInFirestore(currentUser, currentCode);
       console.log('[Native Debug] Calling resetPurchasesSession...');
       await resetPurchasesSession();
-      console.log('[Native Debug] Delete operations completed');
+      console.log('[Native Debug] Remote delete operations completed');
     } catch (e) {
       console.error('[Native Debug] Error deleting account:', e);
     }
 
-    // 2. Open onboarding / auth screen clean
-    setIsAuthMandatory(true);
-    setAuthModalMode('register');
-    setIsAuthOpen(true);
+    // Execute fullTeardown in strict order (listeners, onesignal, auth, clearPersistence, storage, react state)
+    await fullTeardown({
+      resetState: () => {
+        setAuthUser(null);
+        setSpots([]);
+        setNotifications([]);
+        setCouple(INITIAL_COUPLE);
+        setActivePartnerId('partner_a');
+        setIsAuthMandatory(true);
+        setAuthModalMode('register');
+        setIsAuthOpen(true);
+      },
+    });
+
     showToast('Votre compte a été définitivement supprimé.');
     console.log('[Native Debug] handleDeleteAccount finished');
   };
