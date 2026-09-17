@@ -206,99 +206,100 @@ export default function App() {
     plan: 'monthly' | 'annual',
     active: boolean
   ) => {
-    const isSubscriberA = subscriberPartnerId === 'partner_a';
-    const expiresAt = new Date();
-    if (plan === 'monthly') {
-      expiresAt.setMonth(expiresAt.getMonth() + 1);
-    } else {
-      expiresAt.setFullYear(expiresAt.getFullYear() + 1);
-    }
-
-    const currentPartnerA = couple?.partnerA || {
-      id: 'partner_a',
-      name: 'Partenaire 1',
-      avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
-      role: 'Partenaire 1',
-    };
-    const currentPartnerB = couple?.partnerB || {
-      id: 'partner_b',
-      name: 'En attente...',
-      avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
-      role: 'Partenaire 2',
-    };
-
-    const subscriberProfile = isSubscriberA ? currentPartnerA : currentPartnerB;
-    const updatedProfile: UserProfile = {
-      ...subscriberProfile,
-      subscription: active
-        ? {
-            plan,
-            purchasedAt: new Date().toISOString(),
-            expiresAt: expiresAt.toISOString(),
-            purchasedByPartnerId: subscriberPartnerId,
-            active: true,
-          }
-        : undefined,
-    };
-
-    const updatedCouple: CouplePair = {
-      ...couple,
-      partnerA: isSubscriberA ? updatedProfile : currentPartnerA,
-      partnerB: !isSubscriberA ? updatedProfile : currentPartnerB,
-    };
-
-    setCouple(updatedCouple);
-    saveCouple(updatedCouple);
-
-    if (couple.code) {
-      try {
-        await updateCoupleInFirestore(couple.code, updatedCouple);
-      } catch (err) {
-        console.warn('Error updating subscription in Firestore:', err);
+    setCouple((prev) => {
+      const isSubscriberA = subscriberPartnerId === 'partner_a';
+      const expiresAt = new Date();
+      if (plan === 'monthly') {
+        expiresAt.setMonth(expiresAt.getMonth() + 1);
+      } else {
+        expiresAt.setFullYear(expiresAt.getFullYear() + 1);
       }
-    }
 
-    if (active) {
-      // Notify the partner that premium subscription has been activated for the duo!
-      const partnerIdToNotify: PartnerId = isSubscriberA ? 'partner_b' : 'partner_a';
-      const subscriberName = subscriberProfile.name || (isSubscriberA ? 'Votre partenaire 1' : 'Votre partenaire 2');
-      const planLabel = plan === 'monthly' ? '1 mois' : '1 an';
-      
-      const premiumNotif: NotificationItem = {
-        id: `notif-premium-${Date.now()}`,
-        type: 'premium_activated',
-        spotId: '',
-        senderId: subscriberPartnerId,
-        targetPartnerId: partnerIdToNotify,
-        title: '👑 Pass Duo Premium Activé !',
-        message: `${subscriberName} a souscrit au Pass Duo Premium (${planLabel}) ! Vous bénéficiez désormais tous les deux de toutes les fonctionnalités illimitées.`,
-        timestamp: 'À l’instant',
-        isRead: false,
+      const currentPartnerA = prev?.partnerA || {
+        id: 'partner_a',
+        name: 'Partenaire 1',
+        avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+        role: 'Partenaire 1',
+      };
+      const currentPartnerB = prev?.partnerB || {
+        id: 'partner_b',
+        name: 'En attente...',
+        avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
+        role: 'Partenaire 2',
       };
 
-      const updatedNotifs = [premiumNotif, ...notificationsRef.current];
-      setNotifications(updatedNotifs);
-      saveNotifications(updatedNotifs);
+      const subscriberProfile = isSubscriberA ? currentPartnerA : currentPartnerB;
+      const updatedProfile: UserProfile = {
+        ...subscriberProfile,
+        subscription: active
+          ? {
+              plan,
+              purchasedAt: new Date().toISOString(),
+              expiresAt: expiresAt.toISOString(),
+              purchasedByPartnerId: subscriberPartnerId,
+              active: true,
+            }
+          : undefined,
+      };
 
-      if (couple.code) {
-        saveNotificationToFirestore(couple.code, premiumNotif).catch((e) => {
-          console.warn('Error pushing premium activation notification to Firestore:', e);
-        });
+      const updatedCouple: CouplePair = {
+        ...prev,
+        partnerA: isSubscriberA ? updatedProfile : currentPartnerA,
+        partnerB: !isSubscriberA ? updatedProfile : currentPartnerB,
+      };
 
-        // Trigger Push Notification to partner for premium activation
-        import('./lib/apiConfig').then(({ sendPushNotification }) => {
-          sendPushNotification({
-            code: couple.code,
-            senderPartnerId: subscriberPartnerId,
-            targetPartnerId: partnerIdToNotify,
-            title: premiumNotif.title,
-            message: premiumNotif.message,
-            spotId: '',
-            type: premiumNotif.type,
-          });
+      saveCouple(updatedCouple);
+
+      if (updatedCouple.code) {
+        updateCoupleInFirestore(updatedCouple.code, updatedCouple).catch((err) => {
+          console.warn('Error updating subscription in Firestore:', err);
         });
       }
 
+      if (active) {
+        // Notify the partner that premium subscription has been activated for the duo!
+        const partnerIdToNotify: PartnerId = isSubscriberA ? 'partner_b' : 'partner_a';
+        const subscriberName = subscriberProfile.name || (isSubscriberA ? 'Votre partenaire 1' : 'Votre partenaire 2');
+        const planLabel = plan === 'monthly' ? '1 mois' : '1 an';
+        
+        const premiumNotif: NotificationItem = {
+          id: `notif-premium-${Date.now()}`,
+          type: 'premium_activated',
+          spotId: '',
+          senderId: subscriberPartnerId,
+          targetPartnerId: partnerIdToNotify,
+          title: '👑 Pass Duo Premium Activé !',
+          message: `${subscriberName} a souscrit au Pass Duo Premium (${planLabel}) ! Vous bénéficiez désormais tous les deux de toutes les fonctionnalités illimitées.`,
+          timestamp: 'À l’instant',
+          isRead: false,
+        };
+
+        const updatedNotifs = [premiumNotif, ...notificationsRef.current];
+        setNotifications(updatedNotifs);
+        saveNotifications(updatedNotifs);
+
+        if (updatedCouple.code) {
+          saveNotificationToFirestore(updatedCouple.code, premiumNotif).catch((e) => {
+            console.warn('Error pushing premium activation notification to Firestore:', e);
+          });
+          import('./lib/apiConfig').then(({ sendPushNotification }) => {
+            sendPushNotification({
+              code: updatedCouple.code,
+              senderPartnerId: subscriberPartnerId,
+              targetPartnerId: partnerIdToNotify,
+              title: premiumNotif.title,
+              message: premiumNotif.message,
+              spotId: '',
+              type: premiumNotif.type,
+            });
+          });
+        }
+      }
+
+      return updatedCouple;
+    });
+
+    if (active) {
       showToast(plan === 'monthly' ? '👑 Pass Duo Premium (1 mois) activé !' : '👑 Pass Duo Premium (1 an) activé !');
     } else {
       showToast('Pass Duo Premium résilié.');
