@@ -336,10 +336,11 @@ export default function App() {
     }
   }, []);
 
-  // Initialize RevenueCat SDK early for native iOS
+  // Initialize RevenueCat SDK early for native iOS with Firebase User UID
   useEffect(() => {
-    initializePurchases(couple.code || undefined);
-  }, [couple.code]);
+    const currentUid = authUser?.uid || auth.currentUser?.uid || undefined;
+    initializePurchases(currentUid);
+  }, [authUser?.uid]);
 
   // Setup Native iOS Notification click handlers, APNs push registration & app resume sync
   useEffect(() => {
