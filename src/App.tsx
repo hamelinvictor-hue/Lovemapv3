@@ -192,6 +192,7 @@ export default function App() {
   const unsubCoupleRef = useRef<(() => void) | null>(null);
   const unsubSpotsRef = useRef<(() => void) | null>(null);
   const unsubNotifsRef = useRef<(() => void) | null>(null);
+  const ensuredRoomCodeRef = useRef<string | null>(null);
 
 
   const handleOpenPremiumModal = (reasonMessage?: string, isFirstSpot = false) => {
@@ -571,9 +572,12 @@ export default function App() {
     return () => unsub();
   }, []);
 
-  // Ensure couple room registration in Firestore & RevenueCat (ONLY after onboarding is completed)
+  // Ensure couple room registration in Firestore & RevenueCat (ONLY once after onboarding is completed)
   useEffect(() => {
     if (couple.code && !isOnboardingOpen && getHasCompletedOnboarding()) {
+      if (ensuredRoomCodeRef.current === couple.code) return;
+      ensuredRoomCodeRef.current = couple.code;
+
       ensureCoupleRoomInFirestore(couple.code, couple, activePartnerId)
         .then((updatedCouple) => {
           if (updatedCouple.code !== couple.code) {
@@ -584,7 +588,7 @@ export default function App() {
         })
         .catch(console.error);
     }
-  }, [couple.code, isOnboardingOpen, isSettingsOpen, showDuoCodeModal]);
+  }, [couple.code, isOnboardingOpen]);
 
   // Real-time Firestore Sync listeners for active Couple Code (with Capacitor AppState)
   useEffect(() => {

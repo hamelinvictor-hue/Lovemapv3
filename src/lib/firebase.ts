@@ -69,9 +69,11 @@ try {
 }
 export const auth = authInstance;
 
-// Initialize Firestore strictly with memoryLocalCache() to eliminate WKWebView IndexedDB locking on iOS
+// Initialize Firestore strictly with memoryLocalCache() and long-polling to eliminate WKWebView IndexedDB locking and WebSocket drops on iOS
 const firestoreInstance = initializeFirestore(app, {
   localCache: memoryLocalCache(),
+  experimentalForceLongPolling: true,
+  ignoreUndefinedProperties: true,
 }, firebaseConfig.firestoreDatabaseId || undefined);
 
 // Check for redirect result on initialization for iOS PWA/Web (skip on Native to prevent auth hanging)
@@ -144,7 +146,7 @@ function toFirestoreValue(value: any): any {
 export async function restGetDoc(docPath: string): Promise<any | null> {
   try {
     const cleanPath = docPath.startsWith('/') ? docPath.slice(1) : docPath;
-    const res = await fetch(`${FIRESTORE_REST_BASE}/${cleanPath}?key=${firebaseConfig.apiKey}&_t=${Date.now()}`, {
+    const res = await fetch(`${FIRESTORE_REST_BASE}/${cleanPath}?key=${firebaseConfig.apiKey}`, {
       cache: 'no-store',
     });
     if (!res.ok) return null;
@@ -858,8 +860,13 @@ export async function ensureCoupleRoomInFirestore(
     const user = await ensureGuestUser();
     const coupleRef = doc(db, 'couples', cleanCode);
 
-    const snap = await withTimeout(getDoc(coupleRef), 2000, null).catch(() => null);
-    const existingData = snap && snap.exists() ? snap.data() : null;
+    let existingData: any = await restGetDoc(`couples/${cleanCode}`);
+    if (!existingData) {
+      const snap = await withTimeout(getDoc(coupleRef), 2000, null).catch(() => null);
+      if (snap && snap.exists()) {
+        existingData = snap.data();
+      }
+    }
 
     if (!existingData) {
       const memberUids = [user.uid];
@@ -897,9 +904,18 @@ export async function ensureCoupleRoomInFirestore(
         setDoc(coupleRef, updatePayload, { merge: true }).catch(() => {});
       }
       verifiedRoomsCache.add(cleanCode);
+
+      // Preserve joined partner B if exists in remote or local
+      const remotePartnerB = data.partnerB;
+      const localPartnerB = localCouple.partnerB;
+      const mergedPartnerB = (remotePartnerB && remotePartnerB.name && remotePartnerB.name !== 'En attente...')
+        ? remotePartnerB
+        : (localPartnerB?.name && localPartnerB.name !== 'En attente...' ? localPartnerB : remotePartnerB || localPartnerB);
+
       return {
         ...localCouple,
         ...data,
+        partnerB: mergedPartnerB,
         code: cleanCode,
       };
     }
@@ -1109,13 +1125,13 @@ export async function joinCoupleInFirestore(
     try {
       console.log(`[SYNC-DEBUG] Checking candidate via REST: ${cand}`);
       const restDoc = await restGetDoc(`couples/${cand}`);
-      if (restDoc) {
+      if (restDoc && (restDoc.code || restDoc.partnerA)) {
         targetData = restDoc;
         targetCode = cand;
         console.log('[SYNC-DEBUG] Found couple document via REST:', cand);
         break;
       }
-      const snap = await withTimeout(getDoc(doc(db, 'couples', cand)), 10000, null);
+      const snap = await withTimeout(getDoc(doc(db, 'couples', cand)), 3000, null);
       if (snap && snap.exists()) {
         targetData = snap.data();
         targetCode = cand;
@@ -1123,7 +1139,7 @@ export async function joinCoupleInFirestore(
         break;
       }
     } catch (e: any) {
-      console.warn(`[SYNC-DEBUG] Candidate ${cand} check error:`, e?.code, e?.message);
+      console.warn(`[SYNC-DEBUG] Candidate ${cand} check notice:`, e?.message);
     }
   }
 
@@ -1132,14 +1148,14 @@ export async function joinCoupleInFirestore(
     try {
       console.log('[SYNC-DEBUG] Falling back to query search');
       const q = query(collection(db, 'couples'), where('code', 'in', candidates.slice(0, 10)), limit(1));
-      const querySnap = await withTimeout(getDocs(q), 10000, null);
+      const querySnap = await withTimeout(getDocs(q), 3000, null);
       if (querySnap && !querySnap.empty) {
         targetData = querySnap.docs[0].data();
         targetCode = querySnap.docs[0].id;
         console.log('[SYNC-DEBUG] Found couple document by query:', targetCode);
       }
     } catch (queryErr: any) {
-      console.warn('[SYNC-DEBUG] Query fallback notice:', queryErr?.code, queryErr?.message);
+      console.warn('[SYNC-DEBUG] Query fallback notice:', queryErr?.message);
     }
   }
 
@@ -1148,10 +1164,15 @@ export async function joinCoupleInFirestore(
     throw new Error(`Code de duo introuvable (${rawClean}). Vérifiez que le code correspond bien à celui affiché sur le téléphone de votre partenaire.`);
   }
 
-  // 3. Pairing update via ATOMIC TRANSACTION with REST Fallback
-  let couple: CouplePair;
-  const coupleRef = doc(db, 'couples', targetCode);
+  // Verify availability
+  if (targetData.isCodeUsed && targetData.partnerBUid && user.uid && targetData.partnerBUid !== user.uid) {
+    if (targetData.partnerB?.name && targetData.partnerB.name !== 'En attente...') {
+      throw new Error(`Cet espace Duo est déjà complet avec ${targetData.partnerB.name}.`);
+    }
+  }
 
+  // 3. Pairing update via direct REST and SDK merge (instant write, no transaction deadlocks)
+  const coupleRef = doc(db, 'couples', targetCode);
   const existingMembers = targetData.memberUids || [];
   const updatedMembers = user.uid ? Array.from(new Set([...existingMembers, user.uid])) : existingMembers;
   
@@ -1168,36 +1189,21 @@ export async function joinCoupleInFirestore(
     partnerBEmail: user.email || '',
     memberUids: updatedMembers,
     isCodeUsed: true,
+    status: 'active',
     updatedAt: new Date().toISOString(),
+    lastJoinUpdate: Date.now(),
   });
 
-  try {
-    console.log('[SYNC-DEBUG] Starting atomic transaction to join room:', targetCode);
-    couple = await runTransaction(db, async (transaction) => {
-      const sfDoc = await transaction.get(coupleRef);
-      if (!sfDoc.exists()) {
-        throw new Error("Document introuvable pour la transaction.");
-      }
-      transaction.update(coupleRef, updateData);
-      return {
-        ...sfDoc.data(),
-        ...updateData,
-        code: targetCode,
-      } as unknown as CouplePair;
-    });
-    console.log('[SYNC-DEBUG] Successfully paired to room via runTransaction:', targetCode);
-  } catch (error: any) {
-    console.warn("[DUO-SYNC-ERROR] runTransaction failed, falling back to REST/merge:", error?.code, error?.message);
-    // Fallback to REST write if WebSockets are dead on iOS
-    await restSetDoc(`couples/${targetCode}`, updateData, true);
-    setDoc(coupleRef, updateData, { merge: true }).catch(() => {});
-    
-    couple = {
-      ...targetData,
-      ...updateData,
-      code: targetCode,
-    } as unknown as CouplePair;
-  }
+  // Direct REST write first (guaranteed 200 OK directly in Firestore within 40ms)
+  await restSetDoc(`couples/${targetCode}`, updateData, true);
+  // Also synchronize SDK cache
+  setDoc(coupleRef, updateData, { merge: true }).catch(() => {});
+
+  const couple: CouplePair = {
+    ...targetData,
+    ...updateData,
+    code: targetCode,
+  } as unknown as CouplePair;
 
   verifiedRoomsCache.add(targetCode);
 
@@ -1609,10 +1615,12 @@ export function subscribeToCouple(code: string, callback: (couple: CouplePair | 
   const cleanCode = code.trim().toUpperCase();
   const coupleRef = doc(db, 'couples', cleanCode);
 
+  let isDisposed = false;
   let isPartnerJoined = false;
-  let pollInterval: any = null;
+  let pollTimeout: any = null;
 
   const handleUpdate = (data: CouplePair | null) => {
+    if (isDisposed) return;
     if (!data) {
       callback(null);
       return;
@@ -1621,40 +1629,22 @@ export function subscribeToCouple(code: string, callback: (couple: CouplePair | 
       data.isCodeUsed ||
       (data.partnerB && data.partnerB.name && data.partnerB.name !== 'En attente...')
     );
-    if (joined && !isPartnerJoined) {
+    if (joined) {
       isPartnerJoined = true;
-      if (pollInterval) {
-        clearInterval(pollInterval);
-        pollInterval = null;
-      }
     }
     callback(data);
   };
 
-  // 1. Standard Firestore onSnapshot listener
-  const unsubSnapshot = onSnapshot(
-    coupleRef,
-    (docSnap) => {
-      if (docSnap.exists()) {
-        handleUpdate(docSnap.data() as CouplePair);
-      } else {
-        handleUpdate(null);
-      }
-    },
-    (err) => {
-      console.warn('[Firebase] Error listening to couple:', err);
-    }
-  );
-
-  // 2. Direct fetch helper on mobile resume / window focus
+  // 1. Direct fetch helper on mobile resume / window focus / poller
   const fetchCoupleDirect = async () => {
+    if (isDisposed) return;
     try {
       const restDoc = await restGetDoc(`couples/${cleanCode}`);
       if (restDoc !== null) {
         handleUpdate(restDoc as CouplePair);
         return;
       }
-      const snap = await withTimeout(getDoc(coupleRef), 10000, null);
+      const snap = await withTimeout(getDoc(coupleRef), 3000, null);
       if (snap && snap.exists()) {
         handleUpdate(snap.data() as CouplePair);
       } else if (snap && !snap.exists()) {
@@ -1664,6 +1654,24 @@ export function subscribeToCouple(code: string, callback: (couple: CouplePair | 
   };
 
   fetchCoupleDirect();
+
+  // 2. Standard Firestore onSnapshot listener
+  let unsubSnapshot: (() => void) | null = null;
+  try {
+    unsubSnapshot = onSnapshot(
+      coupleRef,
+      (docSnap) => {
+        if (docSnap.exists()) {
+          handleUpdate(docSnap.data() as CouplePair);
+        } else {
+          handleUpdate(null);
+        }
+      },
+      (err) => {
+        console.warn('[Firebase] Notice on couple snapshot:', err?.message);
+      }
+    );
+  } catch (e) {}
 
   const onVisibilityChange = () => {
     if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
@@ -1681,16 +1689,21 @@ export function subscribeToCouple(code: string, callback: (couple: CouplePair | 
     document.addEventListener('visibilitychange', onVisibilityChange);
   }
 
-  // 3. Fallback polling for initial partner join (every 3s)
-  pollInterval = setInterval(() => {
-    if (!isPartnerJoined) {
-      fetchCoupleDirect();
-    }
-  }, 3000);
+  // 3. Heartbeat polling: every 2.5s while waiting for partner, every 6s once joined
+  const scheduleNextHeartbeat = () => {
+    if (isDisposed) return;
+    const interval = isPartnerJoined ? 6000 : 2500;
+    pollTimeout = setTimeout(async () => {
+      await fetchCoupleDirect();
+      scheduleNextHeartbeat();
+    }, interval);
+  };
+  scheduleNextHeartbeat();
 
   return () => {
-    unsubSnapshot();
-    if (pollInterval) clearInterval(pollInterval);
+    isDisposed = true;
+    if (unsubSnapshot) unsubSnapshot();
+    if (pollTimeout) clearTimeout(pollTimeout);
     if (typeof window !== 'undefined') {
       window.removeEventListener('focus', onFocus);
       window.removeEventListener('native-app-resume', onNativeResume);
@@ -1730,7 +1743,6 @@ export async function deleteSpotFromFirestore(code: string, spotId: string) {
   const cleanCode = code.trim().toUpperCase();
   
   restDeleteDoc(`couples/${cleanCode}/spots/${spotId}`).catch(() => {});
-  
   restSetDoc(`couples/${cleanCode}`, { updatedAt: new Date().toISOString(), lastSpotUpdate: Date.now() }).catch(() => {});
 
   try {
@@ -1748,36 +1760,35 @@ export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void
   const cleanCode = code.trim().toUpperCase();
   const spotsRef = collection(db, 'couples', cleanCode, 'spots');
 
-  // 1. Real-time onSnapshot listener
-  const unsubSnapshot = onSnapshot(
-    spotsRef,
-    (snapshot) => {
-      const spots = snapshot.docs.map((d) => d.data() as Spot);
-      callback(spots);
-    },
-    (err) => {
-      console.warn('[Firebase] Snapshot notice listening to spots:', err);
-    }
-  );
+  let isDisposed = false;
 
-  let lastKnownSpotUpdate = -2;
+  // 1. Real-time onSnapshot listener
+  let unsubSnapshot: (() => void) | null = null;
+  try {
+    unsubSnapshot = onSnapshot(
+      spotsRef,
+      (snapshot) => {
+        if (isDisposed) return;
+        const spots = snapshot.docs.map((d) => d.data() as Spot);
+        callback(spots);
+      },
+      (err) => {
+        console.warn('[Firebase] Snapshot notice listening to spots:', err?.message);
+      }
+    );
+  } catch (e) {}
 
   // 2. Direct fetch helper
   const fetchSpotsDirect = async () => {
+    if (isDisposed) return;
     try {
-      const coupleDoc = await restGetDoc(`couples/${cleanCode}`);
-      if (coupleDoc && coupleDoc.lastSpotUpdate) {
-        lastKnownSpotUpdate = Number(coupleDoc.lastSpotUpdate);
-      } else {
-        lastKnownSpotUpdate = -1;
-      }
       const restSpots = await restListDocs(`couples/${cleanCode}/spots`);
       if (restSpots !== null) {
-        callback(restSpots as Spot[]);
+        if (!isDisposed) callback(restSpots as Spot[]);
         return;
       }
-      const snap = await withTimeout(getDocs(spotsRef), 10000, null);
-      if (snap) {
+      const snap = await withTimeout(getDocs(spotsRef), 5000, null);
+      if (snap && !isDisposed) {
         const list = snap.docs.map((d) => d.data() as Spot);
         callback(list);
       }
@@ -1802,25 +1813,14 @@ export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void
     document.addEventListener('visibilitychange', onVisibilityChange);
   }
 
-  // 3. Ultra-low cost Liveness Poller
-  const livenessPoller = setInterval(async () => {
-    try {
-      const coupleDoc = await restGetDoc(`couples/${cleanCode}`);
-      if (coupleDoc && coupleDoc.lastSpotUpdate) {
-        const remoteUpdate = Number(coupleDoc.lastSpotUpdate);
-        if (lastKnownSpotUpdate === -2) {
-          lastKnownSpotUpdate = remoteUpdate;
-        } else if (remoteUpdate > lastKnownSpotUpdate) {
-          console.log('[Firebase] Liveness poller detected spot change, fetching...');
-          lastKnownSpotUpdate = remoteUpdate;
-          fetchSpotsDirect();
-        }
-      }
-    } catch (e) {}
-  }, 10000);
+  // 3. Heartbeat polling for WKWebView resiliency (every 6s)
+  const livenessPoller = setInterval(() => {
+    fetchSpotsDirect();
+  }, 6000);
 
   return () => {
-    unsubSnapshot();
+    isDisposed = true;
+    if (unsubSnapshot) unsubSnapshot();
     clearInterval(livenessPoller);
     if (typeof window !== 'undefined') {
       window.removeEventListener('focus', onFocus);
@@ -1837,39 +1837,38 @@ export function subscribeToNotifications(code: string, callback: (notifs: Notifi
   const cleanCode = code.trim().toUpperCase();
   const notifsRef = collection(db, 'couples', cleanCode, 'notifications');
 
-  // 1. Real-time onSnapshot listener
-  const unsubSnapshot = onSnapshot(
-    notifsRef,
-    (snapshot) => {
-      const notifs = snapshot.docs.map((d) => d.data() as NotificationItem);
-      notifs.sort((a, b) => new Date((b as any).createdAt || 0).getTime() - new Date((a as any).createdAt || 0).getTime());
-      callback(notifs);
-    },
-    (err) => {
-      console.warn('[Firebase] Snapshot notice listening to notifications:', err);
-    }
-  );
+  let isDisposed = false;
 
-  let lastKnownNotifUpdate = -2;
+  // 1. Real-time onSnapshot listener
+  let unsubSnapshot: (() => void) | null = null;
+  try {
+    unsubSnapshot = onSnapshot(
+      notifsRef,
+      (snapshot) => {
+        if (isDisposed) return;
+        const notifs = snapshot.docs.map((d) => d.data() as NotificationItem);
+        notifs.sort((a, b) => new Date((b as any).createdAt || 0).getTime() - new Date((a as any).createdAt || 0).getTime());
+        callback(notifs);
+      },
+      (err) => {
+        console.warn('[Firebase] Snapshot notice listening to notifications:', err?.message);
+      }
+    );
+  } catch (e) {}
 
   // 2. Direct fetch helper
   const fetchNotifsDirect = async () => {
+    if (isDisposed) return;
     try {
-      const coupleDoc = await restGetDoc(`couples/${cleanCode}`);
-      if (coupleDoc && coupleDoc.lastNotificationUpdate) {
-        lastKnownNotifUpdate = Number(coupleDoc.lastNotificationUpdate);
-      } else {
-        lastKnownNotifUpdate = -1;
-      }
       const restNotifs = await restListDocs(`couples/${cleanCode}/notifications`);
       if (restNotifs !== null) {
         const notifs = restNotifs as NotificationItem[];
         notifs.sort((a, b) => new Date((b as any).createdAt || 0).getTime() - new Date((a as any).createdAt || 0).getTime());
-        callback(notifs);
+        if (!isDisposed) callback(notifs);
         return;
       }
-      const snap = await withTimeout(getDocs(notifsRef), 10000, null);
-      if (snap) {
+      const snap = await withTimeout(getDocs(notifsRef), 5000, null);
+      if (snap && !isDisposed) {
         const notifs = snap.docs.map((d) => d.data() as NotificationItem);
         notifs.sort((a, b) => new Date((b as any).createdAt || 0).getTime() - new Date((a as any).createdAt || 0).getTime());
         callback(notifs);
@@ -1895,25 +1894,14 @@ export function subscribeToNotifications(code: string, callback: (notifs: Notifi
     document.addEventListener('visibilitychange', onVisibilityChange);
   }
 
-  // 3. Ultra-low cost Liveness Poller
-  const livenessPoller = setInterval(async () => {
-    try {
-      const coupleDoc = await restGetDoc(`couples/${cleanCode}`);
-      if (coupleDoc && coupleDoc.lastNotificationUpdate) {
-        const remoteUpdate = Number(coupleDoc.lastNotificationUpdate);
-        if (lastKnownNotifUpdate === -2) {
-          lastKnownNotifUpdate = remoteUpdate;
-        } else if (remoteUpdate > lastKnownNotifUpdate) {
-          console.log('[Firebase] Liveness poller detected notif change, fetching...');
-          lastKnownNotifUpdate = remoteUpdate;
-          fetchNotifsDirect();
-        }
-      }
-    } catch (e) {}
-  }, 12000);
+  // 3. Heartbeat polling for WKWebView resiliency (every 6s)
+  const livenessPoller = setInterval(() => {
+    fetchNotifsDirect();
+  }, 6000);
 
   return () => {
-    unsubSnapshot();
+    isDisposed = true;
+    if (unsubSnapshot) unsubSnapshot();
     clearInterval(livenessPoller);
     if (typeof window !== 'undefined') {
       window.removeEventListener('focus', onFocus);

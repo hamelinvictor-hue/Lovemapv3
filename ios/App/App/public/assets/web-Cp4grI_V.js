@@ -1,0 +1,1 @@
+import{W as e,C as t,E as n}from"./index-Cz4uKENX.js";class o extends e{async openAppStore(){throw this.createUnimplementedException()}async requestReview(){throw this.createUnimplementedException()}createUnimplementedException(){return new t("This plugin method is not implemented on this platform.",n.Unimplemented)}}export{o as AppReviewWeb};
