@@ -3,6 +3,7 @@
 	"appName": "react-example",
 	"webDir": "dist",
 	"packageClassList": [
+		"FirebaseFirestorePlugin",
 		"AppPlugin",
 		"GeolocationPlugin",
 		"LocalNotificationsPlugin",
