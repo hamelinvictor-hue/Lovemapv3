@@ -104,6 +104,19 @@ export const RATING_CRITERIA: RatingCriteria[] = [
 
 export const INITIAL_COUPLE: CouplePair = {
   id: '',
+  code: 'LOVE-NEW',
+  partnerA: {
+    id: 'partner_a',
+    name: 'Partenaire 1',
+    avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+    role: 'Partenaire 1',
+  },
+  partnerB: {
+    id: 'partner_b',
+    name: 'En attente...',
+    avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
+    role: 'Partenaire 2',
+  },
   memberUids: [],
   members: {},
   creatorUid: '',

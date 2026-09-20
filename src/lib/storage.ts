@@ -357,10 +357,14 @@ export function saveSpots(spots: Spot[]): void {
 
 export function normalizeCouple(c: Partial<CouplePair> | null | undefined): CouplePair {
   if (!c || typeof c !== 'object') return INITIAL_COUPLE;
+  const rawCode = typeof c.code === 'string' && c.code.trim() ? c.code.trim() : INITIAL_COUPLE.code || 'LOVE-NEW';
   return {
     ...INITIAL_COUPLE,
     ...c,
     id: c.id || INITIAL_COUPLE.id,
+    code: rawCode,
+    partnerA: c.partnerA || INITIAL_COUPLE.partnerA,
+    partnerB: c.partnerB || INITIAL_COUPLE.partnerB,
     memberUids: Array.isArray(c.memberUids) ? c.memberUids : [],
     members: c.members && typeof c.members === 'object' ? c.members : {},
     creatorUid: c.creatorUid || '',

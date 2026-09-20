@@ -1534,6 +1534,7 @@ export async function findUserCoupleInFirestore(
 
 // Update couple configuration (e.g. names, pin, anniversary, subscription)
 export async function updateCoupleInFirestore(code: string, updated: CouplePair) {
+  if (!code) return;
   const cleanCode = code.trim().toUpperCase();
   const { spots, notifications, ...coreCouple } = updated;
   const cleaned = cleanFirestoreData({ ...coreCouple, updatedAt: new Date().toISOString() });
