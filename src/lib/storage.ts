@@ -1,10 +1,9 @@
-import { Spot, CouplePair, NotificationItem, PartnerId, CriteriaKey, GlobalCriteriaStats, PartnerRating, AppMode } from '../types';
+import { Spot, CouplePair, NotificationItem, CriteriaKey, GlobalCriteriaStats, AppMode } from '../types';
 import { INITIAL_SPOTS, INITIAL_COUPLE, INITIAL_NOTIFICATIONS, RATING_CRITERIA } from '../data/initialData';
 
 const SPOTS_KEY = 'lovemap_spots_v1';
 const COUPLE_KEY = 'lovemap_couple_v1';
 const NOTIFS_KEY = 'lovemap_notifs_v1';
-const ACTIVE_PARTNER_KEY = 'lovemap_active_partner_v1';
 const APP_MODE_KEY = 'lovemap_app_mode_v1';
 const THEME_KEY = 'lovemap_theme_v1';
 const ONBOARDING_KEY = 'lovemap_onboarding_completed_v2';
@@ -20,6 +19,12 @@ const NOTIFICATION_PERMISSION_KEY = 'lovemap_notification_permission_v2';
 const TRIAL_URGENCY_NOTIF_KEY = 'lovemap_trial_urgency_notif_sent_v2';
 
 export type ThemeMode = 'light' | 'dark';
+
+// Compatibility shim during step-by-step migration
+export function getActivePartner(): string { return 'partner_a'; }
+export function setActivePartner(_partner: any): void {}
+export function getStoredActivePartnerId(): string { return 'partner_a'; }
+export function saveActivePartnerId(_partner: any): void {}
 
 export function getHasSeenNotificationPrompt(): boolean {
   try {
@@ -218,7 +223,6 @@ export function clearUserSessionStorage(): void {
     localStorage.removeItem(SPOTS_KEY);
     localStorage.removeItem(COUPLE_KEY);
     localStorage.removeItem(NOTIFS_KEY);
-    localStorage.removeItem(ACTIVE_PARTNER_KEY);
     localStorage.removeItem(APP_MODE_KEY);
     localStorage.removeItem(AUTH_USER_KEY);
     localStorage.removeItem(ONBOARDING_KEY);
@@ -248,7 +252,6 @@ export function getStoredTheme(): ThemeMode {
   try {
     const val = localStorage.getItem(THEME_KEY);
     if (val === 'dark' || val === 'light') return val;
-    // Default match device system theme (matchMedia)
     if (typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
       return 'light';
     }
@@ -287,10 +290,10 @@ export function saveAppMode(mode: AppMode): void {
 }
 
 export function computeSpotScores(spot: Spot): Spot {
-  const pA = spot.ratings?.partner_a;
-  const pB = spot.ratings?.partner_b;
+  const ratings = spot.ratings || {};
+  const uids = Object.keys(ratings);
 
-  if (!pA && !pB) {
+  if (uids.length === 0) {
     return spot;
   }
 
@@ -304,16 +307,18 @@ export function computeSpotScores(spot: Spot): Spot {
   };
 
   keys.forEach((key) => {
-    const valA = pA?.scores?.[key];
-    const valB = pB?.scores?.[key];
+    let sumCriteria = 0;
+    let countCriteria = 0;
 
-    if (valA !== undefined && valB !== undefined) {
-      avgScores[key] = Math.round(((valA + valB) / 2) * 10) / 10;
-    } else if (valA !== undefined) {
-      avgScores[key] = valA;
-    } else if (valB !== undefined) {
-      avgScores[key] = valB;
-    }
+    uids.forEach((uid) => {
+      const val = ratings[uid]?.scores?.[key];
+      if (val !== undefined && typeof val === 'number') {
+        sumCriteria += val;
+        countCriteria++;
+      }
+    });
+
+    avgScores[key] = countCriteria > 0 ? Math.round((sumCriteria / countCriteria) * 10) / 10 : 0;
   });
 
   const sum = keys.reduce((acc, k) => acc + avgScores[k], 0);
@@ -355,27 +360,21 @@ export function normalizeCouple(c: Partial<CouplePair> | null | undefined): Coup
   return {
     ...INITIAL_COUPLE,
     ...c,
-    code: c.code && c.code !== 'LOVE-NEW' ? c.code : INITIAL_COUPLE.code,
-    partnerA: {
-      ...INITIAL_COUPLE.partnerA,
-      ...(c.partnerA || {}),
-      id: 'partner_a',
-      name: c.partnerA?.name || INITIAL_COUPLE.partnerA.name,
-      avatar: c.partnerA?.avatar || INITIAL_COUPLE.partnerA.avatar,
-      role: c.partnerA?.role || INITIAL_COUPLE.partnerA.role,
-    },
-    partnerB: {
-      ...INITIAL_COUPLE.partnerB,
-      ...(c.partnerB || {}),
-      id: 'partner_b',
-      name: c.partnerB?.name || INITIAL_COUPLE.partnerB.name,
-      avatar: c.partnerB?.avatar || INITIAL_COUPLE.partnerB.avatar,
-      role: c.partnerB?.role || INITIAL_COUPLE.partnerB.role,
-    },
+    id: c.id || INITIAL_COUPLE.id,
+    memberUids: Array.isArray(c.memberUids) ? c.memberUids : [],
+    members: c.members && typeof c.members === 'object' ? c.members : {},
+    creatorUid: c.creatorUid || '',
     anniversaryDate: c.anniversaryDate || INITIAL_COUPLE.anniversaryDate,
     secretPin: c.secretPin || INITIAL_COUPLE.secretPin,
     isPinLocked: typeof c.isPinLocked === 'boolean' ? c.isPinLocked : false,
-    status: c.status || 'active',
+    status: c.status || 'pending',
+    subscription: {
+      active: Boolean(c.subscription?.active),
+      plan: c.subscription?.plan || null,
+      sourceUid: c.subscription?.sourceUid || null,
+      expiresAt: c.subscription?.expiresAt || null,
+      updatedAt: c.subscription?.updatedAt || new Date().toISOString(),
+    },
   };
 }
 
@@ -422,26 +421,6 @@ export function saveNotifications(notifs: NotificationItem[]): void {
     localStorage.setItem(NOTIFS_KEY, JSON.stringify(notifs));
   } catch (err) {
     console.error('Failed to save notifications', err);
-  }
-}
-
-export function getActivePartner(): PartnerId {
-  try {
-    const val = localStorage.getItem(ACTIVE_PARTNER_KEY);
-    if (val === 'partner_a' || val === 'partner_b') {
-      return val;
-    }
-    return 'partner_a';
-  } catch (err) {
-    return 'partner_a';
-  }
-}
-
-export function setActivePartner(id: PartnerId): void {
-  try {
-    localStorage.setItem(ACTIVE_PARTNER_KEY, id);
-  } catch (err) {
-    console.error('Failed to set active partner', err);
   }
 }
 

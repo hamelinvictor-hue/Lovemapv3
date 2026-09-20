@@ -1624,8 +1624,6 @@ export function subscribeToCouple(code: string, callback: (couple: CouplePair | 
   const cleanCode = code.trim().toUpperCase();
 
   let isDisposed = false;
-  let isPartnerJoined = false;
-  let pollTimeout: any = null;
 
   const handleUpdate = (data: CouplePair | null) => {
     if (isDisposed) return;
@@ -1633,17 +1631,10 @@ export function subscribeToCouple(code: string, callback: (couple: CouplePair | 
       callback(null);
       return;
     }
-    const joined = Boolean(
-      data.isCodeUsed ||
-      (data.partnerB && data.partnerB.name && data.partnerB.name !== 'En attente...')
-    );
-    if (joined) {
-      isPartnerJoined = true;
-    }
     callback(data);
   };
 
-  // 1. Direct fetch helper on mobile resume / window focus / poller
+  // 1. Direct fetch helper on mobile resume / window focus
   const fetchCoupleDirect = async () => {
     if (isDisposed) return;
     try {
@@ -1699,21 +1690,9 @@ export function subscribeToCouple(code: string, callback: (couple: CouplePair | 
     document.addEventListener('visibilitychange', onVisibilityChange);
   }
 
-  // 3. Heartbeat polling: every 2.5s while waiting for partner, every 6s once joined
-  const scheduleNextHeartbeat = () => {
-    if (isDisposed) return;
-    const interval = isPartnerJoined ? 6000 : 2500;
-    pollTimeout = setTimeout(async () => {
-      await fetchCoupleDirect();
-      scheduleNextHeartbeat();
-    }, interval);
-  };
-  scheduleNextHeartbeat();
-
   return () => {
     isDisposed = true;
     if (unsubSnapshot) unsubSnapshot();
-    if (pollTimeout) clearTimeout(pollTimeout);
     if (typeof window !== 'undefined') {
       window.removeEventListener('focus', onFocus);
       window.removeEventListener('native-app-resume', onNativeResume);
@@ -1827,15 +1806,9 @@ export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void
     document.addEventListener('visibilitychange', onVisibilityChange);
   }
 
-  // 3. Heartbeat polling for WKWebView resiliency (every 6s)
-  const livenessPoller = setInterval(() => {
-    fetchSpotsDirect();
-  }, 6000);
-
   return () => {
     isDisposed = true;
     if (unsubSnapshot) unsubSnapshot();
-    clearInterval(livenessPoller);
     if (typeof window !== 'undefined') {
       window.removeEventListener('focus', onFocus);
       window.removeEventListener('native-app-resume', onNativeResume);
@@ -1912,15 +1885,9 @@ export function subscribeToNotifications(code: string, callback: (notifs: Notifi
     document.addEventListener('visibilitychange', onVisibilityChange);
   }
 
-  // 3. Heartbeat polling for WKWebView resiliency (every 6s)
-  const livenessPoller = setInterval(() => {
-    fetchNotifsDirect();
-  }, 6000);
-
   return () => {
     isDisposed = true;
     if (unsubSnapshot) unsubSnapshot();
-    clearInterval(livenessPoller);
     if (typeof window !== 'undefined') {
       window.removeEventListener('focus', onFocus);
       window.removeEventListener('native-app-resume', onNativeResume);

@@ -20,36 +20,3 @@ export function getBackendApiUrl(endpoint: string): string {
   // On Web / desktop browser, relative paths are routed by Vite or Express reverse proxy
   return cleanEndpoint;
 }
-
-export async function sendPushNotification(payload: {
-  code: string;
-  senderPartnerId: string;
-  targetPartnerId?: string;
-  title?: string;
-  message?: string;
-  spotId?: string;
-  type?: string;
-}) {
-  try {
-    const url = getBackendApiUrl('/api/push/send');
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-    if (!res.ok) {
-      console.log('[Push] Notification backend status:', res.status);
-      return null;
-    }
-    return await res.json();
-  } catch (err: any) {
-    console.log('[Push] Notification dispatch note:', err?.message || 'Network unreachable');
-    return null;
-  }
-}

@@ -102,33 +102,21 @@ export const RATING_CRITERIA: RatingCriteria[] = [
   },
 ];
 
-export function generateDefaultCoupleCode(): string {
-  const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
-  let p1 = '';
-  let p2 = '';
-  for (let i = 0; i < 4; i++) {
-    p1 += chars.charAt(Math.floor(Math.random() * chars.length));
-    p2 += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return `LM-${p1}-${p2}`;
-}
-
 export const INITIAL_COUPLE: CouplePair = {
-  code: generateDefaultCoupleCode(),
+  id: '',
+  memberUids: [],
+  members: {},
+  creatorUid: '',
   anniversaryDate: new Date().toISOString().split('T')[0],
   secretPin: '1234',
   isPinLocked: false,
-  partnerA: {
-    id: 'partner_a',
-    name: 'Partenaire 1',
-    avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
-    role: 'Partenaire 1',
-  },
-  partnerB: {
-    id: 'partner_b',
-    name: 'En attente...',
-    avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150&auto=format&fit=crop&q=80',
-    role: 'Partenaire 2',
+  status: 'pending',
+  subscription: {
+    active: false,
+    plan: null,
+    sourceUid: null,
+    expiresAt: null,
+    updatedAt: new Date().toISOString(),
   },
 };
 

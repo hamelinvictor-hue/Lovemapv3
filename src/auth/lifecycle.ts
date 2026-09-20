@@ -3,11 +3,11 @@ import { FirebaseFirestore } from '@capacitor-firebase/firestore';
 import { auth } from '../lib/firebase';
 import { signOut } from 'firebase/auth';
 import { clearFirestorePersistence } from '../data/firestoreAdapter';
+import { unregisterFcmTokenOnSignOut } from '../lib/fcmManager';
 
 // Dynamic registration of Capacitor plugins to ensure safe compilation across web and native
 const Preferences = registerPlugin<any>('Preferences');
 const FirebaseAuthentication = registerPlugin<any>('FirebaseAuthentication');
-const OneSignalPlugin = registerPlugin<any>('OneSignal');
 
 /**
  * Options to reset React root state during full teardown
@@ -21,13 +21,13 @@ export interface ResetStateCallbacks {
  * 
  * Order of execution (MANDATORY):
  * 1. FirebaseFirestore.removeAllListeners() -> Terminate all active realtime watchers
- * 2. OneSignal.logout() -> Disassociate device from the user
+ * 2. unregisterFcmTokenOnSignOut() -> Delete FCM token and remove from users/{uid}.fcmTokens BEFORE signOut
  * 3. FirebaseAuthentication.signOut() -> Sign out from native Firebase & Web Auth
  * 4. FirebaseFirestore.clearPersistence() -> Wipe local cache (MUST happen after listeners are removed)
  * 5. Purge localStorage and Preferences -> Flush local device key-value storage
  * 6. Reset React root state -> Clean in-memory state
  */
-export async function fullTeardown(callbacks?: ResetStateCallbacks): Promise<void> {
+export async function fullTeardown(callbacks?: ResetStateCallbacks, currentUid?: string | null): Promise<void> {
   console.log('🔄 [lifecycle] Starting fullTeardown in strict order...');
 
   // 1. FirebaseFirestore.removeAllListeners()
@@ -40,16 +40,13 @@ export async function fullTeardown(callbacks?: ResetStateCallbacks): Promise<voi
     console.warn('  ⚠️ [1/6] Notice on FirebaseFirestore.removeAllListeners:', err?.message || err);
   }
 
-  // 2. OneSignal.logout()
+  // 2. Unregister FCM token BEFORE signOut
   try {
-    if (typeof window !== 'undefined' && (window as any).OneSignal && typeof (window as any).OneSignal.logout === 'function') {
-      await (window as any).OneSignal.logout();
-    } else if (Capacitor.isNativePlatform() && OneSignalPlugin && typeof OneSignalPlugin.logout === 'function') {
-      await OneSignalPlugin.logout();
-    }
-    console.log('  ✅ [2/6] OneSignal.logout() completed');
+    const activeUid = currentUid || auth.currentUser?.uid || null;
+    await unregisterFcmTokenOnSignOut(activeUid);
+    console.log('  ✅ [2/6] FCM token unregistered & removed from Firestore before signOut');
   } catch (err: any) {
-    console.warn('  ⚠️ [2/6] Notice on OneSignal.logout:', err?.message || err);
+    console.warn('  ⚠️ [2/6] Notice on unregisterFcmTokenOnSignOut:', err?.message || err);
   }
 
   // 3. FirebaseAuthentication.signOut() (Native + Web SDK fallback)
@@ -102,32 +99,4 @@ export async function fullTeardown(callbacks?: ResetStateCallbacks): Promise<voi
   }
 
   console.log('🏁 [lifecycle] fullTeardown successfully finished.');
-}
-
-/**
- * Connects OneSignal user login exclusively using the UID returned by FirebaseAuthentication.getCurrentUser()
- */
-export async function syncOneSignalUser(uid: string | null): Promise<void> {
-  if (!uid) return;
-
-  try {
-    let currentAuthUid: string = uid;
-
-    if (Capacitor.isNativePlatform() && FirebaseAuthentication && typeof FirebaseAuthentication.getCurrentUser === 'function') {
-      const nativeUser = await FirebaseAuthentication.getCurrentUser();
-      if (nativeUser?.user?.uid) {
-        currentAuthUid = nativeUser.user.uid;
-      }
-    }
-
-    if (typeof window !== 'undefined' && (window as any).OneSignal && typeof (window as any).OneSignal.login === 'function') {
-      await (window as any).OneSignal.login(currentAuthUid);
-      console.log('🔔 [lifecycle] OneSignal.login(uid) called for:', currentAuthUid);
-    } else if (Capacitor.isNativePlatform() && OneSignalPlugin && typeof OneSignalPlugin.login === 'function') {
-      await OneSignalPlugin.login({ externalId: currentAuthUid });
-      console.log('🔔 [lifecycle] OneSignalPlugin.login called for:', currentAuthUid);
-    }
-  } catch (err: any) {
-    console.warn('🔔 [lifecycle] Notice syncing OneSignal user:', err?.message || err);
-  }
 }

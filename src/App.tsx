@@ -70,7 +70,8 @@ import { ensureSubscriberInRevenueCat } from './lib/revenuecatClient';
 import { initializePurchases, resetPurchasesSession } from './lib/purchases';
 import { triggerHaptic } from './lib/feedback';
 import { INITIAL_SPOTS, INITIAL_NOTIFICATIONS, INITIAL_COUPLE } from './data/initialData';
-import { fullTeardown, syncOneSignalUser } from './auth/lifecycle';
+import { fullTeardown } from './auth/lifecycle';
+import { registerFcmToken } from './lib/fcmManager';
 import { getDocument } from './data/firestoreAdapter';
 
 import { Header } from './components/Header';
@@ -284,17 +285,6 @@ export default function App() {
           saveNotificationToFirestore(updatedCouple.code, premiumNotif).catch((e) => {
             console.warn('Error pushing premium activation notification to Firestore:', e);
           });
-          import('./lib/apiConfig').then(({ sendPushNotification }) => {
-            sendPushNotification({
-              code: updatedCouple.code,
-              senderPartnerId: subscriberPartnerId,
-              targetPartnerId: partnerIdToNotify,
-              title: premiumNotif.title,
-              message: premiumNotif.message,
-              spotId: '',
-              type: premiumNotif.type,
-            });
-          });
         }
       }
 
@@ -361,22 +351,13 @@ export default function App() {
         }
       },
       onPushToken: (token) => {
+        const currentUid = authUser?.uid || auth.currentUser?.uid;
+        if (currentUid) {
+          registerFcmToken(currentUid).catch(console.warn);
+        }
         if (couple?.code && activePartnerId) {
           const cleanCode = couple.code.trim().toUpperCase();
-
           savePushTokenToFirestore(cleanCode, activePartnerId, token).catch(console.warn);
-
-          // Register push token exclusively through secure server backend (no direct OneSignal API call from client)
-          fetch(getBackendApiUrl('/api/push/register-token'), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              code: cleanCode,
-              partnerId: activePartnerId,
-              pushToken: token,
-              platform: 'ios',
-            }),
-          }).catch(console.warn);
         }
       },
       onAppStateChange: (isActive) => {
@@ -558,7 +539,7 @@ export default function App() {
         }
 
         setAuthUser(user);
-        syncOneSignalUser(user.uid);
+        registerFcmToken(user.uid).catch(console.warn);
 
         const result = await findUserCoupleInFirestore(user);
         if (result) {
@@ -574,7 +555,7 @@ export default function App() {
         const eff = getEffectiveUser();
         setAuthUser(eff && !eff.isAnonymous ? eff : null);
         if (eff && !eff.isAnonymous) {
-          syncOneSignalUser(eff.uid);
+          registerFcmToken(eff.uid).catch(console.warn);
           const result = await findUserCoupleInFirestore(eff);
           if (result) {
             setCouple(result.couple);
@@ -728,39 +709,13 @@ export default function App() {
     // 1. Démarrer les listeners au montage (premier plan)
     startListeners();
 
-    // 2. Gestion du cycle de vie Capacitor (détecter passage en arrière-plan)
+    // 2. Gestion du cycle de vie Capacitor (détecter passage en arrière-plan / premier plan)
     const appStateListener = CapacitorApp.addListener('appStateChange', ({ isActive }) => {
       if (isActive) {
-        console.log('[App.tsx] Application en premier plan -> Relance de onSnapshot');
+        console.log('[App.tsx] Application en premier plan -> Rafraîchissement des listeners');
         startListeners();
-        // Also fire the resume fetch for completeness
-        // Ensure it exists in Firestore if it was only created locally
-        ensureCoupleRoomInFirestore(couple.code, couple, activePartnerId).catch(console.warn);
-
-        restGetDoc(`couples/${couple.code}`).then((remote) => {
-          if (remote) {
-            setCouple((prev) => {
-              const wasWaiting = !prev.isCodeUsed || !prev.partnerB || prev.partnerB.name === 'En attente...';
-              const nowJoined = Boolean(
-                remote.isCodeUsed ||
-                (remote.partnerB && remote.partnerB.name && remote.partnerB.name !== 'En attente...')
-              );
-              if (wasWaiting && nowJoined) {
-                triggerHaptic('success');
-                const partnerName = remote.partnerB?.name || 'Votre partenaire';
-                showToast(`💖 ${partnerName} a rejoint l'espace Duo !`);
-                setShowDuoCodeModal(null);
-              } else if (nowJoined) {
-                setShowDuoCodeModal(null);
-              }
-              const merged = { ...prev, ...remote };
-              saveCouple(merged);
-              return merged;
-            });
-          }
-        }).catch(() => {});
       } else {
-        console.log('[App.tsx] Application en arrière-plan -> Coupure de onSnapshot');
+        console.log('[App.tsx] Application en arrière-plan -> Coupure des listeners');
         stopListeners();
       }
     });
@@ -853,34 +808,7 @@ export default function App() {
       const dateStr = now.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' });
       const timeStr = now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
 
-      const newNotif: NotificationItem = {
-        id: `notif-${Date.now()}`,
-        type: 'new_spot_proposed',
-        spotId,
-        senderId: activePartnerId,
-        targetPartnerId,
-        title: 'Nouveau spot d\'intimité ! 📍',
-        message: `${creatorUser.name} a placé un nouveau lieu : "${fullSpot.title}". Validez le spot et répondez au questionnaire !`,
-        timestamp: `${dateStr} à ${timeStr}`,
-        isRead: false,
-        createdAt: new Date().toISOString(),
-      };
-
-      saveNotificationToFirestore(couple.code, newNotif).catch(console.error);
-
-      // Trigger Push Notification via backend
-      import('./lib/apiConfig').then(({ sendPushNotification }) => {
-        sendPushNotification({
-          code: couple.code,
-          senderPartnerId: activePartnerId,
-          targetPartnerId,
-          title: newNotif.title,
-          message: newNotif.message,
-          spotId,
-          type: newNotif.type,
-        });
-      });
-
+      // Spot notification and FCM push are created server-side via onSpotCreated trigger
       showToast(`💌 Spot proposé à ${partnerUser.name} !`);
     }
 
@@ -951,8 +879,8 @@ export default function App() {
           status: updatedStatus,
         };
 
-        const finalSpot = computeSpotScores(updatedSpot);
-        saveSpotToFirestore(couple.code, finalSpot).catch(console.error);
+        // Score computation is authoritative on server trigger (onSpotUpdated) to avoid concurrent client race conditions
+        saveSpotToFirestore(couple.code, updatedSpot).catch(console.error);
 
         // Generate notifications for partner
         const partnerA = couple?.partnerA || { name: 'Partenaire 1' };
@@ -965,58 +893,36 @@ export default function App() {
         const timeStr = now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
 
         if (isNowValidated) {
-          showToast(`💖 Spot "${finalSpot.title}" validé à deux ! Note globale : ${finalSpot.overallScore}/10`);
+          showToast(`💖 Spot "${updatedSpot.title}" validé à deux !`);
           const validationNotif: NotificationItem = {
             id: `notif-val-${Date.now()}`,
             type: 'spot_validated',
-            spotId: finalSpot.id,
+            spotId: updatedSpot.id,
             senderId: partnerId,
             targetPartnerId,
-            title: `🎉 Lieu validé à deux ! (${finalSpot.overallScore}/10)`,
-            message: `${currentUserName} a complété ses notes pour "${finalSpot.title}". Le lieu est maintenant validé sur votre carte commune !`,
+            title: `🎉 Lieu validé à deux !`,
+            message: `${currentUserName} a complété ses notes pour "${updatedSpot.title}". Le lieu est maintenant validé sur votre carte commune !`,
             timestamp: `${dateStr} à ${timeStr}`,
             isRead: false,
           };
           saveNotificationToFirestore(couple.code, validationNotif).catch(console.error);
-          import('./lib/apiConfig').then(({ sendPushNotification }) => {
-            sendPushNotification({
-              code: couple.code,
-              senderPartnerId: partnerId,
-              targetPartnerId,
-              title: validationNotif.title,
-              message: validationNotif.message,
-              spotId: finalSpot.id,
-              type: validationNotif.type,
-            });
-          });
         } else {
           showToast(`✨ Vos notes ont été enregistrées !`);
           const ratingNotif: NotificationItem = {
             id: `notif-rated-${Date.now()}`,
             type: 'new_spot_proposed',
-            spotId: finalSpot.id,
+            spotId: updatedSpot.id,
             senderId: partnerId,
             targetPartnerId,
-            title: `💌 ${currentUserName} a noté "${finalSpot.title}" !`,
-            message: `C'est à votre tour : notez et donnez votre avis sur "${finalSpot.title}" pour valider le lieu ensemble !`,
+            title: `💌 ${currentUserName} a noté "${updatedSpot.title}" !`,
+            message: `C'est à votre tour : notez et donnez votre avis sur "${updatedSpot.title}" pour valider le lieu ensemble !`,
             timestamp: `${dateStr} à ${timeStr}`,
             isRead: false,
           };
           saveNotificationToFirestore(couple.code, ratingNotif).catch(console.error);
-          import('./lib/apiConfig').then(({ sendPushNotification }) => {
-            sendPushNotification({
-              code: couple.code,
-              senderPartnerId: partnerId,
-              targetPartnerId,
-              title: ratingNotif.title,
-              message: ratingNotif.message,
-              spotId: finalSpot.id,
-              type: ratingNotif.type,
-            });
-          });
         }
 
-        return finalSpot;
+        return updatedSpot;
       })
     );
   };
@@ -1094,17 +1000,6 @@ export default function App() {
           };
 
           saveNotificationToFirestore(couple.code, newNotif).catch(console.error);
-          import('./lib/apiConfig').then(({ sendPushNotification }) => {
-            sendPushNotification({
-              code: couple.code,
-              senderPartnerId: activePartnerId,
-              targetPartnerId: (activePartnerId === "partner_a" ? "partner_b" : "partner_a"),
-              title: newNotif.title,
-              message: newNotif.message,
-              spotId,
-              type: newNotif.type,
-            });
-          });
           showToast(`✏️ Notation modifiée ! Re-validation demandée à ${partnerUser.name}.`);
         } else {
           showToast(`✏️ Spot "${updatedData.title || spot.title}" mis à jour !`);
@@ -1117,12 +1012,12 @@ export default function App() {
           status: newStatus,
         };
 
-        const computed = computeSpotScores(merged);
-        saveSpotToFirestore(couple.code, computed).catch(console.error);
+        // Score recalculation is handled server-side by onSpotUpdated trigger
+        saveSpotToFirestore(couple.code, merged).catch(console.error);
         if (selectedSpot && selectedSpot.id === spotId) {
-          setSelectedSpot(computed);
+          setSelectedSpot(merged);
         }
-        return computed;
+        return merged;
       })
     );
   };
@@ -1271,7 +1166,7 @@ export default function App() {
       console.error('[Native Debug] Error deleting account:', e);
     }
 
-    // Execute fullTeardown in strict order (listeners, onesignal, auth, clearPersistence, storage, react state)
+    // Execute fullTeardown in strict order (listeners, fcm token removal, auth, clearPersistence, storage, react state)
     await fullTeardown({
       resetState: () => {
         setAuthUser(null);

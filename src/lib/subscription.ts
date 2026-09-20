@@ -1,4 +1,4 @@
-import { CouplePair, PartnerId, UserSubscription } from '../types';
+import { CouplePair, CoupleSubscription } from '../types';
 
 export const MONTHLY_PRICE = "4,99 €";
 export const ANNUAL_PRICE = "34,99 €";
@@ -10,77 +10,98 @@ export interface PremiumState {
   isSharedViaDuo: boolean;
   bothSubscribed?: boolean;
   subscriberName?: string;
-  subscriberPartnerId?: PartnerId;
-  plan?: 'monthly' | 'annual';
-  expiresAt?: string;
+  subscriberUid?: string | null;
+  subscriberPartnerId?: string;
+  plan?: 'monthly' | 'annual' | null;
+  expiresAt?: string | null;
   maxPhotos: number;
   canAddMusic: boolean;
 }
 
-export function isSubscriptionActive(sub?: UserSubscription): boolean {
+export function isSubscriptionActive(sub?: CoupleSubscription | null): boolean {
   if (!sub || !sub.active) return false;
   if (!sub.expiresAt) return false;
   return new Date(sub.expiresAt).getTime() > Date.now();
 }
 
-export function getDuoPremiumState(couple: CouplePair, activePartnerId: PartnerId): PremiumState {
-  const partnerA = couple?.partnerA;
-  const partnerB = couple?.partnerB;
+/**
+ * Resolves the Premium subscription state for a couple and current user UID.
+ * A single active subscription at the couple level unlocks Premium for both members.
+ */
+export function getDuoPremiumState(couple: CouplePair, currentUid?: string | null): PremiumState {
+  // Support both new couple-level subscription and legacy partner sub structures
+  const sub = couple?.subscription;
+  const legacySubA = couple?.partnerA?.subscription;
+  const legacySubB = couple?.partnerB?.subscription;
   const now = Date.now();
 
-  const subA = partnerA?.subscription;
-  const isAActive = Boolean(subA && subA.active && subA.expiresAt && new Date(subA.expiresAt).getTime() > now);
+  const isLegacyAActive = Boolean(legacySubA?.active && legacySubA.expiresAt && new Date(legacySubA.expiresAt).getTime() > now);
+  const isLegacyBActive = Boolean(legacySubB?.active && legacySubB.expiresAt && new Date(legacySubB.expiresAt).getTime() > now);
 
-  const subB = partnerB?.subscription;
-  const isBActive = Boolean(subB && subB.active && subB.expiresAt && new Date(subB.expiresAt).getTime() > now);
-
-  // Case: BOTH users have their own active subscription
-  if (isAActive && isBActive && subA && subB) {
-    const activeSub = activePartnerId === 'partner_a' ? subA : subB;
-    // Latest expiry date between both partners for maximum protection
-    const latestExpiry =
-      new Date(subA.expiresAt).getTime() > new Date(subB.expiresAt).getTime()
-        ? subA.expiresAt
-        : subB.expiresAt;
-
+  if (isLegacyAActive && isLegacyBActive && legacySubA && legacySubB) {
+    const isOwnerA = currentUid === 'partner_a';
+    const activeSub = isOwnerA ? legacySubA : legacySubB;
     return {
       isPremium: true,
       isSharedViaDuo: false,
       bothSubscribed: true,
       subscriberName: 'Vous et votre partenaire',
-      subscriberPartnerId: activePartnerId,
+      subscriberPartnerId: isOwnerA ? 'partner_a' : 'partner_b',
       plan: activeSub.plan,
-      expiresAt: latestExpiry,
+      expiresAt: legacySubA.expiresAt,
       maxPhotos: PREMIUM_MAX_PHOTOS,
       canAddMusic: true,
     };
   }
 
-  if (isAActive && subA) {
-    const isOwner = activePartnerId === 'partner_a';
+  if (isLegacyAActive && legacySubA) {
+    const isOwner = currentUid === 'partner_a';
     return {
       isPremium: true,
       isSharedViaDuo: !isOwner,
       bothSubscribed: false,
-      subscriberName: partnerA?.name || 'Votre partenaire',
+      subscriberName: couple.partnerA?.name || 'Votre partenaire',
       subscriberPartnerId: 'partner_a',
-      plan: subA.plan,
-      expiresAt: subA.expiresAt,
+      plan: legacySubA.plan,
+      expiresAt: legacySubA.expiresAt,
       maxPhotos: PREMIUM_MAX_PHOTOS,
       canAddMusic: true,
     };
   }
 
-  if (isBActive && subB) {
-    const isOwner = activePartnerId === 'partner_b';
+  if (isLegacyBActive && legacySubB) {
+    const isOwner = currentUid === 'partner_b';
     return {
       isPremium: true,
       isSharedViaDuo: !isOwner,
       bothSubscribed: false,
-      subscriberName: partnerB?.name || 'Votre partenaire',
+      subscriberName: couple.partnerB?.name || 'Votre partenaire',
       subscriberPartnerId: 'partner_b',
-      plan: subB.plan,
-      expiresAt: subB.expiresAt,
+      plan: legacySubB.plan,
+      expiresAt: legacySubB.expiresAt,
+      maxPhotos: PREMIUM_MAX_PHOTOS,
+      canAddMusic: true,
+    };
+  }
+
+  const isActive = Boolean(sub && sub.active && sub.expiresAt && new Date(sub.expiresAt).getTime() > now);
+
+  if (isActive && sub) {
+    const isOwner = Boolean(currentUid && sub.sourceUid === currentUid);
+    const subscriberMember = sub.sourceUid && couple?.members ? couple.members[sub.sourceUid] : null;
+    const subscriberName = isOwner
+      ? 'Vous'
+      : (subscriberMember?.displayName || 'Votre partenaire');
+
+    return {
+      isPremium: true,
+      isSharedViaDuo: !isOwner,
+      bothSubscribed: false,
+      subscriberName,
+      subscriberUid: sub.sourceUid,
+      subscriberPartnerId: isOwner ? 'partner_a' : 'partner_b',
+      plan: sub.plan,
+      expiresAt: sub.expiresAt,
       maxPhotos: PREMIUM_MAX_PHOTOS,
       canAddMusic: true,
     };
@@ -90,6 +111,7 @@ export function getDuoPremiumState(couple: CouplePair, activePartnerId: PartnerI
     isPremium: false,
     isSharedViaDuo: false,
     bothSubscribed: false,
+    subscriberUid: null,
     maxPhotos: FREE_MAX_PHOTOS,
     canAddMusic: false,
   };

@@ -1,10 +1,10 @@
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import { GoogleSignIn } from '@capawesome/capacitor-google-sign-in';
-import { PushNotifications } from '@capacitor/push-notifications';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { AppReview } from '@capawesome/capacitor-app-review';
 import { App } from '@capacitor/app';
 import { AppTrackingTransparency } from 'capacitor-app-tracking-transparency';
+import { FirebaseMessaging } from '@capacitor-firebase/messaging';
 
 // Register plugins dynamically via @capacitor/core so Vite build succeeds everywhere
 const Geolocation = registerPlugin<any>('Geolocation');
@@ -443,21 +443,16 @@ export async function triggerNativeNotification(): Promise<boolean> {
       console.warn('LocalNotifications.requestPermissions plugin error:', e);
     }
 
-    // 1b. Request PushNotifications permission and register for APNs
+    // 1b. Request FirebaseMessaging permission
     try {
-      if (Capacitor.isPluginAvailable('PushNotifications') && PushNotifications && typeof PushNotifications.requestPermissions === 'function') {
-        const res = await PushNotifications.requestPermissions();
+      if (Capacitor.isPluginAvailable('FirebaseMessaging') && FirebaseMessaging && typeof FirebaseMessaging.requestPermissions === 'function') {
+        const res = await FirebaseMessaging.requestPermissions();
         if (res?.receive === 'granted') {
           granted = true;
-          try {
-            await PushNotifications.register();
-          } catch (regErr) {
-            console.warn('PushNotifications.register warning:', regErr);
-          }
         }
       }
     } catch (e) {
-      console.warn('PushNotifications.requestPermissions plugin error:', e);
+      console.warn('FirebaseMessaging.requestPermissions plugin error:', e);
     }
 
     return granted;
@@ -618,11 +613,11 @@ export function setupNativeNotificationHandlers(callbacks: {
     console.warn('Error adding LocalNotifications listener:', e);
   }
 
-  // 2. Push notification clicked by user
+  // 2. FCM Push notification clicked by user
   try {
-    if (Capacitor.isPluginAvailable('PushNotifications') && PushNotifications && typeof PushNotifications.addListener === 'function') {
-      const pushActionPromise = PushNotifications.addListener('pushNotificationActionPerformed', (action) => {
-        const data = action.notification.data;
+    if (Capacitor.isPluginAvailable('FirebaseMessaging') && FirebaseMessaging && typeof FirebaseMessaging.addListener === 'function') {
+      const pushActionPromise = FirebaseMessaging.addListener('notificationActionPerformed', (action: any) => {
+        const data = action?.notification?.data;
         if (data) {
           callbacks.onNotificationClick(data);
         }
@@ -631,10 +626,10 @@ export function setupNativeNotificationHandlers(callbacks: {
         pushActionPromise.then((h: any) => h?.remove?.()).catch(() => {});
       });
 
-      // 3. APNs Push Token Registration
-      const pushRegPromise = PushNotifications.addListener('registration', (token) => {
-        if (token?.value && callbacks.onPushToken) {
-          callbacks.onPushToken(token.value);
+      // 3. FCM Push Token Registration / Rotation
+      const pushRegPromise = FirebaseMessaging.addListener('tokenReceived', (event: any) => {
+        if (event?.token && callbacks.onPushToken) {
+          callbacks.onPushToken(event.token);
         }
       });
       unsubs.push(() => {
@@ -642,8 +637,8 @@ export function setupNativeNotificationHandlers(callbacks: {
       });
 
       // 4. In-flight push notification received while app is active
-      const pushRecPromise = PushNotifications.addListener('pushNotificationReceived', (notification) => {
-        console.log('[Native] Push notification received in foreground:', notification);
+      const pushRecPromise = FirebaseMessaging.addListener('notificationReceived', (notification: any) => {
+        console.log('[Native] FCM push notification received in foreground:', notification);
         // Force a data sync because a partner action occurred
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new Event('native-app-resume'));
@@ -654,7 +649,7 @@ export function setupNativeNotificationHandlers(callbacks: {
       });
     }
   } catch (e) {
-    console.warn('Error adding PushNotifications listeners:', e);
+    console.warn('Error adding FirebaseMessaging listeners:', e);
   }
 
   // 5. App State Change (detect background / foreground)

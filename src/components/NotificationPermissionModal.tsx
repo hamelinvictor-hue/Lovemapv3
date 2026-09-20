@@ -2,6 +2,8 @@ import React from 'react';
 import { Bell, Sparkles, Heart, Shield, CheckCircle2 } from 'lucide-react';
 import { saveHasSeenNotificationPrompt, saveStoredNotificationPermission } from '../lib/storage';
 import { triggerNativeNotification } from '../lib/nativePermissions';
+import { registerFcmToken } from '../lib/fcmManager';
+import { auth } from '../lib/firebase';
 
 interface NotificationPermissionModalProps {
   isOpen: boolean;
@@ -18,6 +20,14 @@ export const NotificationPermissionModal: React.FC<NotificationPermissionModalPr
     saveHasSeenNotificationPrompt(true);
     const granted = await triggerNativeNotification();
     saveStoredNotificationPermission(granted ? 'granted' : 'denied');
+    
+    if (granted) {
+      const currentUid = auth.currentUser?.uid;
+      if (currentUid) {
+        registerFcmToken(currentUid).catch(console.warn);
+      }
+    }
+
     onClose(granted);
   };
 
