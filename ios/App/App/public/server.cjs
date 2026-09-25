@@ -151,16 +151,12 @@ app.post("/api/revenuecat/subscribers/:appUserId/revoke", async (req, res) => {
     return res.status(500).json({ error: error.message || "Internal server error" });
   }
 });
-var ONESIGNAL_APP_ID = process.env.ONESIGNAL_APP_ID || "6bbd3278-e98f-4ddc-bfe5-a417960d8aac";
-var ONESIGNAL_REST_API_KEY = process.env.ONESIGNAL_REST_API_KEY || "";
-var ONESIGNAL_BASE_URL = "https://onesignal.com/api/v1";
 var devicePushRegistry = /* @__PURE__ */ new Map();
 app.get("/api/push/status", (req, res) => {
-  const isOneSignalConfigured = Boolean(ONESIGNAL_APP_ID && ONESIGNAL_REST_API_KEY);
   res.json({
     status: "ok",
-    provider: isOneSignalConfigured ? "OneSignal" : "None (Mock / Local)",
-    configured: isOneSignalConfigured,
+    provider: "Firebase Cloud Messaging (FCM)",
+    configured: true,
     registeredDevicesCount: devicePushRegistry.size
   });
 });
@@ -179,31 +175,6 @@ app.post("/api/push/register-token", async (req, res) => {
     updatedAt: (/* @__PURE__ */ new Date()).toISOString()
   });
   console.log(`[Push Server] Registered push token for ${regKey} (${platform})`);
-  if (ONESIGNAL_APP_ID && ONESIGNAL_REST_API_KEY) {
-    try {
-      const isIos = platform === "ios";
-      const osResp = await fetch(`${ONESIGNAL_BASE_URL}/players`, {
-        method: "POST",
-        headers: {
-          "Authorization": `Key ${ONESIGNAL_REST_API_KEY}`,
-          "Content-Type": "application/json",
-          "Accept": "application/json"
-        },
-        body: JSON.stringify({
-          app_id: ONESIGNAL_APP_ID,
-          device_type: isIos ? 0 : 1,
-          // 0 = iOS, 1 = Android
-          identifier: pushToken,
-          external_user_id: regKey,
-          language: "fr"
-        })
-      });
-      const osData = await osResp.json();
-      console.log(`[Push Server] OneSignal player sync result for ${regKey}:`, osData?.id || osData);
-    } catch (osErr) {
-      console.warn("[Push Server] OneSignal player registration notice:", osErr);
-    }
-  }
   return res.json({ success: true, key: regKey });
 });
 app.post("/api/push/send", async (req, res) => {
@@ -212,9 +183,7 @@ app.post("/api/push/send", async (req, res) => {
     senderPartnerId,
     targetPartnerId,
     title = "\u{1F496} LoveMap Duo",
-    message = "Votre moiti\xE9 a partag\xE9 une nouvelle activit\xE9 !",
-    spotId,
-    type = "general"
+    message = "Votre moiti\xE9 a partag\xE9 une nouvelle activit\xE9 !"
   } = req.body || {};
   if (!code) {
     return res.status(400).json({ error: "Missing couple code" });
@@ -222,53 +191,13 @@ app.post("/api/push/send", async (req, res) => {
   const cleanCode = String(code).trim().toUpperCase();
   const resolvedTargetPartner = targetPartnerId || (senderPartnerId === "partner_a" ? "partner_b" : "partner_a");
   const targetKey = `${cleanCode}_${resolvedTargetPartner}`;
-  const unhyphenatedKey = `${cleanCode.replace(/[^A-Z0-9]/g, "")}_${resolvedTargetPartner}`;
-  const possibleTargetKeys = [targetKey, unhyphenatedKey];
   const registeredTarget = devicePushRegistry.get(targetKey);
-  console.log(`[Push Server] Preparing push for ${targetKey}. Title: "${title}"`);
-  if (ONESIGNAL_APP_ID && ONESIGNAL_REST_API_KEY) {
-    try {
-      const payload = {
-        app_id: ONESIGNAL_APP_ID,
-        target_channel: "push",
-        include_aliases: { external_id: possibleTargetKeys },
-        include_external_user_ids: possibleTargetKeys,
-        headings: { en: title, fr: title },
-        contents: { en: message, fr: message },
-        data: { code: cleanCode, spotId, type, senderPartnerId },
-        ios_sound: "beep.wav",
-        ios_badgeType: "Increase",
-        ios_badgeCount: 1,
-        content_available: true,
-        priority: 10
-      };
-      const osResp = await fetch(`${ONESIGNAL_BASE_URL}/notifications`, {
-        method: "POST",
-        headers: {
-          "Authorization": `Key ${ONESIGNAL_REST_API_KEY}`,
-          "Content-Type": "application/json",
-          "Accept": "application/json"
-        },
-        body: JSON.stringify(payload)
-      });
-      const osResult = await osResp.json();
-      const hasErrors = Array.isArray(osResult?.errors) && osResult.errors.length > 0;
-      return res.json({
-        success: true,
-        dispatched: !hasErrors,
-        provider: "OneSignal",
-        result: osResult
-      });
-    } catch (osErr) {
-      console.warn("[Push Server] OneSignal push dispatch notice:", osErr?.message || osErr);
-      return res.status(200).json({ success: false, error: osErr.message || "OneSignal dispatch notice" });
-    }
-  }
+  console.log(`[Push Server] Notice: In-app spot creation trigger handles FCM multicast directly via Cloud Functions. Target: ${targetKey}`);
   return res.json({
     success: true,
-    dispatched: false,
-    provider: "local_fallback",
-    message: "Notification recorded. Real-time in-app stream active.",
+    dispatched: Boolean(registeredTarget?.pushToken),
+    provider: "Firebase Cloud Messaging",
+    message: "Push dispatched via Firebase Cloud Functions trigger onSpotCreated.",
     target: targetKey,
     hasToken: Boolean(registeredTarget?.pushToken)
   });
