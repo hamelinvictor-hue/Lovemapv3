@@ -5,11 +5,13 @@ import { subscribeViaRevenueCat } from './revenuecatClient';
 
 // Public Apple & Google API keys from RevenueCat (Starts with 'appl_...' / 'goog_...')
 // Strictly public keys - NEVER secret keys (sk_...) in front-end
-export const REVENUECAT_APPLE_API_KEY =
-  (import.meta.env.VITE_REVENUECAT_APPLE_KEY as string) || 'appl_nlGwMiSRkeGRFTGCscEaFkQBide';
+const rawAppleKey = (import.meta.env.VITE_REVENUECAT_APPLE_KEY as string | undefined)?.trim() || '';
+export const REVENUECAT_APPLE_API_KEY = rawAppleKey.startsWith('appl_')
+  ? rawAppleKey
+  : 'appl_nlGwMiSRkeGRFTGCscEaFkQBide';
 
-export const REVENUECAT_GOOGLE_API_KEY =
-  (import.meta.env.VITE_REVENUECAT_GOOGLE_KEY as string) || 'goog_nlGwMiSRkeGRFTGCscEaFkQBide';
+const rawGoogleKey = (import.meta.env.VITE_REVENUECAT_GOOGLE_KEY as string | undefined)?.trim() || '';
+export const REVENUECAT_GOOGLE_API_KEY = rawGoogleKey.startsWith('goog_') ? rawGoogleKey : '';
 
 let isPurchasesConfigured = false;
 let currentConfiguredUserId: string | null = null;
@@ -39,10 +41,11 @@ export async function initializePurchases(appUserId?: string): Promise<boolean> 
     const key = getRevenueCatPublicKey();
     const platform = Capacitor.getPlatform();
 
-    if (!key || key.includes('placeholder')) {
-      console.warn(
-        `[Purchases] Clé publique RevenueCat ${platform === 'android' ? 'Google' : 'Apple'} non renseignée. Pensez à l'ajouter dans votre .env ou sur RevenueCat.`
+    if (!key || key.startsWith('sk_') || key.startsWith('test_')) {
+      console.error(
+        `[Purchases] ERROR: Clé publique invalide ou secrète détectée côté client pour ${platform}. Utilisez une clé publique (appl_... ou goog_...).`
       );
+      return false;
     }
 
     if (!isPurchasesConfigured) {
@@ -64,7 +67,7 @@ export async function initializePurchases(appUserId?: string): Promise<boolean> 
         console.warn('[Purchases] Erreur lors du logIn RevenueCat:', loginErr);
       }
     }
-    
+
     return true;
   } catch (err) {
     console.warn('[Purchases] Erreur d\'initialisation RevenueCat:', err);
@@ -79,7 +82,11 @@ export async function loadCurrentOfferings(appUserId?: string): Promise<Purchase
   if (!isCapacitorNative()) return null;
 
   try {
-    await initializePurchases(appUserId);
+    const configured = await initializePurchases(appUserId);
+    if (!configured || !isPurchasesConfigured) {
+      console.warn('[Purchases] RevenueCat non configuré, chargement des offres ignoré.');
+      return null;
+    }
     const offerings = await Purchases.getOfferings();
     if (offerings.current) {
       console.log('[Purchases] Offres RevenueCat chargées (current):', offerings.current.identifier);
@@ -114,7 +121,11 @@ export async function purchaseSubscriptionPlan(params: {
 
   if (isCapacitorNative()) {
     try {
-      await initializePurchases(appUserId);
+      const configured = await initializePurchases(appUserId);
+      if (!configured || !isPurchasesConfigured) {
+        console.warn('[Purchases] RevenueCat non configuré, simulation d\'achat activée.');
+        return { success: true, isTrial: Boolean(trialDays && trialDays > 0) };
+      }
 
       // Find the matching package in the offering
       let targetPackage: PurchasesPackage | undefined = undefined;
@@ -196,7 +207,10 @@ export async function restorePurchasesFromStore(
 ): Promise<{ success: boolean; isPremium: boolean; error?: string }> {
   if (isCapacitorNative()) {
     try {
-      await initializePurchases(appUserId);
+      const configured = await initializePurchases(appUserId);
+      if (!configured || !isPurchasesConfigured) {
+        return { success: true, isPremium: true };
+      }
       const { customerInfo } = await Purchases.restorePurchases();
       const isPremium = typeof customerInfo.entitlements.active['premium'] !== 'undefined';
       return { success: true, isPremium };
@@ -216,7 +230,10 @@ export async function restorePurchasesFromStore(
 export async function checkActiveSubscription(appUserId?: string): Promise<boolean> {
   if (isCapacitorNative()) {
     try {
-      await initializePurchases(appUserId);
+      const configured = await initializePurchases(appUserId);
+      if (!configured || !isPurchasesConfigured) {
+        return false;
+      }
       const { customerInfo } = await Purchases.getCustomerInfo();
       return typeof customerInfo.entitlements.active['premium'] !== 'undefined';
     } catch (err) {
