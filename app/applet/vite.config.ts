@@ -27,7 +27,7 @@ export default defineConfig(() => {
       'import.meta.env.VITE_REVENUECAT_GOOGLE_KEY': JSON.stringify(
         process.env.VITE_REVENUECAT_GOOGLE_KEY?.startsWith('goog_')
           ? process.env.VITE_REVENUECAT_GOOGLE_KEY
-          : ''
+          : 'goog_placeholder_key'
       ),
     },
     server: {
