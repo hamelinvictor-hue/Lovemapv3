@@ -31,10 +31,14 @@ var app = (0, import_express.default)();
 var PORT = 3e3;
 app.use((0, import_cors.default)());
 app.use(import_express.default.json());
-var REVENUECAT_SECRET_KEY = process.env.REVENUECAT_SECRET_KEY || "sk_sAuopEcrYtQsWZWKjiSLEGzgNWlXy";
+var REVENUECAT_SECRET_KEY = process.env.REVENUECAT_SECRET_KEY;
+if (!REVENUECAT_SECRET_KEY) {
+  console.error("[CRITICAL] Variable d'environnement REVENUECAT_SECRET_KEY manquante. Le serveur n\xE9cessite REVENUECAT_SECRET_KEY pour d\xE9marrer.");
+  process.exit(1);
+}
 var REVENUECAT_BASE_URL = "https://api.revenuecat.com/v1";
 app.get("/api/revenuecat/status", (req, res) => {
-  const isConfigured = Boolean(REVENUECAT_SECRET_KEY && REVENUECAT_SECRET_KEY.startsWith("sk_"));
+  const isConfigured = Boolean(REVENUECAT_SECRET_KEY && (REVENUECAT_SECRET_KEY.startsWith("sk_") || REVENUECAT_SECRET_KEY.startsWith("test_")));
   res.json({
     status: "ok",
     configured: isConfigured,

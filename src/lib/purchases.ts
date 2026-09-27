@@ -1,17 +1,36 @@
 import { Purchases, LOG_LEVEL, PurchasesOffering, PurchasesPackage } from '@revenuecat/purchases-capacitor';
+import { Capacitor } from '@capacitor/core';
 import { isCapacitorNative } from './nativePermissions';
 import { subscribeViaRevenueCat, revokeViaRevenueCat } from './revenuecatClient';
 
-// Public Apple API key from RevenueCat (Starts with 'appl_...')
-// Can be overridden via VITE_REVENUECAT_APPLE_KEY in .env
+// Public Apple & Google API keys from RevenueCat (Starts with 'appl_...' / 'goog_...')
+// Strictly public keys - secret keys (sk_...) must never be used in client code
 export const REVENUECAT_APPLE_API_KEY =
   (import.meta.env.VITE_REVENUECAT_APPLE_KEY as string) || 'appl_nlGwMiSRkeGRFTGCscEaFkQBide';
+
+export const REVENUECAT_GOOGLE_API_KEY =
+  (import.meta.env.VITE_REVENUECAT_GOOGLE_KEY as string) || 'goog_placeholder_key';
 
 let isPurchasesConfigured = false;
 let currentConfiguredUserId: string | null = null;
 
 /**
- * Initializes RevenueCat SDK on iOS native devices
+ * Resolves the public platform API key for RevenueCat SDK
+ */
+export function getPlatformPublicKey(): string {
+  const platform = Capacitor.getPlatform();
+  let key = platform === 'android' ? REVENUECAT_GOOGLE_API_KEY : REVENUECAT_APPLE_API_KEY;
+
+  // Security guard: ensure no secret key is ever passed to the client SDK
+  if (key && (key.startsWith('sk_') || key.startsWith('test_'))) {
+    console.error('[Purchases] ERROR: Clé secrète détectée côté client. RevenueCat refuse les clés secrètes dans l\'app native.');
+    return '';
+  }
+  return key;
+}
+
+/**
+ * Initializes RevenueCat SDK on native devices (iOS / Android)
  */
 export async function initializePurchases(appUserId?: string): Promise<boolean> {
   if (!isCapacitorNative()) {
@@ -20,11 +39,12 @@ export async function initializePurchases(appUserId?: string): Promise<boolean> 
   }
 
   try {
-    const key = REVENUECAT_APPLE_API_KEY;
+    const key = getPlatformPublicKey();
     if (!key || key.includes('placeholder')) {
       console.warn(
-        '[Purchases] Clé publique RevenueCat Apple non renseignée (VITE_REVENUECAT_APPLE_KEY). Pensez à l\'ajouter dans votre .env ou sur RevenueCat.'
+        `[Purchases] Clé publique RevenueCat non configurée pour la plateforme ${Capacitor.getPlatform()}. Pensez à l'ajouter dans vos variables d'environnement.`
       );
+      return false;
     }
 
     if (!isPurchasesConfigured) {
@@ -35,7 +55,7 @@ export async function initializePurchases(appUserId?: string): Promise<boolean> 
       });
       isPurchasesConfigured = true;
       currentConfiguredUserId = appUserId || null;
-      console.log('[Purchases] RevenueCat configuré avec succès pour:', appUserId || 'Anonyme');
+      console.log(`[Purchases] RevenueCat configuré avec succès (${Capacitor.getPlatform()}) pour:`, appUserId || 'Anonyme');
     } else if (appUserId && appUserId !== currentConfiguredUserId) {
       // Switch user if user logged in
       try {
