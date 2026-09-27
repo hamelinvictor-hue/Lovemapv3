@@ -49,7 +49,7 @@ import {
   logoutFromFirebase,
   auth,
   findUserCoupleInFirestore,
-  deleteUserAccountInFirestore,
+  deleteMyAccount,
   breakCoupleInFirestore,
   generateCoupleCode,
   createCoupleInFirestore,
@@ -72,6 +72,7 @@ import { triggerHaptic } from './lib/feedback';
 import { INITIAL_SPOTS, INITIAL_NOTIFICATIONS, INITIAL_COUPLE } from './data/initialData';
 import { fullTeardown } from './auth/lifecycle';
 import { registerFcmToken } from './lib/fcmManager';
+import { FirebaseFirestore } from '@capacitor-firebase/firestore';
 import { getDocument } from './data/firestoreAdapter';
 
 import { Header } from './components/Header';
@@ -591,7 +592,36 @@ export default function App() {
 
   // Real-time Firestore Sync Handlers (Unified across iOS Native & Web)
   const handleCoupleRealtimeUpdate = (remoteCouple: CouplePair | null) => {
-    if (!remoteCouple) return;
+    if (!remoteCouple) {
+      console.log('[Realtime] Couple document removed from server (partner deleted account or reset duo)');
+      setBrokenDuoNotice('Votre partenaire');
+      setSpots([]);
+      setNotifications([]);
+      saveSpots([]);
+      saveNotifications([]);
+      const freshCode = generateCoupleCode();
+      const freshCouple: CouplePair = {
+        code: freshCode,
+        anniversaryDate: new Date().toISOString().split('T')[0],
+        secretPin: '1234',
+        isPinLocked: false,
+        partnerA: {
+          id: 'partner_a',
+          name: couple?.partnerB?.name || couple?.partnerA?.name || 'Moi',
+          avatar: couple?.partnerB?.avatar || couple?.partnerA?.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+          role: 'Partenaire 1',
+        },
+        partnerB: {
+          id: 'partner_b',
+          name: 'En attente...',
+          avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
+          role: 'Partenaire 2',
+        },
+      };
+      setCouple(freshCouple);
+      saveCouple(freshCouple);
+      return;
+    }
     if (remoteCouple.status === 'broken' && remoteCouple.brokenBy) {
       setBrokenDuoNotice(remoteCouple.brokenBy);
       setSpots([]);
@@ -1119,41 +1149,50 @@ export default function App() {
     }
   };
 
-  // Delete account handler
+  // Delete account handler via callable Cloud Function
   const handleDeleteAccount = async () => {
     console.log('[Native Debug] handleDeleteAccount triggered');
-    const currentUser = auth.currentUser || getEffectiveUser();
-    const currentCode = couple.code;
-
     setIsSettingsOpen(false);
-    showToast('Suppression du compte en cours...');
+    showToast('Suppression définitive de votre compte en cours...');
 
     try {
-      console.log('[Native Debug] Calling deleteUserAccountInFirestore...');
-      await deleteUserAccountInFirestore(currentUser, currentCode);
-      console.log('[Native Debug] Calling resetPurchasesSession...');
-      await resetPurchasesSession();
-      console.log('[Native Debug] Remote delete operations completed');
-    } catch (e) {
+      // 1. Unregister all active Firestore listeners FIRST
+      if (isCapacitorNative()) {
+        try {
+          await FirebaseFirestore.removeAllListeners();
+          console.log('[Native Debug] FirebaseFirestore.removeAllListeners() completed prior to delete');
+        } catch (lErr) {
+          console.warn('[Native Debug] removeAllListeners notice:', lErr);
+        }
+      }
+
+      // 2. Call Cloud Function deleteAccount (region: europe-west1)
+      await deleteMyAccount();
+      console.log('[Native Debug] Cloud Function deleteMyAccount completed');
+
+      // 3. Reset purchases session
+      await resetPurchasesSession().catch(() => {});
+
+      // 4. Clean local state and storage via fullTeardown AFTER server response
+      await fullTeardown({
+        resetState: () => {
+          setAuthUser(null);
+          setSpots([]);
+          setNotifications([]);
+          setCouple(INITIAL_COUPLE);
+          setActivePartnerId('partner_a');
+          setIsAuthMandatory(true);
+          setAuthModalMode('register');
+          setIsAuthOpen(true);
+        },
+      });
+
+      showToast('Votre compte a été définitivement supprimé.');
+      console.log('[Native Debug] handleDeleteAccount finished successfully');
+    } catch (e: any) {
       console.error('[Native Debug] Error deleting account:', e);
+      showToast(e?.message || 'Erreur lors de la suppression du compte.');
     }
-
-    // Execute fullTeardown in strict order (listeners, fcm token removal, auth, clearPersistence, storage, react state)
-    await fullTeardown({
-      resetState: () => {
-        setAuthUser(null);
-        setSpots([]);
-        setNotifications([]);
-        setCouple(INITIAL_COUPLE);
-        setActivePartnerId('partner_a');
-        setIsAuthMandatory(true);
-        setAuthModalMode('register');
-        setIsAuthOpen(true);
-      },
-    });
-
-    showToast('Votre compte a été définitivement supprimé.');
-    console.log('[Native Debug] handleDeleteAccount finished');
   };
 
   // Filter notifications meant for the active partner (creators do not receive notifications for their own actions)
@@ -1163,9 +1202,15 @@ export default function App() {
 
   // Counts for badges
   const unreadCount = userNotifications.filter((n) => !n.isRead).length;
-  const pendingValidationCount = spots.filter(
-    (s) => s.status === 'pending_validation' && s.creatorId !== activePartnerId
-  ).length;
+  const isMePartnerA = activePartnerId === 'partner_a';
+  const pendingValidationCount = spots.filter((s) => {
+    if (s.status !== 'pending_validation' || s.isSolo) return false;
+    const isCreator =
+      s.creatorId === activePartnerId ||
+      (Boolean(couple?.partnerAUid) && isMePartnerA && s.creatorId === couple.partnerAUid) ||
+      (Boolean(couple?.partnerBUid) && !isMePartnerA && s.creatorId === couple.partnerBUid);
+    return !isCreator;
+  }).length;
 
   const activeUser = (activePartnerId === 'partner_a' ? couple?.partnerA : couple?.partnerB) || {
     name: 'Moi',

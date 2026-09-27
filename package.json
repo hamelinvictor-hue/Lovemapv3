@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@capacitor-firebase/firestore": "^8.5.2",
+    "@capacitor-firebase/functions": "^8.5.2",
     "@capacitor-firebase/messaging": "^8.5.2",
     "@capacitor/app": "^8.1.1",
     "@capacitor/clipboard": "^8.0.1",

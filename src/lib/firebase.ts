@@ -25,6 +25,8 @@ import {
   initializeFirestore,
   memoryLocalCache,
 } from 'firebase/firestore';
+import { getFunctions, httpsCallable } from 'firebase/functions';
+import { FirebaseFunctions } from '@capacitor-firebase/functions';
 import {
   watchDocument,
   getDocument as adapterGetDocument,
@@ -1536,116 +1538,36 @@ export async function deleteNotificationFromFirestore(code: string, notifId: str
   return true;
 }
 
-export async function deleteUserAccountInFirestore(user: User | null, code?: string) {
-  const targetUser = user || auth.currentUser || getEffectiveUser();
-  const targetUid = targetUser?.uid;
-  const targetEmail = targetUser?.email;
+/**
+ * Calls the Cloud Function 'deleteAccount' (region: 'europe-west1').
+ * Securely deletes user account, couple documents, subcollections, invite codes, private secrets and Auth record on server.
+ */
+export async function deleteMyAccount(): Promise<void> {
+  console.log('[deleteMyAccount] Invoking deleteAccount Cloud Function (europe-west1)...');
 
-  console.log('[SYNC-DEBUG] deleteUserAccountInFirestore called for:', {
-    targetUid,
-    targetEmail,
-    code,
-  });
-
-  // 1. Delete the specific couple passed in or clean up couple documents associated with this user
-  const coupleCodesToDelete = new Set<string>();
-  if (code && code !== 'LOVE-NEW') {
-    coupleCodesToDelete.add(code.trim().toUpperCase());
-  }
-
-  try {
-    const lookupPromises: Promise<any>[] = [];
-
-    if (targetUid) {
-      lookupPromises.push(queryCollectionWhere('couples', { field: 'memberUids', operator: 'array-contains', value: targetUid }).catch(() => []));
-      lookupPromises.push(queryCollectionWhere('couples', { field: 'ownerUid', operator: '==', value: targetUid }).catch(() => []));
-      lookupPromises.push(queryCollectionWhere('couples', { field: 'partnerAUid', operator: '==', value: targetUid }).catch(() => []));
-      lookupPromises.push(queryCollectionWhere('couples', { field: 'partnerBUid', operator: '==', value: targetUid }).catch(() => []));
-    }
-
-    if (targetEmail) {
-      lookupPromises.push(queryCollectionWhere('couples', { field: 'ownerEmail', operator: '==', value: targetEmail }).catch(() => []));
-      lookupPromises.push(queryCollectionWhere('couples', { field: 'partnerBEmail', operator: '==', value: targetEmail }).catch(() => []));
-    }
-
-    const results = await withTimeout(Promise.all(lookupPromises), 10000, []);
-    for (const snaps of results) {
-      if (Array.isArray(snaps)) {
-        snaps.forEach((d: any) => coupleCodesToDelete.add(d.id));
-      }
-    }
-  } catch (findErr: any) {
-    console.error('[DUO-SYNC-ERROR]', findErr?.code, findErr?.message);
-    console.warn('[SYNC-DEBUG] Error looking up couple docs to delete:', findErr);
-  }
-
-  // Delete all identified couple collections, spots, and notifications in parallel
-  for (const cCode of coupleCodesToDelete) {
-    console.log('[SYNC-DEBUG] Deleting couple document and subcollections for:', cCode);
+  if (isCapacitorNative()) {
     try {
-      await adapterDeleteDocument(`couples/${cCode}`);
-      
-    } catch (e: any) {
-      console.error('[DUO-SYNC-ERROR] Failed to delete couple doc:', e?.code, e?.message);
-    }
-    
-    // Subcollections cleanup in background
-    (async () => {
-      try {
-        const spotsSnap = await adapterGetCollection(`couples/${cCode}/spots`).catch(() => []);
-        for (const s of spotsSnap) await adapterDeleteDocument(`couples/${cCode}/spots/${s.id}`).catch(() => {});
-        
-        const notifsSnap = await adapterGetCollection(`couples/${cCode}/notifications`).catch(() => []);
-        for (const n of notifsSnap) await adapterDeleteDocument(`couples/${cCode}/notifications/${n.id}`).catch(() => {});
-      } catch (err: any) {
-         console.warn('[SYNC-DEBUG] Notice cleaning subcollections:', err?.code, err?.message);
-      }
-    })().catch(() => {});
-  }
-
-  // Clear local storage for Duo
-  try {
-    localStorage.removeItem('lovemap_couple_v1');
-    localStorage.removeItem('lovemap_spots_v1');
-    localStorage.removeItem('lovemap_notifs_v1');
-    localStorage.removeItem('lovemap_active_partner_v1');
-    localStorage.removeItem('lovemap_app_mode_v1');
-    localStorage.removeItem('lovemap_onboarding_completed_v2');
-  } catch (e) {}
-
-  // 2. Clear persisted auth storage
-  saveStoredAuthUser(null);
-
-  // 3. Delete Firebase Auth User account
-  const firebaseAuthUser = auth.currentUser || (targetUser && typeof (targetUser as any).delete === 'function' ? targetUser : null);
-  if (firebaseAuthUser && typeof firebaseAuthUser.delete === 'function') {
-    try {
-      console.log('[SYNC-DEBUG] Attempting firebaseAuthUser.delete()...');
-      await firebaseAuthUser.delete();
-      console.log('[SYNC-DEBUG] firebaseAuthUser.delete() completed.');
-    } catch (delErr: any) {
-      if (delErr?.code === 'auth/requires-recent-login') {
-        console.log('[SYNC-DEBUG] Firebase user requires recent login for auth record delete; data and sessions purged.');
-      } else {
-        console.log('[SYNC-DEBUG] Notice during firebaseAuthUser.delete():', delErr?.code || delErr?.message || delErr);
-      }
+      const res = await FirebaseFunctions.callByName({
+        name: 'deleteAccount',
+        region: 'europe-west1',
+        timeout: 25000,
+      });
+      console.log('[deleteMyAccount] Native FirebaseFunctions result:', res);
+      return;
+    } catch (nativeErr: any) {
+      console.warn('[deleteMyAccount] Native FirebaseFunctions notice, attempting Web SDK fallback:', nativeErr);
     }
   }
 
-  // 4. Native Plugins sign out (Google / Apple tokens cached on device)
+  // Web SDK fallback
   try {
-    await withTimeout(triggerNativeSignOut(), 1500, null);
-  } catch (nsErr: any) {
-    console.warn('[SYNC-DEBUG] triggerNativeSignOut error:', nsErr);
-  }
-
-  // 5. Firebase Auth signOut
-  try {
-    await withTimeout(signOut(auth), 1500, null);
-    console.log('[SYNC-DEBUG] Firebase signOut completed.');
-  } catch (soErr: any) {
-    console.error('[DUO-SYNC-ERROR]', soErr?.code, soErr?.message);
-    console.warn('[SYNC-DEBUG] signOut error:', soErr);
+    const functionsInstance = getFunctions(app, 'europe-west1');
+    const deleteAccountFn = httpsCallable(functionsInstance, 'deleteAccount');
+    const result = await deleteAccountFn({});
+    console.log('[deleteMyAccount] Web Cloud Function result:', result.data);
+  } catch (webErr: any) {
+    console.error('[deleteMyAccount] Cloud Function failed:', webErr);
+    throw new Error(webErr?.message || 'Erreur lors de la suppression de votre compte.');
   }
 }
 

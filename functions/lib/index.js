@@ -5,75 +5,105 @@ const firestore_1 = require("firebase-functions/v2/firestore");
 const auth = require("firebase-functions/v1/auth");
 const logger = require("firebase-functions/logger");
 const admin = require("firebase-admin");
-// Initialize Firebase Admin SDK
+// Initialize Firebase Admin SDK using Application Default Credentials (ADC)
 if (!admin.apps.length) {
     admin.initializeApp();
 }
 const db = admin.firestore();
-// OneSignal configuration strictly read from server environment
-const ONESIGNAL_APP_ID = process.env.ONESIGNAL_APP_ID || '';
-const ONESIGNAL_REST_API_KEY = process.env.ONESIGNAL_REST_API_KEY || '';
-const ONESIGNAL_BASE_URL = 'https://onesignal.com/api/v1';
 const CRITERIA_KEYS = ['comfort', 'thrill', 'romance', 'intensity', 'setting'];
 /**
- * Helper to send OneSignal push notification via REST API
- * Security requirement: ONESIGNAL_REST_API_KEY is kept strictly server-side.
+ * Sends push notification to all FCM tokens of targetUid using FCM Admin Multicast.
+ * Uses Application Default Credentials (ADC) - no hardcoded keys.
+ * Automatically removes invalid or unregistered tokens from users/{targetUid}.fcmTokens.
  */
-async function sendOneSignalPush(params) {
+async function sendFcmPush(params) {
     const { targetUid, senderUid, title, message, spotId, coupleId, type } = params;
-    if (!ONESIGNAL_APP_ID || !ONESIGNAL_REST_API_KEY) {
-        logger.warn('[OneSignal] Missing ONESIGNAL_APP_ID or ONESIGNAL_REST_API_KEY in server environment.');
-        return;
-    }
     if (!targetUid) {
-        logger.warn('[OneSignal] Cannot send push notification: missing targetUid.');
+        logger.warn('[FCM Server] Missing targetUid. Notification skipped.');
         return;
     }
-    const payload = {
-        app_id: ONESIGNAL_APP_ID,
-        target_channel: 'push',
-        include_aliases: { external_id: [targetUid] },
-        include_external_user_ids: [targetUid],
-        headings: { en: title, fr: title },
-        contents: { en: message, fr: message },
-        data: {
-            coupleId,
-            spotId,
-            type,
-            senderUid,
-            targetUid,
+    // 1. Fetch user document to read fcmTokens array
+    const userDocRef = db.doc(`users/${targetUid}`);
+    const userSnap = await userDocRef.get();
+    if (!userSnap.exists) {
+        logger.info(`[FCM Server] User doc users/${targetUid} not found.`);
+        return;
+    }
+    const userData = userSnap.data() || {};
+    const tokens = Array.isArray(userData.fcmTokens) ? userData.fcmTokens : [];
+    if (tokens.length === 0) {
+        logger.info(`[FCM Server] No FCM tokens registered for targetUid=${targetUid}.`);
+        return;
+    }
+    logger.info(`[FCM Server] Sending push to ${tokens.length} tokens for targetUid=${targetUid}`);
+    const multicastMessage = {
+        tokens,
+        notification: {
+            title,
+            body: message,
         },
-        ios_sound: 'beep.wav',
-        ios_badgeType: 'Increase',
-        ios_badgeCount: 1,
-        content_available: true,
-        priority: 10,
+        data: {
+            coupleId: String(coupleId || ''),
+            spotId: String(spotId || ''),
+            type: String(type || ''),
+            senderUid: String(senderUid || ''),
+            targetUid: String(targetUid || ''),
+        },
+        apns: {
+            payload: {
+                aps: {
+                    sound: 'beep.wav',
+                    badge: 1,
+                    contentAvailable: true,
+                },
+            },
+        },
+        android: {
+            priority: 'high',
+            notification: {
+                sound: 'default',
+                channelId: 'lovemap_duo',
+            },
+        },
     };
     try {
-        const res = await fetch(`${ONESIGNAL_BASE_URL}/notifications`, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Key ${ONESIGNAL_REST_API_KEY}`,
-                'Content-Type': 'application/json',
-                'Accept': 'application/json',
-            },
-            body: JSON.stringify(payload),
-        });
-        const result = await res.json();
-        logger.info(`[OneSignal] Push sent for targetUid=${targetUid}`, { result });
+        const response = await admin.messaging().sendEachForMulticast(multicastMessage);
+        logger.info(`[FCM Server] Multicast results: ${response.successCount} success, ${response.failureCount} failures.`);
+        // 2. Automatically remove invalid / unregistered tokens
+        if (response.failureCount > 0) {
+            const tokensToRemove = [];
+            response.responses.forEach((resp, idx) => {
+                if (!resp.success) {
+                    const errorCode = resp.error?.code;
+                    logger.warn(`[FCM Server] Token index ${idx} failed with code: ${errorCode}`, resp.error);
+                    if (errorCode === 'messaging/invalid-registration-token' ||
+                        errorCode === 'messaging/registration-token-not-registered' ||
+                        errorCode === 'messaging/invalid-argument') {
+                        tokensToRemove.push(tokens[idx]);
+                    }
+                }
+            });
+            if (tokensToRemove.length > 0) {
+                logger.info(`[FCM Server] Cleaning up ${tokensToRemove.length} stale tokens for targetUid=${targetUid}`);
+                await userDocRef.update({
+                    fcmTokens: admin.firestore.FieldValue.arrayRemove(...tokensToRemove),
+                    updatedAt: new Date().toISOString(),
+                });
+            }
+        }
     }
     catch (err) {
-        logger.error(`[OneSignal] Failed to send push to targetUid=${targetUid}:`, err);
+        logger.error(`[FCM Server] Multicast send error for targetUid=${targetUid}:`, err);
     }
 }
 /**
  * TRIGGER 1: onSpotCreated (v2 Firestore)
  * Pattern: couples/{coupleId}/spots/{spotId}
  * Action:
- * 1. Identifies the creator Firebase UID (createdByUid or creatorUid).
+ * 1. Identifies the creator Firebase UID (creatorUid or createdByUid).
  * 2. Retrieves the couple document to locate the partner UID from memberUids.
  * 3. Creates the in-app notification document with targetUid and senderUid.
- * 4. Sends the OneSignal push notification via REST API with the server-side key.
+ * 4. Dispatches FCM push notification via admin.messaging().sendEachForMulticast().
  */
 exports.onSpotCreated = (0, firestore_1.onDocumentCreated)('couples/{coupleId}/spots/{spotId}', async (event) => {
     const snap = event.data;
@@ -88,8 +118,8 @@ exports.onSpotCreated = (0, firestore_1.onDocumentCreated)('couples/{coupleId}/s
         logger.info(`Spot ${spotId} is solo. Skipping partner notification.`);
         return;
     }
-    // Identify creator UID (migration format)
-    const senderUid = spot.createdByUid || spot.creatorUid || spot.creatorId || '';
+    // Identify creator UID (creatorUid per schema, with fallback)
+    const senderUid = spot.creatorUid || spot.createdByUid || spot.creatorId || '';
     if (!senderUid) {
         logger.warn(`Spot ${spotId} has no creator UID. Skipping notification.`);
         return;
@@ -139,8 +169,8 @@ exports.onSpotCreated = (0, firestore_1.onDocumentCreated)('couples/{coupleId}/s
         updatedAt: now.toISOString(),
         lastNotificationUpdate: Date.now(),
     }).catch((err) => logger.warn('Failed to update couple timestamp:', err));
-    // 2. Send OneSignal push via REST API
-    await sendOneSignalPush({
+    // 2. Send FCM push via Firebase Admin Multicast
+    await sendFcmPush({
         targetUid,
         senderUid,
         title: notificationData.title,
@@ -232,8 +262,9 @@ exports.onSpotUpdated = (0, firestore_1.onDocumentUpdated)('couples/{coupleId}/s
  * Cleans up residual documents associated with the deleted user that were not processed by client deleteAccount:
  * 1. Finds all couples where memberUids contains the deleted user's UID.
  * 2. Deletes spots and notifications subcollections, then deletes the couple document.
- * 3. Deletes any pending inviteCodes created by this user.
- * 4. Deletes the user profile document in users/{deletedUid}.
+ * 3. Deletes any pending inviteCodes owned or created by this user.
+ * 4. Cleans up private/{deletedUid} (sensitive server secrets).
+ * 5. Deletes the user profile document in users/{deletedUid}.
  */
 exports.onAuthUserDeleted = auth.user().onDelete(async (user) => {
     const deletedUid = user.uid;
@@ -263,17 +294,33 @@ exports.onAuthUserDeleted = auth.user().onDelete(async (user) => {
             await coupleDoc.ref.delete();
             logger.info(`[onAuthUserDeleted] Deleted couple doc: ${coupleId}`);
         }
-        // 2. Clean up inviteCodes created by this user
+        // 2. Clean up inviteCodes created/owned by this user
         const inviteCodesQuery = await db.collection('inviteCodes')
-            .where('creatorUid', '==', deletedUid)
+            .where('ownerUid', '==', deletedUid)
             .get();
         if (!inviteCodesQuery.empty) {
             const inviteBatch = db.batch();
             inviteCodesQuery.docs.forEach((doc) => inviteBatch.delete(doc.ref));
             await inviteBatch.commit();
-            logger.info(`[onAuthUserDeleted] Deleted ${inviteCodesQuery.size} inviteCodes for creatorUid: ${deletedUid}`);
+            logger.info(`[onAuthUserDeleted] Deleted ${inviteCodesQuery.size} inviteCodes for ownerUid: ${deletedUid}`);
         }
-        // 3. Clean up user profile document in users/{deletedUid}
+        // Also clean up by legacy creatorUid field if exists
+        const legacyInviteCodesQuery = await db.collection('inviteCodes')
+            .where('creatorUid', '==', deletedUid)
+            .get();
+        if (!legacyInviteCodesQuery.empty) {
+            const legacyBatch = db.batch();
+            legacyInviteCodesQuery.docs.forEach((doc) => legacyBatch.delete(doc.ref));
+            await legacyBatch.commit();
+        }
+        // 3. Clean up private/{deletedUid} (sensitive server secrets like Apple refresh tokens)
+        const privateDocRef = db.doc(`private/${deletedUid}`);
+        const privateDocSnap = await privateDocRef.get();
+        if (privateDocSnap.exists) {
+            await privateDocRef.delete();
+            logger.info(`[onAuthUserDeleted] Deleted private/${deletedUid}`);
+        }
+        // 4. Clean up user profile document in users/{deletedUid}
         const userDocRef = db.doc(`users/${deletedUid}`);
         const userDocSnap = await userDocRef.get();
         if (userDocSnap.exists) {
