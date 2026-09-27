@@ -806,10 +806,35 @@ export async function triggerNativeAppleAuth(): Promise<{
       }
       throw new Error('Jeton d\'authentification Apple non reçu.');
     } catch (e: any) {
-      if (e?.code === 'SIGN_IN_CANCELED' || e?.message?.includes('cancel') || e?.message?.includes('annul')) {
+      const errCode = String(e?.code || "");
+      const errMsg = String(e?.message || e?.errorMessage || "");
+
+      if (
+        errCode === 'SIGN_IN_CANCELED' ||
+        errCode === '1001' ||
+        errMsg.includes('cancel') ||
+        errMsg.includes('annul') ||
+        errMsg.includes('1001')
+      ) {
         console.log('[Native Debug] Native AppleSignIn cancelled by user');
         throw new Error('Connexion Apple annulée');
       }
+
+      if (
+        errCode === '1000' ||
+        errMsg.includes('error 1000') ||
+        errMsg.includes('Code=1000') ||
+        errMsg.includes('AuthenticationServices.AuthorizationError')
+      ) {
+        console.warn(
+          '[Native Debug] Native AppleSignIn Code 1000 (Compte Apple non connecté sur le simulateur/appareil ou Capability "Sign in with Apple" manquante dans Xcode).',
+          e
+        );
+        throw new Error(
+          'Connexion Apple impossible (Code 1000). Sur simulateur, connectez un compte Apple dans Réglages > Connectez-vous à votre iPhone. Sur appareil réel, vérifiez que la capability "Sign in with Apple" est bien active dans Xcode (Signing & Capabilities).'
+        );
+      }
+
       console.warn('[Native Debug] Native AppleSignIn error:', e);
       throw e;
     }
