@@ -1539,12 +1539,20 @@ export async function deleteNotificationFromFirestore(code: string, notifId: str
 }
 
 /**
- * Calls the Cloud Function 'deleteAccount' (region: 'europe-west1').
- * Securely deletes user account, couple documents, subcollections, invite codes, private secrets and Auth record on server.
+ * Executes server-side account deletion with Firebase Admin SDK:
+ * 1. Attempts Cloud Function deleteAccount (region: europe-west1)
+ * 2. Fallbacks to Cloud Run backend endpoint (/api/account/delete) with Bearer ID token
  */
 export async function deleteMyAccount(): Promise<void> {
-  console.log('[deleteMyAccount] Invoking deleteAccount Cloud Function (europe-west1)...');
+  console.log('[deleteMyAccount] Starting server-side account deletion...');
+  const currentUser = auth.currentUser || getEffectiveUser();
+  const uid = currentUser?.uid;
 
+  if (!uid) {
+    throw new Error('Utilisateur non identifié.');
+  }
+
+  // 1. Try Native / Web FirebaseFunctions callable first
   if (isCapacitorNative()) {
     try {
       const res = await FirebaseFunctions.callByName({
@@ -1555,19 +1563,52 @@ export async function deleteMyAccount(): Promise<void> {
       console.log('[deleteMyAccount] Native FirebaseFunctions result:', res);
       return;
     } catch (nativeErr: any) {
-      console.warn('[deleteMyAccount] Native FirebaseFunctions notice, attempting Web SDK fallback:', nativeErr);
+      console.warn('[deleteMyAccount] Native FirebaseFunctions notice:', nativeErr?.message || nativeErr);
+    }
+  } else {
+    try {
+      const functionsInstance = getFunctions(app, 'europe-west1');
+      const deleteAccountFn = httpsCallable(functionsInstance, 'deleteAccount');
+      const result = await deleteAccountFn({});
+      console.log('[deleteMyAccount] Web Cloud Function result:', result.data);
+      return;
+    } catch (webErr: any) {
+      console.warn('[deleteMyAccount] Web Cloud Function notice:', webErr?.message || webErr);
     }
   }
 
-  // Web SDK fallback
+  // 2. High-reliability Cloud Run Server Admin SDK endpoint fallback
+  console.log('[deleteMyAccount] Calling Cloud Run backend delete endpoint (/api/account/delete)...');
   try {
-    const functionsInstance = getFunctions(app, 'europe-west1');
-    const deleteAccountFn = httpsCallable(functionsInstance, 'deleteAccount');
-    const result = await deleteAccountFn({});
-    console.log('[deleteMyAccount] Web Cloud Function result:', result.data);
-  } catch (webErr: any) {
-    console.error('[deleteMyAccount] Cloud Function failed:', webErr);
-    throw new Error(webErr?.message || 'Erreur lors de la suppression de votre compte.');
+    let idToken = '';
+    if (auth.currentUser && typeof auth.currentUser.getIdToken === 'function') {
+      idToken = await auth.currentUser.getIdToken(true).catch(() => '');
+    }
+
+    const targetUrl = getBackendApiUrl('/api/account/delete');
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (idToken) {
+      headers['Authorization'] = `Bearer ${idToken}`;
+    }
+
+    const res = await fetch(targetUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ uid }),
+    });
+
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData?.error || `Erreur serveur (${res.status})`);
+    }
+
+    const data = await res.json();
+    console.log('[deleteMyAccount] Cloud Run backend delete completed:', data);
+  } catch (apiErr: any) {
+    console.error('[deleteMyAccount] Final deletion attempt error:', apiErr);
+    throw new Error(apiErr?.message || 'Erreur lors de la suppression de votre compte.');
   }
 }
 
