@@ -239,10 +239,9 @@ export const CoupleSettingsModal: React.FC<CoupleSettingsModalProps> = ({
   };
 
   const handleCopyCode = () => {
-    triggerHaptic('medium');
-    triggerHeartBurst(0.5, 0.5);
-    copyToClipboard(couple.code);
+    triggerHaptic('light');
     setCopiedCode(true);
+    copyToClipboard(couple.code).catch(() => {});
     setTimeout(() => setCopiedCode(false), 2000);
   };
 

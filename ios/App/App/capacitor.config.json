@@ -11,6 +11,7 @@
 		"FirebaseFirestorePlugin",
 		"FirebaseMessagingPlugin",
 		"AppPlugin",
+		"ClipboardPlugin",
 		"GeolocationPlugin",
 		"LocalNotificationsPlugin",
 		"AppReviewPlugin",

@@ -92,11 +92,10 @@ export const DuoView: React.FC<DuoViewProps> = ({
   const isPaired = (partnerB.name || '') !== 'En attente...' && couple?.status !== 'broken';
 
   const handleCopyCode = () => {
-    triggerHaptic('medium');
-    triggerHeartBurst(0.5, 0.5);
-    copyToClipboard(couple.code);
+    triggerHaptic('light');
     setCopiedCode(true);
     onToast('Code Duo copié dans le presse-papier !');
+    copyToClipboard(couple.code).catch(() => {});
     setTimeout(() => setCopiedCode(false), 2000);
   };
 

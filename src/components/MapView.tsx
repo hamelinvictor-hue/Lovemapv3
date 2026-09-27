@@ -675,12 +675,21 @@ export const MapView: React.FC<MapViewProps> = ({
       });
     };
 
-    renderClusteredMarkers();
+    let rafId: number | null = null;
+    const scheduleRender = () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        renderClusteredMarkers();
+        rafId = null;
+      });
+    };
 
-    map.on('zoomend moveend', renderClusteredMarkers);
+    scheduleRender();
+    map.on('zoomend moveend', scheduleRender);
 
     return () => {
-      map.off('zoomend moveend', renderClusteredMarkers);
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      map.off('zoomend moveend', scheduleRender);
     };
   }, [filteredSpots, selectedSpotId, appMode, tileMode, activePartnerId, onOpenValidation, onSelectSpot]);
 

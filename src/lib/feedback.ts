@@ -3,7 +3,6 @@ import confetti from 'canvas-confetti';
 /**
  * Declares vibration / haptic feedback types and canvas confetti bursts
  */
-
 export type HapticType = 'selection' | 'light' | 'medium' | 'heavy' | 'success' | 'double' | 'heartbeat' | 'error';
 
 export function triggerHaptic(type: HapticType = 'light') {
@@ -42,32 +41,38 @@ export function triggerHaptic(type: HapticType = 'light') {
 }
 
 export function triggerConfetti(originY = 0.6) {
-  try {
-    confetti({
-      particleCount: 70,
-      spread: 60,
-      origin: { y: originY },
-      colors: ['#f43f5e', '#ec4899', '#f59e0b', '#10b981', '#3b82f6'],
-      disableForReducedMotion: true,
-    });
-  } catch {
-    // Ignore canvas errors
-  }
+  if (typeof window === 'undefined') return;
+  requestAnimationFrame(() => {
+    try {
+      confetti({
+        particleCount: 40,
+        spread: 50,
+        origin: { y: originY },
+        colors: ['#f43f5e', '#ec4899', '#f59e0b', '#10b981', '#3b82f6'],
+        disableForReducedMotion: true,
+      });
+    } catch {
+      // Ignore canvas errors
+    }
+  });
 }
 
 export function triggerHeartBurst(x = 0.5, y = 0.5) {
-  try {
-    confetti({
-      particleCount: 35,
-      angle: 90,
-      spread: 50,
-      origin: { x, y },
-      colors: ['#f43f5e', '#f472b6', '#fb7185', '#ffe4e6'],
-      shapes: ['square'],
-      scalar: 1.2,
-      disableForReducedMotion: true,
-    });
-  } catch {
-    // Ignore canvas errors
-  }
+  if (typeof window === 'undefined') return;
+  requestAnimationFrame(() => {
+    try {
+      confetti({
+        particleCount: 20,
+        angle: 90,
+        spread: 40,
+        origin: { x, y },
+        colors: ['#f43f5e', '#f472b6', '#fb7185', '#ffe4e6'],
+        shapes: ['square'],
+        scalar: 1.0,
+        disableForReducedMotion: true,
+      });
+    } catch {
+      // Ignore canvas errors
+    }
+  });
 }

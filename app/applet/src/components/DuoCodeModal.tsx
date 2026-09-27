@@ -1,6 +1,7 @@
-import { copyToClipboard } from '../lib/clipboard';
 import React, { useState } from 'react';
-import { X, Heart, Copy, Check, Share2, Sparkles, Send, ShieldCheck } from 'lucide-react';
+import { X, Copy, Check, Share2, Sparkles, ShieldCheck } from 'lucide-react';
+import { copyToClipboard } from '../lib/clipboard';
+import { triggerHaptic } from '../lib/feedback';
 
 interface DuoCodeModalProps {
   isOpen: boolean;
@@ -19,9 +20,11 @@ export const DuoCodeModal: React.FC<DuoCodeModalProps> = ({
 
   if (!isOpen) return null;
 
-  const handleCopy = async () => {
+  const handleCopy = () => {
+    triggerHaptic('light');
     setCopied(true);
-    await copyToClipboard(code);
+    // Non-blocking fire-and-forget clipboard write with 0ms UI delay
+    copyToClipboard(code).catch(() => {});
     setTimeout(() => setCopied(false), 2500);
   };
 
@@ -30,7 +33,6 @@ export const DuoCodeModal: React.FC<DuoCodeModalProps> = ({
       title: 'LoveMap - Rejoins mon espace Duo 💖',
       text: `Coucou ! Rejoins notre carte secrète de couple sur LoveMap avec mon code unique : ${code}`,
     };
-
     if (navigator.share) {
       try {
         await navigator.share(shareData);
