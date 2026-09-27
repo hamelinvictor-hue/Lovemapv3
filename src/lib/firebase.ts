@@ -1675,32 +1675,9 @@ export function subscribeToCouple(code: string, callback: (couple: CouplePair | 
     );
   } catch (e) {}
 
-  const onVisibilityChange = () => {
-    if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
-      fetchCoupleDirect();
-    }
-  };
-  const onFocus = () => { fetchCoupleDirect(); };
-  const onNativeResume = () => { fetchCoupleDirect(); };
-
-  if (typeof window !== 'undefined') {
-    window.addEventListener('focus', onFocus);
-    window.addEventListener('native-app-resume', onNativeResume);
-  }
-  if (typeof document !== 'undefined') {
-    document.addEventListener('visibilitychange', onVisibilityChange);
-  }
-
   return () => {
     isDisposed = true;
     if (unsubSnapshot) unsubSnapshot();
-    if (typeof window !== 'undefined') {
-      window.removeEventListener('focus', onFocus);
-      window.removeEventListener('native-app-resume', onNativeResume);
-    }
-    if (typeof document !== 'undefined') {
-      document.removeEventListener('visibilitychange', onVisibilityChange);
-    }
   };
 }
 
@@ -1791,32 +1768,9 @@ export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void
 
   fetchSpotsDirect();
 
-  const onVisibilityChange = () => {
-    if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
-      fetchSpotsDirect();
-    }
-  };
-  const onFocus = () => { fetchSpotsDirect(); };
-  const onNativeResume = () => { fetchSpotsDirect(); };
-
-  if (typeof window !== 'undefined') {
-    window.addEventListener('focus', onFocus);
-    window.addEventListener('native-app-resume', onNativeResume);
-  }
-  if (typeof document !== 'undefined') {
-    document.addEventListener('visibilitychange', onVisibilityChange);
-  }
-
   return () => {
     isDisposed = true;
     if (unsubSnapshot) unsubSnapshot();
-    if (typeof window !== 'undefined') {
-      window.removeEventListener('focus', onFocus);
-      window.removeEventListener('native-app-resume', onNativeResume);
-    }
-    if (typeof document !== 'undefined') {
-      document.removeEventListener('visibilitychange', onVisibilityChange);
-    }
   };
 }
 
@@ -1870,32 +1824,9 @@ export function subscribeToNotifications(code: string, callback: (notifs: Notifi
 
   fetchNotifsDirect();
 
-  const onVisibilityChange = () => {
-    if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
-      fetchNotifsDirect();
-    }
-  };
-  const onFocus = () => { fetchNotifsDirect(); };
-  const onNativeResume = () => { fetchNotifsDirect(); };
-
-  if (typeof window !== 'undefined') {
-    window.addEventListener('focus', onFocus);
-    window.addEventListener('native-app-resume', onNativeResume);
-  }
-  if (typeof document !== 'undefined') {
-    document.addEventListener('visibilitychange', onVisibilityChange);
-  }
-
   return () => {
     isDisposed = true;
     if (unsubSnapshot) unsubSnapshot();
-    if (typeof window !== 'undefined') {
-      window.removeEventListener('focus', onFocus);
-      window.removeEventListener('native-app-resume', onNativeResume);
-    }
-    if (typeof document !== 'undefined') {
-      document.removeEventListener('visibilitychange', onVisibilityChange);
-    }
   };
 }
 
