@@ -76,6 +76,22 @@ export const DuoView: React.FC<DuoViewProps> = ({
   const [isJoiningDuo, setIsJoiningDuo] = useState(false);
   const [duoCodeError, setDuoCodeError] = useState<string | null>(null);
 
+  const handleJoinDuo = async () => {
+    const clean = duoCodeInput.trim().toUpperCase();
+    if (!clean || !onJoinDuoCode) return;
+    (document.activeElement as HTMLElement)?.blur();
+    setIsJoiningDuo(true);
+    setDuoCodeError(null);
+    try {
+      await onJoinDuoCode(clean);
+      setDuoCodeInput('');
+    } catch (err: any) {
+      setDuoCodeError(err?.message || 'Code invalide ou introuvable.');
+    } finally {
+      setIsJoiningDuo(false);
+    }
+  };
+
   const partnerA = couple?.partnerA || {
     id: 'partner_a',
     name: 'Partenaire 1',
