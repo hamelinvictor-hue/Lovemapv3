@@ -81,142 +81,6 @@ export const db = !isCapacitorNative() ? getFirestoreDb() : null;
 
 
 
-// ============================================================================
-// DIRECT FIRESTORE REST API CLIENT (Native fetch, zero WKWebView hangs, <80ms latency)
-// ============================================================================
-
-const FIRESTORE_REST_BASE = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${firebaseConfig.firestoreDatabaseId || '(default)'}/documents`;
-
-// Helper to convert Firestore format to standard JSON
-function fromFirestoreDoc(doc: any): any {
-  const data: any = {};
-  if (!doc || !doc.fields) return data;
-  for (const [key, value] of Object.entries(doc.fields)) {
-    const val = value as any;
-    if (val.stringValue !== undefined) data[key] = val.stringValue;
-    else if (val.integerValue !== undefined) data[key] = Number(val.integerValue);
-    else if (val.doubleValue !== undefined) data[key] = Number(val.doubleValue);
-    else if (val.booleanValue !== undefined) data[key] = Boolean(val.booleanValue);
-    else if (val.mapValue !== undefined) data[key] = fromFirestoreDoc({ fields: val.mapValue.fields });
-    else if (val.arrayValue !== undefined) {
-      data[key] = (val.arrayValue.values || []).map((v: any) => {
-        if (v.stringValue !== undefined) return v.stringValue;
-        if (v.mapValue !== undefined) return fromFirestoreDoc({ fields: v.mapValue.fields });
-        return v; // Simplify for now
-      });
-    }
-  }
-  return data;
-}
-
-function toFirestoreValue(value: any): any {
-  if (typeof value === 'string') return { stringValue: value };
-  if (typeof value === 'number') return Number.isInteger(value) ? { integerValue: value } : { doubleValue: value };
-  if (typeof value === 'boolean') return { booleanValue: value };
-  if (Array.isArray(value)) return { arrayValue: { values: value.map(toFirestoreValue) } };
-  if (value && typeof value === 'object') {
-    const fields: any = {};
-    for (const [k, v] of Object.entries(value)) {
-      if (v !== undefined) fields[k] = toFirestoreValue(v);
-    }
-    return { mapValue: { fields } };
-  }
-  return { nullValue: null };
-}
-
-export async function restGetDoc(docPath: string): Promise<any | null> {
-  try {
-    const cleanPath = docPath.startsWith('/') ? docPath.slice(1) : docPath;
-    const res = await fetch(`${FIRESTORE_REST_BASE}/${cleanPath}?key=${firebaseConfig.apiKey}`, {
-      cache: 'no-store',
-    });
-    if (!res.ok) return null;
-    const json = await res.json();
-    return fromFirestoreDoc(json);
-  } catch (e) {
-    return null;
-  }
-}
-
-export async function restSetDoc(docPath: string, data: any, merge: boolean = true): Promise<boolean> {
-  try {
-    const cleanPath = docPath.startsWith('/') ? docPath.slice(1) : docPath;
-    const fields: Record<string, any> = {};
-    const fieldMasks: string[] = [];
-    for (const [k, v] of Object.entries(data)) {
-      if (v !== undefined) {
-        fields[k] = toFirestoreValue(v);
-        fieldMasks.push(`updateMask.fieldPaths=${encodeURIComponent(k)}`);
-      }
-    }
-    const maskQuery = merge && fieldMasks.length > 0 ? `&${fieldMasks.join('&')}` : '';
-    const res = await fetch(`${FIRESTORE_REST_BASE}/${cleanPath}?key=${firebaseConfig.apiKey}${maskQuery}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fields }),
-      cache: 'no-store',
-    });
-    return res.ok;
-  } catch (e) {
-    return false;
-  }
-}
-
-export async function restDeleteDoc(docPath: string): Promise<boolean> {
-  try {
-    const cleanPath = docPath.startsWith('/') ? docPath.slice(1) : docPath;
-    const res = await fetch(`${FIRESTORE_REST_BASE}/${cleanPath}?key=${firebaseConfig.apiKey}`, {
-      method: 'DELETE',
-      cache: 'no-store',
-    });
-    return res.ok;
-  } catch (e) {
-    return false;
-  }
-}
-
-export async function restListDocs(collectionPath: string): Promise<any[] | null> {
-  try {
-    const cleanPath = collectionPath.startsWith('/') ? collectionPath.slice(1) : collectionPath;
-    const parts = cleanPath.split('/');
-    if (parts.length % 2 === 0) return null; // Must be a collection path
-
-    const collectionId = parts.pop();
-    const parentPath = parts.join('/');
-    const urlPath = parentPath ? `${parentPath}:runQuery` : ':runQuery';
-
-    const res = await fetch(`${FIRESTORE_REST_BASE}/${urlPath}?key=${firebaseConfig.apiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        structuredQuery: {
-          from: [{ collectionId }]
-        }
-      }),
-      cache: 'no-store',
-    });
-    
-    if (!res.ok) return null;
-    const json = await res.json();
-    
-    const results: any[] = [];
-    if (Array.isArray(json)) {
-      for (const item of json) {
-        if (item.document) {
-          const d = item.document;
-          const data = fromFirestoreDoc(d);
-          const nameParts = (d.name || '').split('/');
-          const id = nameParts[nameParts.length - 1];
-          results.push({ ...data, id: data?.id || id });
-        }
-      }
-    }
-    return results;
-  } catch (e) {
-    return null;
-  }
-}
-
 export const googleProvider = new GoogleAuthProvider();
 // Force Google to prompt account selection every single time
 googleProvider.setCustomParameters({
@@ -845,9 +709,7 @@ export async function ensureCoupleRoomInFirestore(
     if (adapterDoc && adapterDoc.exists) {
       existingData = adapterDoc.data();
     }
-    if (!existingData) {
-      existingData = await restGetDoc(`couples/${cleanCode}`);
-    }
+    
 
     if (!existingData) {
       const memberUids = [user.uid];
@@ -868,7 +730,7 @@ export async function ensureCoupleRoomInFirestore(
       await adapterWriteDocument(`couples/${cleanCode}`, newRoom, { merge: true }).catch((err) => {
         console.warn('[ensureCoupleRoom] adapterWriteDocument notice:', err?.message);
       });
-      restSetDoc(`couples/${cleanCode}`, newRoom).catch(() => {});
+      
       verifiedRoomsCache.add(cleanCode);
       return coupleWithCleanCode;
     } else {
@@ -886,7 +748,7 @@ export async function ensureCoupleRoomInFirestore(
         await adapterWriteDocument(`couples/${cleanCode}`, updatePayload, { merge: true }).catch((err) => {
           console.warn('[ensureCoupleRoom] update members notice:', err?.message);
         });
-        restSetDoc(`couples/${cleanCode}`, updatePayload).catch(() => {});
+        
       }
       verifiedRoomsCache.add(cleanCode);
 
@@ -968,9 +830,7 @@ export async function createCoupleInFirestore(
   if (adapterDoc && adapterDoc.exists) {
     snapData = adapterDoc.data();
   }
-  if (!snapData) {
-    snapData = await restGetDoc(`couples/${code}`).catch(() => null);
-  }
+  
 
   if (snapData) {
     const existingData = snapData as CouplePair & { memberUids?: string[], ownerEmail?: string };
@@ -1000,7 +860,7 @@ export async function createCoupleInFirestore(
     await adapterWriteDocument(`couples/${code}`, updatePayload, { merge: true }).catch((err) => {
       console.warn('[createCouple] adapterWriteDocument notice:', err?.message);
     });
-    restSetDoc(`couples/${code}`, updatePayload).catch(() => {});
+    
     verifiedRoomsCache.add(code);
     return { couple: updatedCouple, isExisting: true };
   }
@@ -1046,7 +906,7 @@ export async function createCoupleInFirestore(
     await adapterWriteDocument(`couples/${code}`, coupleData, { merge: true }).catch((err) => {
       console.warn('[createCouple] adapterWriteDocument notice:', err?.message);
     });
-    restSetDoc(`couples/${code}`, coupleData, false).catch(() => {});
+    
   } catch (err: any) {
     console.warn('[createCouple] Non-fatal setDoc notice (proceeding):', err);
   }
@@ -1124,13 +984,7 @@ export async function joinCoupleInFirestore(
         console.log('[SYNC-DEBUG] Found couple document via firestoreAdapter:', cand);
         break;
       }
-      const restDoc = await restGetDoc(`couples/${cand}`);
-      if (restDoc && (restDoc.code || restDoc.partnerA)) {
-        targetData = restDoc;
-        targetCode = cand;
-        console.log('[SYNC-DEBUG] Found couple document via REST:', cand);
-        break;
-      }
+      
     } catch (e: any) {
       console.warn(`[SYNC-DEBUG] Candidate ${cand} check notice:`, e?.message);
     }
@@ -1159,7 +1013,7 @@ export async function joinCoupleInFirestore(
   }
 
   if (!targetData) {
-    console.error(`[DUO-SYNC-ERROR] not-found Code de duo introuvable (${rawClean})`);
+    console.warn(`[DUO-SYNC-WARNING] not-found Code de duo introuvable (${rawClean})`);
     throw new Error(`Code de duo introuvable (${rawClean}). Vérifiez que le code correspond bien à celui affiché sur le téléphone de votre partenaire.`);
   }
 
@@ -1196,7 +1050,7 @@ export async function joinCoupleInFirestore(
   await adapterWriteDocument(`couples/${targetCode}`, updateData, { merge: true }).catch((err) => {
     console.warn('[joinCouple] adapterWriteDocument notice:', err?.message);
   });
-  restSetDoc(`couples/${targetCode}`, updateData, true).catch(() => {});
+  
 
   const couple: CouplePair = {
     ...targetData,
@@ -1229,20 +1083,14 @@ export async function joinCoupleInFirestore(
     if (adapterSpots && adapterSpots.length > 0) {
       spots = adapterSpots.filter((s) => s.exists && s.val).map((s) => s.data() as Spot);
     } else {
-      const restSpots = await restListDocs(`couples/${targetCode}/spots`);
-      if (restSpots && restSpots.length > 0) {
-        spots = restSpots as Spot[];
-      }
+      
     }
 
     const adapterNotifs = await withTimeout(adapterGetCollection<NotificationItem>(`couples/${targetCode}/notifications`), 3500, null);
     if (adapterNotifs && adapterNotifs.length > 0) {
       notifications = adapterNotifs.filter((s) => s.exists && s.val).map((s) => s.data() as NotificationItem);
     } else {
-      const restNotifs = await restListDocs(`couples/${targetCode}/notifications`);
-      if (restNotifs && restNotifs.length > 0) {
-        notifications = restNotifs as NotificationItem[];
-      }
+      
     }
   } catch (err: any) {
     console.warn('[SYNC-DEBUG] Notice while fetching subcollections:', err?.code, err?.message);
@@ -1254,116 +1102,12 @@ export async function joinCoupleInFirestore(
 
 // Search Firestore to automatically restore an existing user's couple room upon re-login
 
-export async function restFindUserCouple(uid: string, email: string | null): Promise<any | null> {
-  try {
-    const candidates = [uid, `apple_${uid}`, `google_${uid}`];
-    if (email) candidates.push(email);
-
-    for (const cand of candidates) {
-      // 1. Try ownerUid
-      let res = await fetch(`${FIRESTORE_REST_BASE}:runQuery?key=${firebaseConfig.apiKey}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          structuredQuery: {
-            from: [{ collectionId: 'couples' }],
-            where: {
-              fieldFilter: {
-                field: { fieldPath: 'ownerUid' },
-                op: 'EQUAL',
-                value: { stringValue: cand }
-              }
-            },
-            limit: 1
-          }
-        }),
-        cache: 'no-store'
-      });
-      if (res.ok) {
-        const json = await res.json();
-        if (Array.isArray(json) && json[0]?.document) {
-           return fromFirestoreDoc(json[0].document);
-        }
-      }
-
-      // 2. Try array-contains memberUids
-      res = await fetch(`${FIRESTORE_REST_BASE}:runQuery?key=${firebaseConfig.apiKey}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          structuredQuery: {
-            from: [{ collectionId: 'couples' }],
-            where: {
-              fieldFilter: {
-                field: { fieldPath: 'memberUids' },
-                op: 'ARRAY_CONTAINS',
-                value: { stringValue: cand }
-              }
-            },
-            limit: 1
-          }
-        }),
-        cache: 'no-store'
-      });
-      if (res.ok) {
-        const json = await res.json();
-        if (Array.isArray(json) && json[0]?.document) {
-           return fromFirestoreDoc(json[0].document);
-        }
-      }
-      
-      // 3. Try ownerEmail
-      res = await fetch(`${FIRESTORE_REST_BASE}:runQuery?key=${firebaseConfig.apiKey}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          structuredQuery: {
-            from: [{ collectionId: 'couples' }],
-            where: {
-              fieldFilter: {
-                field: { fieldPath: 'ownerEmail' },
-                op: 'EQUAL',
-                value: { stringValue: cand }
-              }
-            },
-            limit: 1
-          }
-        }),
-        cache: 'no-store'
-      });
-      if (res.ok) {
-        const json = await res.json();
-        if (Array.isArray(json) && json[0]?.document) {
-           return fromFirestoreDoc(json[0].document);
-        }
-      }
-    }
-  } catch (e) {
-    return null;
-  }
-  return null;
-}
-
 export async function findUserCoupleInFirestore(
   user: User
 ): Promise<{ couple: CouplePair; partnerId: PartnerId } | null> {
   if (!user || !user.uid) return null;
 
-  try {
-    const restDoc = await restFindUserCouple(user.uid, user.email || null);
-    if (restDoc) {
-      console.log('[SYNC-DEBUG] Found existing couple via REST Query');
-      let partnerId: PartnerId = 'partner_a';
-      if (restDoc.partnerBUid === user.uid || restDoc.partnerBUid === `apple_${user.uid}` || restDoc.partnerBUid === `google_${user.uid}`) {
-         partnerId = 'partner_b';
-      }
-      return { couple: restDoc as CouplePair, partnerId };
-    }
-  } catch (e) {
-    console.warn('REST find user couple notice:', e);
-  }
-
-  // Fallback to SDK...
+  // Search couple via firestoreAdapter queries
   try {
     let foundDoc: any = null;
     let partnerId: PartnerId = 'partner_a';
@@ -1515,7 +1259,7 @@ export async function findUserCoupleInFirestore(
         }
         
         adapterWriteDocument(`couples/${docId}`, updatePayload, { merge: true }).catch(() => {});
-        await restSetDoc(`couples/${docId}`, updatePayload);
+        
         docData.memberUids = updatedMembers;
       }
 
@@ -1543,7 +1287,7 @@ export async function updateCoupleInFirestore(code: string, updated: CouplePair)
   adapterWriteDocument(`couples/${cleanCode}`, cleaned, { merge: true }).catch((err) => {
     console.warn('[updateCouple] adapterWriteDocument notice:', err?.message);
   });
-  restSetDoc(`couples/${cleanCode}`, cleaned).catch(() => {});
+  
   verifiedRoomsCache.add(cleanCode);
   console.log('[Firebase] Couple updated successfully');
 }
@@ -1570,7 +1314,7 @@ export async function savePushTokenToFirestore(code: string, partnerId: PartnerI
     await adapterWriteDocument(`couples/${cleanCode}`, updatePayload, { merge: true }).catch((err) => {
       console.warn('[savePushTokenToFirestore] adapterWriteDocument notice:', err?.message);
     });
-    restSetDoc(`couples/${cleanCode}`, updatePayload).catch(() => {});
+    
     savedPushTokensCache.set(cacheKey, token);
     console.log('[savePushTokenToFirestore] Device push token saved for', partnerId);
   } catch (e) {
@@ -1613,7 +1357,7 @@ export async function breakCoupleInFirestore(code: string, breakerName: string) 
       updatedAt: new Date().toISOString(),
     });
     adapterWriteDocument(`couples/${cleanCode}`, payload, { merge: true }).catch(() => {});
-    await restSetDoc(`couples/${cleanCode}`, payload);
+    
   } catch (err) {
     console.warn('Error breaking couple in Firestore:', err);
   }
@@ -1635,29 +1379,7 @@ export function subscribeToCouple(code: string, callback: (couple: CouplePair | 
     callback(data);
   };
 
-  // 1. Direct fetch helper on mobile resume / window focus
-  const fetchCoupleDirect = async () => {
-    if (isDisposed) return;
-    try {
-      const snap = await withTimeout(adapterGetDocument<CouplePair>(`couples/${cleanCode}`), 3000, null);
-      if (snap && snap.exists && snap.val) {
-        handleUpdate(snap.data());
-        return;
-      }
-      const restDoc = await restGetDoc(`couples/${cleanCode}`);
-      if (restDoc !== null) {
-        handleUpdate(restDoc as CouplePair);
-        return;
-      }
-      if (snap && !snap.exists) {
-        handleUpdate(null);
-      }
-    } catch (e) {}
-  };
-
-  fetchCoupleDirect();
-
-  // 2. Realtime listener via firestoreAdapter (Native on iOS, Modular JS on Web)
+  // Realtime listener via firestoreAdapter (Native on iOS, Modular JS on Web)
   let unsubSnapshot: (() => void) | null = null;
   try {
     unsubSnapshot = watchDocument<CouplePair>(
@@ -1691,13 +1413,10 @@ export async function saveSpotToFirestore(code: string, spot: Spot) {
     console.warn('[Firebase] adapterWriteDocument spot notice:', err?.message);
   });
 
-  // REST fallback
-  restSetDoc(`couples/${cleanCode}/spots/${spot.id}`, cleanedSpot, false).catch(() => {});
+  
   
   // Update parent couple timestamp to notify partner
-  adapterPatchDocument(`couples/${cleanCode}`, { updatedAt: new Date().toISOString(), lastSpotUpdate: Date.now() }).catch(() => {
-    restSetDoc(`couples/${cleanCode}`, { updatedAt: new Date().toISOString(), lastSpotUpdate: Date.now() }).catch(() => {});
-  });
+  adapterPatchDocument(`couples/${cleanCode}`, { updatedAt: new Date().toISOString(), lastSpotUpdate: Date.now() }).catch(() => {});
 
   console.log('[Firebase] Spot saved successfully:', spot.id);
   return true;
@@ -1711,11 +1430,9 @@ export async function deleteSpotFromFirestore(code: string, spotId: string) {
   adapterDeleteDocument(`couples/${cleanCode}/spots/${spotId}`).catch((err) => {
     console.warn('[Firebase] adapterDeleteDocument spot notice:', err?.message);
   });
-  restDeleteDoc(`couples/${cleanCode}/spots/${spotId}`).catch(() => {});
+  
 
-  adapterPatchDocument(`couples/${cleanCode}`, { updatedAt: new Date().toISOString(), lastSpotUpdate: Date.now() }).catch(() => {
-    restSetDoc(`couples/${cleanCode}`, { updatedAt: new Date().toISOString(), lastSpotUpdate: Date.now() }).catch(() => {});
-  });
+  adapterPatchDocument(`couples/${cleanCode}`, { updatedAt: new Date().toISOString(), lastSpotUpdate: Date.now() }).catch(() => {});
 
   console.log('[Firebase] Spot deleted successfully:', spotId);
   return true;
@@ -1747,26 +1464,7 @@ export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void
     );
   } catch (e) {}
 
-  // 2. Direct fetch helper
-  const fetchSpotsDirect = async () => {
-    if (isDisposed) return;
-    try {
-      const adapterSnaps = await withTimeout(adapterGetCollection<Spot>(collectionPath), 3500, null);
-      if (adapterSnaps && !isDisposed && adapterSnaps.length > 0) {
-        const list = adapterSnaps
-          .filter((s) => s.exists && s.val)
-          .map((s) => s.data() as Spot);
-        callback(list);
-        return;
-      }
-      const restSpots = await restListDocs(`couples/${cleanCode}/spots`);
-      if (restSpots !== null && !isDisposed) {
-        callback(restSpots as Spot[]);
-      }
-    } catch (e) {}
-  };
-
-  fetchSpotsDirect();
+  
 
   return () => {
     isDisposed = true;
@@ -1800,29 +1498,7 @@ export function subscribeToNotifications(code: string, callback: (notifs: Notifi
     );
   } catch (e) {}
 
-  // 2. Direct fetch helper
-  const fetchNotifsDirect = async () => {
-    if (isDisposed) return;
-    try {
-      const adapterSnaps = await withTimeout(adapterGetCollection<NotificationItem>(collectionPath), 3500, null);
-      if (adapterSnaps && !isDisposed && adapterSnaps.length > 0) {
-        const notifs = adapterSnaps
-          .filter((s) => s.exists && s.val)
-          .map((s) => s.data() as NotificationItem);
-        notifs.sort((a, b) => new Date((b as any).createdAt || 0).getTime() - new Date((a as any).createdAt || 0).getTime());
-        callback(notifs);
-        return;
-      }
-      const restNotifs = await restListDocs(`couples/${cleanCode}/notifications`);
-      if (restNotifs !== null && !isDisposed) {
-        const notifs = restNotifs as NotificationItem[];
-        notifs.sort((a, b) => new Date((b as any).createdAt || 0).getTime() - new Date((a as any).createdAt || 0).getTime());
-        callback(notifs);
-      }
-    } catch (e) {}
-  };
-
-  fetchNotifsDirect();
+  
 
   return () => {
     isDisposed = true;
@@ -1839,11 +1515,9 @@ export async function saveNotificationToFirestore(code: string, notif: Notificat
   adapterWriteDocument(`couples/${cleanCode}/notifications/${notif.id}`, cleanedNotif, { merge: true }).catch((err) => {
     console.warn('[Firebase] adapterWriteDocument notif notice:', err?.message);
   });
-  restSetDoc(`couples/${cleanCode}/notifications/${notif.id}`, cleanedNotif, false).catch(() => {});
   
-  adapterPatchDocument(`couples/${cleanCode}`, { updatedAt: new Date().toISOString(), lastNotificationUpdate: Date.now() }).catch(() => {
-    restSetDoc(`couples/${cleanCode}`, { updatedAt: new Date().toISOString(), lastNotificationUpdate: Date.now() }).catch(() => {});
-  });
+  
+  adapterPatchDocument(`couples/${cleanCode}`, { updatedAt: new Date().toISOString(), lastNotificationUpdate: Date.now() }).catch(() => {});
   
   return true;
 }
@@ -1855,11 +1529,9 @@ export async function deleteNotificationFromFirestore(code: string, notifId: str
   adapterDeleteDocument(`couples/${cleanCode}/notifications/${notifId}`).catch((err) => {
     console.warn('[Firebase] adapterDeleteDocument notif notice:', err?.message);
   });
-  restDeleteDoc(`couples/${cleanCode}/notifications/${notifId}`).catch(() => {});
   
-  adapterPatchDocument(`couples/${cleanCode}`, { updatedAt: new Date().toISOString(), lastNotificationUpdate: Date.now() }).catch(() => {
-    restSetDoc(`couples/${cleanCode}`, { updatedAt: new Date().toISOString(), lastNotificationUpdate: Date.now() }).catch(() => {});
-  });
+  
+  adapterPatchDocument(`couples/${cleanCode}`, { updatedAt: new Date().toISOString(), lastNotificationUpdate: Date.now() }).catch(() => {});
   
   return true;
 }
@@ -1912,7 +1584,7 @@ export async function deleteUserAccountInFirestore(user: User | null, code?: str
     console.log('[SYNC-DEBUG] Deleting couple document and subcollections for:', cCode);
     try {
       await adapterDeleteDocument(`couples/${cCode}`);
-      restDeleteDoc(`couples/${cCode}`).catch(() => {});
+      
     } catch (e: any) {
       console.error('[DUO-SYNC-ERROR] Failed to delete couple doc:', e?.code, e?.message);
     }

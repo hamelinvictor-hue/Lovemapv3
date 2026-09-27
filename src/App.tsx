@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { App as CapacitorApp } from '@capacitor/app';
+import { useCoupleRealtime } from './hooks/useCoupleRealtime';
 import { Spot, PartnerId, CouplePair, NotificationItem, CriteriaKey, AppMode, UserProfile } from './types';
 import {
   getStoredSpots,
@@ -56,7 +57,6 @@ import {
   ensureGuestUser,
   ensureCoupleRoomInFirestore,
   getEffectiveUser,
-  restGetDoc,
 } from './lib/firebase';
 import type { User } from 'firebase/auth';
 import { getBackendApiUrl } from './lib/apiConfig';
@@ -589,140 +589,112 @@ export default function App() {
     }
   }, [couple.code, isOnboardingOpen]);
 
-  // Real-time Firestore Sync listeners for active Couple Code (with Capacitor AppState)
-  useEffect(() => {
-    if (!couple.code) return;
-
-    const startListeners = () => {
-      // Security against memory leaks/double-listeners
-      stopListeners();
-
-      // Listen to couple profile updates
-      unsubCoupleRef.current = subscribeToCouple(couple.code, (remoteCouple) => {
-        if (remoteCouple) {
-          if (remoteCouple.status === 'broken' && remoteCouple.brokenBy) {
-            setBrokenDuoNotice(remoteCouple.brokenBy);
-            setSpots([]);
-            setNotifications([]);
-            saveSpots([]);
-            saveNotifications([]);
-
-            const freshCode = generateCoupleCode();
-            const freshCouple: CouplePair = {
-              code: freshCode,
-              anniversaryDate: new Date().toISOString().split('T')[0],
-              secretPin: '1234',
-              isPinLocked: false,
-              partnerA: {
-                id: 'partner_a',
-                name: couple?.partnerB?.name || 'Moi',
-                avatar: couple?.partnerB?.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
-                role: 'Partenaire 1',
-              },
-              partnerB: {
-                id: 'partner_b',
-                name: 'En attente...',
-                avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
-                role: 'Partenaire 2',
-              },
-            };
-            setCouple(freshCouple);
-            saveCouple(freshCouple);
-            ensureGuestUser().then(user => {
-              createCoupleInFirestore(user, freshCouple.partnerA.name, freshCouple.partnerA.avatar).catch(console.error);
-            });
-            return;
-          }
-
-          setCouple((prev) => {
-            const wasWaiting = !prev.isCodeUsed || !prev.partnerB || prev.partnerB.name === 'En attente...';
-            const nowJoined = Boolean(
-              remoteCouple.isCodeUsed ||
-              (remoteCouple.partnerB && remoteCouple.partnerB.name && remoteCouple.partnerB.name !== 'En attente...')
-            );
-            if (wasWaiting && nowJoined) {
-              triggerHaptic('success');
-              const partnerName = remoteCouple.partnerB?.name || 'Votre partenaire';
-              showToast(`💖 ${partnerName} a rejoint l'espace Duo !`);
-              setShowDuoCodeModal(null);
-            } else if (nowJoined) {
-              setShowDuoCodeModal(null);
-            }
-            const merged = { ...prev, ...remoteCouple };
-            saveCouple(merged);
-            return merged;
-          });
-        }
+  // Real-time Firestore Sync Handlers (Unified across iOS Native & Web)
+  const handleCoupleRealtimeUpdate = (remoteCouple: CouplePair | null) => {
+    if (!remoteCouple) return;
+    if (remoteCouple.status === 'broken' && remoteCouple.brokenBy) {
+      setBrokenDuoNotice(remoteCouple.brokenBy);
+      setSpots([]);
+      setNotifications([]);
+      saveSpots([]);
+      saveNotifications([]);
+      const freshCode = generateCoupleCode();
+      const freshCouple: CouplePair = {
+        code: freshCode,
+        anniversaryDate: new Date().toISOString().split('T')[0],
+        secretPin: '1234',
+        isPinLocked: false,
+        partnerA: {
+          id: 'partner_a',
+          name: couple?.partnerB?.name || 'Moi',
+          avatar: couple?.partnerB?.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+          role: 'Partenaire 1',
+        },
+        partnerB: {
+          id: 'partner_b',
+          name: 'En attente...',
+          avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
+          role: 'Partenaire 2',
+        },
+      };
+      setCouple(freshCouple);
+      saveCouple(freshCouple);
+      ensureGuestUser().then((user) => {
+        createCoupleInFirestore(user, freshCouple.partnerA.name, freshCouple.partnerA.avatar).catch(console.error);
       });
-
-      // Listen to spots real-time updates
-      unsubSpotsRef.current = subscribeToSpots(couple.code, (remoteSpots) => {
-        if (remoteSpots) {
-          setSpots(remoteSpots.map(computeSpotScores));
-        }
-      });
-
-      // Listen to notifications real-time updates
-      unsubNotifsRef.current = subscribeToNotifications(couple.code, (remoteNotifs) => {
-        if (remoteNotifs) {
-          // Detect newly arrived notifications sent by partner (only after initial load)
-          if (!isInitialNotifSyncRef.current) {
-            const newPartnerNotifs = remoteNotifs.filter(
-              (rn) =>
-                !rn.isRead &&
-                rn.senderId !== activePartnerIdRef.current &&
-                !notificationsRef.current.some((prev) => prev.id === rn.id)
-            );
-            newPartnerNotifs.forEach((notif) => {
-              triggerHaptic('success');
-              dispatchExternalSystemNotification({
-                id: notif.id,
-                title: notif.title || '💖 LoveMap Duo',
-                message: notif.message || 'Votre moitié a partagé un lieu ou une note !',
-                spotId: notif.spotId,
-                type: notif.type,
-              });
-              showToast(`🔔 ${notif.title} : ${notif.message}`);
-            });
-          }
-          isInitialNotifSyncRef.current = false;
-          setNotifications(remoteNotifs);
-        }
-      });
-    };
-
-    const stopListeners = () => {
-      if (unsubCoupleRef.current) {
-        unsubCoupleRef.current();
-        unsubCoupleRef.current = null;
+      return;
+    }
+    setCouple((prev) => {
+      const wasWaiting = !prev.isCodeUsed || !prev.partnerB || prev.partnerB.name === 'En attente...';
+      const nowJoined = Boolean(
+        remoteCouple.isCodeUsed ||
+        (remoteCouple.partnerB && remoteCouple.partnerB.name && remoteCouple.partnerB.name !== 'En attente...')
+      );
+      if (wasWaiting && nowJoined) {
+        triggerHaptic('success');
+        const partnerName = remoteCouple.partnerB?.name || 'Votre partenaire';
+        showToast(`💖 ${partnerName} a rejoint l'espace Duo !`);
+        setShowDuoCodeModal(null);
+      } else if (nowJoined) {
+        setShowDuoCodeModal(null);
       }
-      if (unsubSpotsRef.current) {
-        unsubSpotsRef.current();
-        unsubSpotsRef.current = null;
-      }
-      if (unsubNotifsRef.current) {
-        unsubNotifsRef.current();
-        unsubNotifsRef.current = null;
-      }
-    };
-
-    // 1. Démarrer les listeners au montage (premier plan)
-    startListeners();
-
-    // 2. Gestion du cycle de vie Capacitor (détecter passage en arrière-plan / premier plan)
-    const appStateListener = CapacitorApp.addListener('appStateChange', ({ isActive }) => {
-      if (isActive) {
-        console.log('[App.tsx] Application en premier plan -> Rafraîchissement des listeners');
-        startListeners();
-      } else {
-        console.log('[App.tsx] Application en arrière-plan -> Coupure des listeners');
-        stopListeners();
-      }
+      const merged = { ...prev, ...remoteCouple };
+      saveCouple(merged);
+      return merged;
     });
+  };
+
+  const handleSpotsRealtimeUpdate = (remoteSpots: Spot[]) => {
+    if (remoteSpots) {
+      setSpots(remoteSpots.map(computeSpotScores));
+    }
+  };
+
+  const handleNotificationsRealtimeUpdate = (remoteNotifs: NotificationItem[]) => {
+    if (remoteNotifs) {
+      if (!isInitialNotifSyncRef.current) {
+        const newPartnerNotifs = remoteNotifs.filter(
+          (rn) =>
+            !rn.isRead &&
+            rn.senderId !== activePartnerIdRef.current &&
+            !notificationsRef.current.some((prev) => prev.id === rn.id)
+        );
+        newPartnerNotifs.forEach((notif) => {
+          triggerHaptic('success');
+          dispatchExternalSystemNotification({
+            id: notif.id,
+            title: notif.title || '💖 LoveMap Duo',
+            message: notif.message || 'Votre moitié a partagé un lieu ou une note !',
+            spotId: notif.spotId,
+            type: notif.type,
+          });
+          showToast(`🔔 ${notif.title} : ${notif.message}`);
+        });
+      }
+      isInitialNotifSyncRef.current = false;
+      setNotifications(remoteNotifs);
+    }
+  };
+
+  // 1. iOS Native Realtime Synchronization (via useCoupleRealtime hook with generation counter)
+  useCoupleRealtime({
+    coupleCode: couple?.code,
+    onCoupleUpdate: handleCoupleRealtimeUpdate,
+    onSpotsUpdate: handleSpotsRealtimeUpdate,
+    onNotificationsUpdate: handleNotificationsRealtimeUpdate,
+  });
+
+  // 2. Web / PWA Realtime Synchronization (Modular JS SDK without background pause issues)
+  useEffect(() => {
+    if (!couple.code || isCapacitorNative()) return;
+    const unsubCouple = subscribeToCouple(couple.code, handleCoupleRealtimeUpdate);
+    const unsubSpots = subscribeToSpots(couple.code, handleSpotsRealtimeUpdate);
+    const unsubNotifs = subscribeToNotifications(couple.code, handleNotificationsRealtimeUpdate);
 
     return () => {
-      stopListeners();
-      appStateListener.then(listener => listener.remove()).catch(() => {});
+      if (unsubCouple) unsubCouple();
+      if (unsubSpots) unsubSpots();
+      if (unsubNotifs) unsubNotifs();
     };
   }, [couple.code]);
 
