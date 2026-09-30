@@ -59,6 +59,7 @@ import {
   ensureGuestUser,
   ensureCoupleRoomInFirestore,
   getEffectiveUser,
+  buildSyntheticUser,
   withTimeout,
   checkUserAccountExists,
 } from './lib/firebase';
@@ -77,6 +78,7 @@ import { INITIAL_SPOTS, INITIAL_NOTIFICATIONS, INITIAL_COUPLE } from './data/ini
 import { fullTeardown } from './auth/lifecycle';
 import { registerFcmToken } from './lib/fcmManager';
 import { FirebaseFirestore } from '@capacitor-firebase/firestore';
+import { FirebaseAuthentication } from '@capacitor-firebase/authentication';
 import { getDocument } from './data/firestoreAdapter';
 
 import { Header } from './components/Header';
@@ -525,51 +527,122 @@ export default function App() {
     }
   };
 
-  // Au démarrage : Vérification structurée et robuste de la session utilisateur
+  // Au démarrage : Vérification native directe et structurée de la session
   useEffect(() => {
+    let isCancelled = false;
     console.log('[Session] étape 0: Démarrage de la vérification de session (tentative: ' + sessionRetryCount + ')');
     setIsVerifyingSession(true);
     setSessionError(null);
 
-    const unsub = auth.onAuthStateChanged(async (user) => {
-      // Étape 1 : Aucun utilisateur connecté
-      if (!user || user.isAnonymous) {
-        console.log("[Session] étape 1: Aucun utilisateur connecté -> Affichage de l'écran de connexion");
-        setAuthUser(null);
-        setCouple(INITIAL_COUPLE);
-        setIsVerifyingSession(false);
-        setIsOnboardingOpen(false);
-        setIsAuthMandatory(true);
-        setAuthModalMode('login');
-        setAuthModalSource('general');
-        setIsAuthOpen(true);
-        return;
+    // Minuteur de sécurité global de 10 secondes : garantit de TOUJOURS sortir de l'écran de chargement
+    const safetyTimer = setTimeout(() => {
+      if (!isCancelled) {
+        setIsVerifyingSession((currentLoading) => {
+          if (currentLoading) {
+            console.warn("[Session] Minuteur de sécurité (10s) déclenché : bascule vers l'écran Réessayer / Se déconnecter.");
+            setSessionError('La vérification de votre session a pris trop de temps (10s). Veuillez vérifier votre connexion.');
+            return false;
+          }
+          return false;
+        });
       }
+    }, 10000);
 
-      // Étape 2 : Utilisateur connecté -> Vérification de users/{uid}
-      console.log('[Session] étape 2: Utilisateur connecté (' + user.uid + '), vérification du document users/{uid}...');
-      setAuthUser(user);
-      registerFcmToken(user.uid).catch(console.warn);
-
+    const performVerification = async () => {
       try {
+        let user: User | null = null;
+
+        // Étape 1 : Détection de l'utilisateur via FirebaseAuthentication.getCurrentUser() natif sur iOS
+        if (isCapacitorNative()) {
+          console.log('[Session] étape 1: Vérification native via FirebaseAuthentication.getCurrentUser()...');
+          try {
+            const nativeRes = await withTimeout(FirebaseAuthentication.getCurrentUser(), 5000, null);
+            if (nativeRes && nativeRes.user && !nativeRes.user.isAnonymous) {
+              console.log('[Session] Utilisateur natif détecté UID:', nativeRes.user.uid);
+              // Forcer le rafraîchissement du jeton
+              console.log('[Session] Forçage du rafraîchissement du jeton...');
+              try {
+                const tokenRes = await withTimeout(FirebaseAuthentication.getIdToken({ forceRefresh: true }), 5000, null);
+                if (!tokenRes || !tokenRes.token) {
+                  throw new Error('Jeton invalide ou non rafraîchi');
+                }
+                console.log('[Session] Jeton rafraîchi avec succès.');
+              } catch (tokenErr) {
+                console.warn('[Session] Échec du rafraîchissement du jeton (compte désactivé/supprimé). Déconnexion native...', tokenErr);
+                await FirebaseAuthentication.signOut().catch(() => {});
+                saveStoredAuthUser(null);
+                user = null;
+              }
+
+              if (nativeRes.user) {
+                user = buildSyntheticUser({
+                  uid: nativeRes.user.uid,
+                  displayName: nativeRes.user.displayName || '',
+                  email: nativeRes.user.email || null,
+                  photoURL: nativeRes.user.photoUrl || null,
+                  providerId: nativeRes.user.providerId || 'firebase',
+                  isAnonymous: false,
+                });
+              }
+            } else {
+              console.log('[Session] Aucun utilisateur natif connecté.');
+              user = null;
+            }
+          } catch (nativeErr) {
+            console.warn('[Session] Erreur lors de FirebaseAuthentication.getCurrentUser:', nativeErr);
+            user = null;
+          }
+        } else {
+          // Environnement Web
+          console.log('[Session] étape 1: Vérification Web...');
+          user = auth.currentUser || getEffectiveUser();
+          if (user && user.isAnonymous) user = null;
+        }
+
+        if (isCancelled) return;
+
+        // Étape 1.b : Si aucun utilisateur n'est connecté
+        if (!user) {
+          console.log("[Session] étape 1: Aucun utilisateur connecté -> Affichage de l'écran de connexion");
+          setAuthUser(null);
+          setCouple(INITIAL_COUPLE);
+          setIsVerifyingSession(false);
+          setIsOnboardingOpen(false);
+          setIsAuthMandatory(true);
+          setAuthModalMode('login');
+          setAuthModalSource('general');
+          setIsAuthOpen(true);
+          clearTimeout(safetyTimer);
+          return;
+        }
+
+        // Étape 2 : Utilisateur connecté -> Vérification de users/{uid}
+        console.log('[Session] étape 2: Utilisateur connecté (' + user.uid + '), vérification du document users/{uid}...');
+        setAuthUser(user);
+        registerFcmToken(user.uid).catch(console.warn);
+
         // Lecture du profil users/{uid} avec timeout strict de 10s
-        const userProfile = await withTimeout(fetchUserProfile(user.uid), 10000, 'TIMEOUT_EXCEEDED' as any);
+        const userProfile = await withTimeout(fetchUserProfile(user.uid), 8000, 'TIMEOUT_EXCEEDED' as any);
+
+        if (isCancelled) return;
 
         if (userProfile === 'TIMEOUT_EXCEEDED') {
-          console.warn('[Session] Timeout dépassé (10s) lors de la lecture du profil users/{uid}');
+          console.warn('[Session] Timeout dépassé lors de la lecture du profil users/{uid}');
           setSessionError('La vérification de votre profil a pris trop de temps. Veuillez vérifier votre connexion.');
           setIsVerifyingSession(false);
+          clearTimeout(safetyTimer);
           return;
         }
 
         // Étape 3 : Utilisateur connecté sans document users/{uid} -> Onboarding direct sans déconnexion
         if (!userProfile) {
-          console.log("[Session] étape 3: Utilisateur connecté sans document users/{uid} -> Affichage de l'onboarding");
+          console.log("[Session] étape 3: Utilisateur connecté sans document users/{uid} -> Affichage de l'onboarding (pas de déconnexion)");
           setCouple(INITIAL_COUPLE);
           setIsVerifyingSession(false);
           setIsAuthOpen(false);
           setIsAuthMandatory(false);
           setIsOnboardingOpen(true);
+          clearTimeout(safetyTimer);
           return;
         }
 
@@ -583,14 +656,15 @@ export default function App() {
         let partnerId: PartnerId = 'partner_a';
         const targetCoupleId = userProfile?.coupleId;
 
-        // Lecture du document couple avec timeout strict de 10s
+        // Lecture du document couple avec timeout
         if (targetCoupleId) {
           try {
-            const snap = await withTimeout(adapterGetDocument<CouplePair>(`couples/${targetCoupleId}`), 10000, 'TIMEOUT_EXCEEDED' as any);
+            const snap = await withTimeout(adapterGetDocument<CouplePair>(`couples/${targetCoupleId}`), 8000, 'TIMEOUT_EXCEEDED' as any);
             if (snap === 'TIMEOUT_EXCEEDED') {
-              console.warn('[Session] Timeout dépassé (10s) lors de la lecture du couple');
+              console.warn('[Session] Timeout dépassé lors de la lecture du couple');
               setSessionError('La récupération de votre espace couple a pris trop de temps.');
               setIsVerifyingSession(false);
+              clearTimeout(safetyTimer);
               return;
             }
             if (snap && snap.exists && snap.val) {
@@ -606,14 +680,15 @@ export default function App() {
           }
         }
 
-        // Si pas trouvé par coupleId, recherche par requête memberUids avec timeout de 10s
+        // Si pas trouvé par coupleId, recherche par requête memberUids
         if (!verifiedCouple) {
           try {
-            const result = await withTimeout(findUserCoupleInFirestore(user), 10000, 'TIMEOUT_EXCEEDED' as any);
+            const result = await withTimeout(findUserCoupleInFirestore(user), 8000, 'TIMEOUT_EXCEEDED' as any);
             if (result === 'TIMEOUT_EXCEEDED') {
-              console.warn('[Session] Timeout dépassé (10s) lors de la recherche du couple');
+              console.warn('[Session] Timeout dépassé lors de la recherche du couple');
               setSessionError('La recherche de votre espace couple a pris trop de temps.');
               setIsVerifyingSession(false);
+              clearTimeout(safetyTimer);
               return;
             }
             if (result && result.couple && result.couple.status !== 'broken') {
@@ -627,6 +702,8 @@ export default function App() {
             console.warn('[Session] Notice finding user couple:', e);
           }
         }
+
+        if (isCancelled) return;
 
         // Étape 5 : Application de l'état vérifié
         if (verifiedCouple) {
@@ -649,8 +726,8 @@ export default function App() {
           saveHasCompletedOnboarding(true);
           setIsOnboardingOpen(false);
 
-          // Initialisation RevenueCat avec timeout de 10s
-          withTimeout(ensureSubscriberInRevenueCat(verifiedCouple.code), 10000, null).catch(console.warn);
+          // Initialisation RevenueCat avec timeout
+          withTimeout(ensureSubscriberInRevenueCat(verifiedCouple.code), 8000, null).catch(console.warn);
         } else {
           console.log('[Session] étape 5: Profil sans duo actif -> Mode personnel');
           const noDuo: CouplePair = {
@@ -671,17 +748,24 @@ export default function App() {
           setIsOnboardingOpen(false);
         }
 
-        console.log('[Session] étape 6: Session initialisée avec succès');
+        console.log('[Session] étape 6: Session initialisée avec succès.');
         setIsVerifyingSession(false);
         setSessionError(null);
+        clearTimeout(safetyTimer);
       } catch (err: any) {
         console.error('[Session Verification] Error:', err);
         setSessionError('Une erreur est survenue lors de la vérification de session : ' + (err?.message || 'Erreur réseau'));
         setIsVerifyingSession(false);
+        clearTimeout(safetyTimer);
       }
-    });
+    };
 
-    return () => unsub();
+    performVerification();
+
+    return () => {
+      isCancelled = true;
+      clearTimeout(safetyTimer);
+    };
   }, [sessionRetryCount]);
 
   // Ensure couple room registration in Firestore & RevenueCat (ONLY once after onboarding is completed)
@@ -785,7 +869,7 @@ export default function App() {
 
   // 1. iOS Native Realtime Synchronization (via useCoupleRealtime hook with generation counter)
   useCoupleRealtime({
-    coupleCode: couple?.code,
+    coupleCode: !isVerifyingSession && couple?.code && couple.code !== 'LOVE-NEW' ? couple.code : undefined,
     onCoupleUpdate: handleCoupleRealtimeUpdate,
     onSpotsUpdate: handleSpotsRealtimeUpdate,
     onNotificationsUpdate: handleNotificationsRealtimeUpdate,

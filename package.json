@@ -12,6 +12,7 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@capacitor-firebase/authentication": "^8.5.2",
     "@capacitor-firebase/firestore": "^8.5.2",
     "@capacitor-firebase/functions": "^8.5.2",
     "@capacitor-firebase/messaging": "^8.5.2",
