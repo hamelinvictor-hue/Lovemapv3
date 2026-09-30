@@ -5,6 +5,7 @@ import {
   loginWithGoogle,
   loginWithApple,
   createCoupleInFirestore,
+  saveUserDisplayName,
   joinCoupleInFirestore,
   ensureGuestUser,
   updateCoupleInFirestore,
@@ -188,6 +189,14 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
     setError(null);
     try {
       const u = await loginWithGoogle(userName.trim());
+      if (u && userName.trim()) {
+        try {
+          await saveUserDisplayName(u, userName.trim());
+        } catch (saveErr: any) {
+          setError("Impossible d'enregistrer votre prénom sur le serveur. Veuillez vérifier votre connexion.");
+          return;
+        }
+      }
       onToast(`Connecté avec Google (${userName.trim() || u?.displayName || 'Google'})`);
       await finalizeOnboarding(u);
     } catch (err: any) {
@@ -209,6 +218,14 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
     setError(null);
     try {
       const u = await loginWithApple(userName.trim());
+      if (u && userName.trim()) {
+        try {
+          await saveUserDisplayName(u, userName.trim());
+        } catch (saveErr: any) {
+          setError("Impossible d'enregistrer votre prénom sur le serveur. Veuillez vérifier votre connexion.");
+          return;
+        }
+      }
       onToast(`Connecté avec Apple (${userName.trim() || u?.displayName || 'Apple'})`);
       await finalizeOnboarding(u);
     } catch (err: any) {
@@ -229,6 +246,17 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
     setLoading(true);
     setError(null);
     try {
+      const uCandidate = userParam || (await ensureGuestUser(userName.trim() || 'Utilisateur'));
+      if (uCandidate && userName.trim()) {
+        try {
+          await saveUserDisplayName(uCandidate, userName.trim());
+        } catch (saveErr: any) {
+          setError("Impossible d'enregistrer votre prénom sur le serveur. Veuillez vérifier votre connexion.");
+          setLoading(false);
+          return;
+        }
+      }
+
       if (selectedMode === 'duo') {
         const enteringWithCode = hasDuoCode && coupleCodeInput.trim().length > 0;
         const u = userParam || (await ensureGuestUser(userName.trim() || 'Utilisateur'));
@@ -255,7 +283,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
 
         let coupleResult: CouplePair | null = null;
         try {
-          const res = await createCoupleInFirestore(u, userName.trim(), activeAvatar);
+          const res = await createCoupleInFirestore(u, userName.trim(), activeAvatar, true);
           coupleResult = res.couple;
           if (res.isExisting) {
             onToast(`Compte existant retrouvé ! Espace Duo (${res.couple.code}) restauré 💖`);
@@ -1057,39 +1085,6 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
                     ))}
                   </div>
                 </div>
-
-                {/* Optional Partner Duo code */}
-                {selectedMode === 'duo' && (
-                  <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-2">
-                    <label className="flex items-center gap-2 text-xs font-bold text-slate-900 dark:text-white cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={hasDuoCode}
-                        onChange={(e) => setHasDuoCode(e.target.checked)}
-                        className="w-4 h-4 accent-rose-500 rounded cursor-pointer"
-                      />
-                      <span>J'ai déjà un Code Duo reçu de mon partenaire</span>
-                    </label>
-
-                    {hasDuoCode && (
-                      <div className="space-y-1 pt-1">
-                        <input
-                          type="text"
-                          value={coupleCodeInput}
-                          onChange={(e) => setCoupleCodeInput(e.target.value.toUpperCase())}
-                          placeholder="Ex: LM-9A7K-42B1"
-                          className="w-full px-3 py-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 font-mono text-center text-xs font-black tracking-widest text-slate-900 dark:text-white uppercase focus:outline-none focus:ring-2 focus:ring-rose-500"
-                        />
-                      </div>
-                    )}
-
-                    {!hasDuoCode && (
-                      <p className="text-[10px] text-slate-500 dark:text-slate-400">
-                        ✨ Un nouveau Code Duo privé sera créé pour inviter votre partenaire à tout moment.
-                      </p>
-                    )}
-                  </div>
-                )}
 
                 <div className="flex items-center gap-2 pt-1">
                   <button

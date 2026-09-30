@@ -1,3 +1,4 @@
+import { getDocument as adapterGetDocument } from './data/firestoreAdapter';
 import React, { useState, useEffect, useRef } from 'react';
 import { App as CapacitorApp } from '@capacitor/app';
 import { useCoupleRealtime } from './hooks/useCoupleRealtime';
@@ -49,6 +50,7 @@ import {
   logoutFromFirebase,
   auth,
   findUserCoupleInFirestore,
+  fetchUserProfile,
   deleteMyAccount,
   breakCoupleInFirestore,
   generateCoupleCode,
@@ -57,8 +59,9 @@ import {
   ensureGuestUser,
   ensureCoupleRoomInFirestore,
   getEffectiveUser,
+  checkUserAccountExists,
 } from './lib/firebase';
-import type { User } from 'firebase/auth';
+import { deleteUser, type User } from 'firebase/auth';
 import { getBackendApiUrl } from './lib/apiConfig';
 import {
   getDuoPremiumState,
@@ -109,7 +112,8 @@ import { Heart, Sparkles, CheckCircle2, Bell, Smartphone, KeyRound, HeartOff, Al
 
 export default function App() {
   const [spots, setSpots] = useState<Spot[]>(() => getStoredSpots());
-  const [couple, setCouple] = useState<CouplePair>(() => getStoredCouple());
+  const [couple, setCouple] = useState<CouplePair>(INITIAL_COUPLE);
+  const [isVerifyingSession, setIsVerifyingSession] = useState(true);
   const [notifications, setNotifications] = useState<NotificationItem[]>(() => getStoredNotifications());
   const [activePartnerId, setActivePartnerId] = useState<PartnerId>(() => getActivePartner());
   const [appMode, setAppMode] = useState<AppMode>(() => getStoredAppMode());
@@ -168,7 +172,7 @@ export default function App() {
   };
 
   // Modals state
-  const [authUser, setAuthUser] = useState<User | null>(() => getEffectiveUser());
+  const [authUser, setAuthUser] = useState<User | null>(null);
   const [isOnboardingOpen, setIsOnboardingOpen] = useState<boolean>(() => !getHasCompletedOnboarding());
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isAuthOpen, setIsAuthOpen] = useState(false);
@@ -197,6 +201,15 @@ export default function App() {
   const unsubSpotsRef = useRef<(() => void) | null>(null);
   const unsubNotifsRef = useRef<(() => void) | null>(null);
   const ensuredRoomCodeRef = useRef<string | null>(null);
+  const activeCoupleCodeRef = useRef<string | null>(null);
+  const hasReceivedRemoteCoupleRef = useRef(false);
+
+  useEffect(() => {
+    if (activeCoupleCodeRef.current !== couple.code) {
+      activeCoupleCodeRef.current = couple.code;
+      hasReceivedRemoteCoupleRef.current = false;
+    }
+  }, [couple.code]);
 
 
   const handleOpenPremiumModal = (reasonMessage?: string, isFirstSpot = false) => {
@@ -487,7 +500,6 @@ export default function App() {
       // If user created a new couple code during onboarding (or partner_a)
       if (partnerId === 'partner_a' || !syncedCouple) {
         ensureCoupleRoomInFirestore(codeToShow, syncedCouple || couple, partnerId || activePartnerId).catch(console.error);
-        setShowDuoCodeModal(codeToShow);
       }
     }
 
@@ -510,65 +522,108 @@ export default function App() {
     }
   };
 
-  // Auto-restore user's couple room from Firestore upon logging in with residual session guard
+  // Au démarrage, après la connexion, lis users/{uid} depuis le serveur.
+  // Si coupleId est renseigné, vérifie que le couple existe et que l'uid fait partie de ses membres.
+  // Sinon, affiche l'écran sans duo. Aucune donnée locale ne doit s'afficher avant cette vérification.
   useEffect(() => {
     const unsub = auth.onAuthStateChanged(async (user) => {
       if (user && !user.isAnonymous) {
-        // Startup guard: check if user exists on server
-        try {
-          const userDoc = await getDocument(`users/${user.uid}`);
-          if (!userDoc.exists) {
-            console.warn('[Lifecycle Guard] Residual session detected (user deleted on server). Executing fullTeardown...');
-            await fullTeardown({
-              resetState: () => {
-                setAuthUser(null);
-                setSpots([]);
-                setNotifications([]);
-                setCouple(INITIAL_COUPLE);
-                setActivePartnerId('partner_a');
-                setIsOnboardingOpen(false);
-                setIsAuthMandatory(true);
-                setAuthModalMode('login');
-                setIsAuthOpen(true);
-              },
-            });
-            showToast('Session expirée ou compte supprimé. Veuillez vous reconnecter.');
-            return;
-          }
-        } catch (guardErr) {
-          console.warn('[Lifecycle Guard] Non-fatal check notice:', guardErr);
-        }
-
         setAuthUser(user);
         registerFcmToken(user.uid).catch(console.warn);
 
-        const result = await findUserCoupleInFirestore(user);
-        if (result) {
-          setCouple(result.couple);
-          setActivePartnerId(result.partnerId);
-          setActivePartner(result.partnerId);
-          saveCouple(result.couple);
-          saveHasCompletedOnboarding(true);
-          setIsOnboardingOpen(false);
-          showToast(`💖 Espace duo restauré pour ${user.displayName || user.email || 'votre compte'} !`);
-        }
-      } else {
-        const eff = getEffectiveUser();
-        setAuthUser(eff && !eff.isAnonymous ? eff : null);
-        if (eff && !eff.isAnonymous) {
-          registerFcmToken(eff.uid).catch(console.warn);
-          const result = await findUserCoupleInFirestore(eff);
-          if (result) {
-            setCouple(result.couple);
-            setActivePartnerId(result.partnerId);
-            setActivePartner(result.partnerId);
-            saveCouple(result.couple);
+        try {
+          // 1. Lire users/{uid} depuis le serveur Firestore
+          const userProfile = await fetchUserProfile(user.uid);
+          const userDisplayName = (userProfile?.displayName && userProfile.displayName !== 'Partenaire 1' && userProfile.displayName !== 'Utilisateur Google' && userProfile.displayName !== 'Utilisateur Apple')
+            ? userProfile.displayName
+            : ((user.displayName && user.displayName !== 'Partenaire 1' && user.displayName !== 'Utilisateur Google' && user.displayName !== 'Utilisateur Apple') ? user.displayName : 'Moi');
+
+          // 2. Si coupleId est renseigné, vérifier que le couple existe et que l'uid fait partie de ses membres
+          let verifiedCouple: CouplePair | null = null;
+          let partnerId: PartnerId = 'partner_a';
+
+          const targetCoupleId = userProfile?.coupleId;
+          if (targetCoupleId) {
+            try {
+              const snap = await adapterGetDocument<CouplePair>(`couples/${targetCoupleId}`);
+              if (snap && snap.exists && snap.val) {
+                const cData = snap.data();
+                const members = Array.isArray(cData.memberUids) ? cData.memberUids : [];
+                if (members.includes(user.uid) && cData.status !== 'broken') {
+                  verifiedCouple = cData;
+                  partnerId = cData.partnerBUid === user.uid ? 'partner_b' : 'partner_a';
+                }
+              }
+            } catch (e) {
+              console.warn('[Session] Notice reading couple doc:', e);
+            }
+          }
+
+          // Si pas trouvé par coupleId, vérifier par requête memberUids
+          if (!verifiedCouple) {
+            const result = await findUserCoupleInFirestore(user);
+            if (result && result.couple && result.couple.status !== 'broken') {
+              const members = Array.isArray(result.couple.memberUids) ? result.couple.memberUids : [];
+              if (members.includes(user.uid)) {
+                verifiedCouple = result.couple;
+                partnerId = result.partnerId;
+              }
+            }
+          }
+
+          if (verifiedCouple) {
+            if (partnerId === 'partner_a') {
+              verifiedCouple.partnerA = {
+                ...verifiedCouple.partnerA,
+                name: userDisplayName,
+              };
+            } else {
+              verifiedCouple.partnerB = {
+                avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
+                ...(verifiedCouple.partnerB || { id: 'partner_b', role: 'Partenaire 2' }),
+                name: userDisplayName,
+              };
+            }
+            setCouple(verifiedCouple);
+            setActivePartnerId(partnerId);
+            setActivePartner(partnerId);
             saveHasCompletedOnboarding(true);
             setIsOnboardingOpen(false);
+          } else {
+            // Sinon, affiche l'écran sans duo
+            const noDuo: CouplePair = {
+              ...INITIAL_COUPLE,
+              partnerA: {
+                ...INITIAL_COUPLE.partnerA,
+                name: userDisplayName,
+              },
+              partnerB: {
+                ...INITIAL_COUPLE.partnerB,
+                name: 'En attente...',
+              },
+              isCodeUsed: false,
+            };
+            setCouple(noDuo);
+            setActivePartnerId('partner_a');
           }
+        } catch (err) {
+          console.error('[Session Verification] Error:', err);
+          setCouple(INITIAL_COUPLE);
+        } finally {
+          setIsVerifyingSession(false);
         }
+      } else {
+        setAuthUser(null);
+        setCouple(INITIAL_COUPLE);
+        setIsVerifyingSession(false);
+        setIsOnboardingOpen(false);
+        setIsAuthMandatory(true);
+        setAuthModalMode('login');
+        setAuthModalSource('general');
+        setIsAuthOpen(true);
       }
     });
+
     return () => unsub();
   }, []);
 
@@ -592,85 +647,50 @@ export default function App() {
 
   // Real-time Firestore Sync Handlers (Unified across iOS Native & Web)
   const handleCoupleRealtimeUpdate = (remoteCouple: CouplePair | null) => {
-    if (!remoteCouple) {
-      console.log('[Realtime] Couple document removed from server (partner deleted account or reset duo)');
-      setBrokenDuoNotice('Votre partenaire');
-      setSpots([]);
-      setNotifications([]);
-      saveSpots([]);
-      saveNotifications([]);
-      const freshCode = generateCoupleCode();
-      const freshCouple: CouplePair = {
-        code: freshCode,
-        anniversaryDate: new Date().toISOString().split('T')[0],
-        secretPin: '1234',
-        isPinLocked: false,
+    // Chez le partenaire, si le couple disparaît : remets l'affichage à l'écran sans duo,
+    // sans déconnecter l'utilisateur et sans modifier son pseudo.
+    if (!remoteCouple || (remoteCouple.status === 'broken' && remoteCouple.brokenBy)) {
+      console.log('[Realtime] Couple supprimé ou rompu sur le serveur. Réinitialisation sans duo.');
+      const currentUserName = (activePartnerId === 'partner_a' ? couple?.partnerA?.name : couple?.partnerB?.name) || authUser?.displayName || 'Moi';
+
+      const noDuoCouple: CouplePair = {
+        ...INITIAL_COUPLE,
         partnerA: {
-          id: 'partner_a',
-          name: couple?.partnerB?.name || couple?.partnerA?.name || 'Moi',
-          avatar: couple?.partnerB?.avatar || couple?.partnerA?.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
-          role: 'Partenaire 1',
+          ...INITIAL_COUPLE.partnerA,
+          name: currentUserName,
         },
         partnerB: {
-          id: 'partner_b',
+          ...INITIAL_COUPLE.partnerB,
           name: 'En attente...',
-          avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
-          role: 'Partenaire 2',
         },
+        isCodeUsed: false,
       };
-      setCouple(freshCouple);
-      saveCouple(freshCouple);
-      return;
-    }
-    if (remoteCouple.status === 'broken' && remoteCouple.brokenBy) {
-      setBrokenDuoNotice(remoteCouple.brokenBy);
+
       setSpots([]);
       setNotifications([]);
-      saveSpots([]);
-      saveNotifications([]);
-      const freshCode = generateCoupleCode();
-      const freshCouple: CouplePair = {
-        code: freshCode,
-        anniversaryDate: new Date().toISOString().split('T')[0],
-        secretPin: '1234',
-        isPinLocked: false,
-        partnerA: {
-          id: 'partner_a',
-          name: couple?.partnerB?.name || 'Moi',
-          avatar: couple?.partnerB?.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
-          role: 'Partenaire 1',
-        },
-        partnerB: {
-          id: 'partner_b',
-          name: 'En attente...',
-          avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
-          role: 'Partenaire 2',
-        },
-      };
-      setCouple(freshCouple);
-      saveCouple(freshCouple);
-      ensureGuestUser().then((user) => {
-        createCoupleInFirestore(user, freshCouple.partnerA.name, freshCouple.partnerA.avatar).catch(console.error);
-      });
+      setCouple(noDuoCouple);
+      setActivePartnerId('partner_a');
+
+      if (remoteCouple?.brokenBy) {
+        setBrokenDuoNotice(remoteCouple.brokenBy);
+      }
       return;
     }
+
     setCouple((prev) => {
       const wasWaiting = !prev.isCodeUsed || !prev.partnerB || prev.partnerB.name === 'En attente...';
       const nowJoined = Boolean(
         remoteCouple.isCodeUsed ||
         (remoteCouple.partnerB && remoteCouple.partnerB.name && remoteCouple.partnerB.name !== 'En attente...')
       );
+
       if (wasWaiting && nowJoined) {
         triggerHaptic('success');
         const partnerName = remoteCouple.partnerB?.name || 'Votre partenaire';
-        showToast(`💖 ${partnerName} a rejoint l'espace Duo !`);
-        setShowDuoCodeModal(null);
-      } else if (nowJoined) {
-        setShowDuoCodeModal(null);
+        showToast(`🎉 ${partnerName} a rejoint votre duo !`);
       }
-      const merged = { ...prev, ...remoteCouple };
-      saveCouple(merged);
-      return merged;
+
+      return { ...prev, ...remoteCouple };
     });
   };
 
@@ -716,7 +736,7 @@ export default function App() {
 
   // 2. Web / PWA Realtime Synchronization (Modular JS SDK without background pause issues)
   useEffect(() => {
-    if (!couple.code || isCapacitorNative()) return;
+    if (!couple.code || couple.code.trim().toUpperCase() === 'LOVE-NEW' || isCapacitorNative()) return;
     const unsubCouple = subscribeToCouple(couple.code, handleCoupleRealtimeUpdate);
     const unsubSpots = subscribeToSpots(couple.code, handleSpotsRealtimeUpdate);
     const unsubNotifs = subscribeToNotifications(couple.code, handleNotificationsRealtimeUpdate);
@@ -752,9 +772,7 @@ export default function App() {
     saveSpots(spots);
   }, [spots]);
 
-  useEffect(() => {
-    saveCouple(couple);
-  }, [couple]);
+
 
   useEffect(() => {
     saveNotifications(notifications);
@@ -1044,24 +1062,26 @@ export default function App() {
   const handleLogout = async () => {
     console.log('[Native Debug] handleLogout triggered');
     setIsSettingsOpen(false);
-    setIsOnboardingOpen(false);
     showToast('Déconnexion en cours...');
+    setAuthUser(null);
+    setCouple(INITIAL_COUPLE);
+    setIsOnboardingOpen(false);
+    setIsAuthMandatory(true);
+    setAuthModalMode('login');
+    setAuthModalSource('general');
+    setIsAuthOpen(true);
 
     await fullTeardown({
       resetState: () => {
         setAuthUser(null);
-        setSpots([]);
-        setNotifications([]);
         setCouple(INITIAL_COUPLE);
-        setActivePartnerId('partner_a');
+        setIsOnboardingOpen(false);
         setIsAuthMandatory(true);
         setAuthModalMode('login');
+        setAuthModalSource('general');
         setIsAuthOpen(true);
       },
     });
-
-    showToast('Vous avez été déconnecté.');
-    console.log('[Native Debug] handleLogout finished');
   };
 
   // Break Duo handler
@@ -1149,49 +1169,36 @@ export default function App() {
     }
   };
 
-  // Delete account handler via callable Cloud Function
+  // Delete account handler
   const handleDeleteAccount = async () => {
     console.log('[Native Debug] handleDeleteAccount triggered');
     setIsSettingsOpen(false);
     showToast('Suppression définitive de votre compte en cours...');
 
-    try {
-      // 1. Unregister all active Firestore listeners FIRST
-      if (isCapacitorNative()) {
-        try {
-          await FirebaseFirestore.removeAllListeners();
-          console.log('[Native Debug] FirebaseFirestore.removeAllListeners() completed prior to delete');
-        } catch (lErr) {
-          console.warn('[Native Debug] removeAllListeners notice:', lErr);
-        }
-      }
+    const res = await deleteMyAccount();
+    if (res.success) {
+      showToast('Votre compte a été définitivement supprimé.');
+      setAuthUser(null);
+      setCouple(INITIAL_COUPLE);
+      setIsOnboardingOpen(false);
+      setIsAuthMandatory(true);
+      setAuthModalMode('login');
+      setAuthModalSource('general');
+      setIsAuthOpen(true);
 
-      // 2. Call Cloud Function deleteAccount (region: europe-west1)
-      await deleteMyAccount();
-      console.log('[Native Debug] Cloud Function deleteMyAccount completed');
-
-      // 3. Reset purchases session
-      await resetPurchasesSession().catch(() => {});
-
-      // 4. Clean local state and storage via fullTeardown AFTER server response
       await fullTeardown({
         resetState: () => {
           setAuthUser(null);
-          setSpots([]);
-          setNotifications([]);
           setCouple(INITIAL_COUPLE);
-          setActivePartnerId('partner_a');
+          setIsOnboardingOpen(false);
           setIsAuthMandatory(true);
-          setAuthModalMode('register');
+          setAuthModalMode('login');
+          setAuthModalSource('general');
           setIsAuthOpen(true);
         },
       });
-
-      showToast('Votre compte a été définitivement supprimé.');
-      console.log('[Native Debug] handleDeleteAccount finished successfully');
-    } catch (e: any) {
-      console.error('[Native Debug] Error deleting account:', e);
-      showToast(e?.message || 'Erreur lors de la suppression du compte.');
+    } else {
+      showToast(`❌ ${res.error || 'Erreur lors de la suppression de votre compte.'}`);
     }
   };
 
@@ -1216,6 +1223,15 @@ export default function App() {
     name: 'Moi',
     avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
   };
+
+  if (isVerifyingSession) {
+    return (
+      <div className="w-full h-full min-h-screen bg-slate-950 flex flex-col items-center justify-center text-white">
+        <div className="w-10 h-10 rounded-full border-2 border-rose-500/20 border-t-rose-500 animate-spin mb-3" />
+        <p className="text-xs font-semibold text-slate-400">Vérification de votre session...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="w-full h-full bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 flex flex-col font-sans select-none transition-colors duration-200">
@@ -1507,9 +1523,6 @@ export default function App() {
               setActivePartner(partnerId);
             }
             showToast(`Duo synchronisé avec le code ${syncedCouple.code} ! 💖`);
-            if (partnerId === 'partner_a') {
-              setShowDuoCodeModal(syncedCouple.code);
-            }
           }}
           onToast={showToast}
           onAuthUserChange={setAuthUser}
@@ -1522,7 +1535,13 @@ export default function App() {
         <OnboardingModal
           isOpen={isOnboardingOpen}
           initialStep={1}
-          onClose={() => setIsOnboardingOpen(false)}
+          onClose={() => {
+            setIsOnboardingOpen(false);
+            if (!authUser) {
+              setIsAuthMandatory(true);
+              setIsAuthOpen(true);
+            }
+          }}
           onComplete={handleCompleteOnboarding}
           onToast={showToast}
         />

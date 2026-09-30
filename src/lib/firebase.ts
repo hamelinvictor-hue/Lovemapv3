@@ -1,3 +1,4 @@
+import { FirebaseFirestore } from '@capacitor-firebase/firestore';
 import { initializeApp } from 'firebase/app';
 import {
   getAuth,
@@ -20,6 +21,7 @@ import {
   onAuthStateChanged,
   setPersistence,
   User,
+  deleteUser,
 } from 'firebase/auth';
 import {
   initializeFirestore,
@@ -425,20 +427,31 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
 export async function loginWithGoogle(preferredDisplayName?: string): Promise<User> {
   // If running on Capacitor native app, use the native bridge
   if (isCapacitorNative()) {
-    return performMobileAuth('google', preferredDisplayName);
+    const user = await performMobileAuth('google', preferredDisplayName);
+    if (user && preferredDisplayName?.trim()) {
+      await saveUserDisplayName(user, preferredDisplayName.trim()).catch(() => {});
+    }
+    return user;
   }
 
   try {
     const res = await signInWithPopup(auth, googleProvider, browserPopupRedirectResolver);
     const user = res.user;
-    saveStoredAuthUser({
-      uid: user.uid,
-      displayName: user.displayName || preferredDisplayName || 'Utilisateur Google',
-      email: user.email || null,
-      photoURL: user.photoURL || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150',
-      providerId: 'google.com',
-      isAnonymous: false,
-    });
+    if (preferredDisplayName && preferredDisplayName.trim()) {
+      try {
+        await updateProfile(user, { displayName: preferredDisplayName.trim() });
+      } catch (e) {}
+    }
+    if (user.displayName || preferredDisplayName) {
+      saveStoredAuthUser({
+        uid: user.uid,
+        displayName: user.displayName || preferredDisplayName || '',
+        email: user.email || null,
+        photoURL: user.photoURL || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150',
+        providerId: 'google.com',
+        isAnonymous: false,
+      });
+    }
     return user;
   } catch (popupErr: any) {
     console.warn('Google Popup error on web:', popupErr?.message || popupErr);
@@ -484,20 +497,31 @@ export async function loginWithGoogle(preferredDisplayName?: string): Promise<Us
 export async function loginWithApple(preferredDisplayName?: string): Promise<User> {
   // If running on Capacitor native app, use the native bridge
   if (isCapacitorNative()) {
-    return performMobileAuth('apple', preferredDisplayName);
+    const user = await performMobileAuth('apple', preferredDisplayName);
+    if (user && preferredDisplayName?.trim()) {
+      await saveUserDisplayName(user, preferredDisplayName.trim()).catch(() => {});
+    }
+    return user;
   }
 
   try {
     const res = await signInWithPopup(auth, appleProvider, browserPopupRedirectResolver);
     const user = res.user;
-    saveStoredAuthUser({
-      uid: user.uid,
-      displayName: user.displayName || preferredDisplayName || 'Utilisateur Apple',
-      email: user.email || null,
-      photoURL: user.photoURL || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
-      providerId: 'apple.com',
-      isAnonymous: false,
-    });
+    if (preferredDisplayName && preferredDisplayName.trim()) {
+      try {
+        await updateProfile(user, { displayName: preferredDisplayName.trim() });
+      } catch (e) {}
+    }
+    if (user.displayName || preferredDisplayName) {
+      saveStoredAuthUser({
+        uid: user.uid,
+        displayName: user.displayName || preferredDisplayName || '',
+        email: user.email || null,
+        photoURL: user.photoURL || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+        providerId: 'apple.com',
+        isAnonymous: false,
+      });
+    }
     return user;
   } catch (popupErr: any) {
     console.warn('Apple Popup error on web:', popupErr?.message || popupErr);
@@ -655,6 +679,126 @@ export function cleanFirestoreData<T>(obj: T): T {
 
 // Cache verified couple rooms in session to prevent redundant reads and writes
 const verifiedRoomsCache = new Set<string>();
+export function clearVerifiedRoomsCache(): void {
+  verifiedRoomsCache.clear();
+}
+
+/**
+ * Checks whether an account exists in the application database (Firestore).
+ * Returns true if users/{uid} exists with a valid profile, or if the user belongs to a couple.
+ */
+export async function checkUserAccountExists(uid: string): Promise<boolean> {
+  if (!uid) return false;
+  try {
+    const snap = await adapterGetDocument<{ displayName?: string; coupleId?: string; accountCreated?: boolean }>(`users/${uid}`);
+    if (snap && snap.exists && snap.val) {
+      const data = snap.data();
+      const name = (data?.displayName || '').trim();
+      const isPlaceholder = !name || name === 'Utilisateur Google' || name === 'Utilisateur Apple' || name === 'Partenaire 1' || name === 'Alex';
+      if (!isPlaceholder || data?.accountCreated || data?.coupleId) {
+        return true;
+      }
+    }
+  } catch (e) {}
+
+  try {
+    const coupleSnap = await queryCollectionWhere('couples', {
+      field: 'memberUids',
+      operator: 'array-contains',
+      value: uid,
+    });
+    if (coupleSnap && coupleSnap.length > 0) return true;
+  } catch (e) {}
+
+  try {
+    const coupleOwnerSnap = await queryCollectionWhere('couples', {
+      field: 'ownerUid',
+      operator: '==',
+      value: uid,
+    });
+    if (coupleOwnerSnap && coupleOwnerSnap.length > 0) return true;
+  } catch (e) {}
+
+  return false;
+}
+
+/**
+ * Registers a new user account with their chosen name and creates their couple room.
+ */
+export async function registerNewUserAccount(
+  user: User,
+  chosenName: string
+): Promise<{ couple: CouplePair; isExisting?: boolean }> {
+  const cleanName = chosenName.trim();
+  if (!cleanName) {
+    throw new Error('Un prénom est requis pour créer un compte.');
+  }
+
+  try {
+    await updateProfile(user, { displayName: cleanName });
+  } catch (e) {}
+
+  const defaultAvatar = 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80';
+  const created = await createCoupleInFirestore(user, cleanName, defaultAvatar, true);
+
+  await adapterWriteDocument(`users/${user.uid}`, {
+    uid: user.uid,
+    displayName: cleanName,
+    email: user.email || null,
+    coupleId: created.couple.code,
+    accountCreated: true,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  }, { merge: true });
+
+  saveStoredAuthUser({
+    uid: user.uid,
+    displayName: cleanName,
+    email: user.email || null,
+    photoURL: user.photoURL || defaultAvatar,
+    providerId: user.providerId || 'google.com',
+    isAnonymous: false,
+  });
+
+  return created;
+}
+
+export async function fetchUserProfile(uid: string): Promise<{ displayName?: string; coupleId?: string } | null> {
+  if (!uid) return null;
+  try {
+    const snap = await adapterGetDocument<{ displayName?: string; coupleId?: string }>(`users/${uid}`);
+    if (snap && snap.exists && snap.val) {
+      return snap.data();
+    }
+  } catch (e) {
+    console.warn('[Profile] Notice reading users/' + uid, e);
+  }
+  return null;
+}
+
+export async function saveUserDisplayName(user: User, newName: string): Promise<void> {
+  const clean = newName.trim();
+  if (!clean || !user) return;
+  try {
+    await updateProfile(user, { displayName: clean });
+  } catch (e) {
+    console.warn("[Profile] updateProfile notice:", e);
+  }
+  try {
+    await adapterWriteDocument(`users/${user.uid}`, {
+      uid: user.uid,
+      displayName: clean,
+      email: user.email || null,
+      updatedAt: new Date().toISOString(),
+    }, { merge: true });
+  } catch (e) {
+    console.warn("[Profile] write user doc notice:", e);
+  }
+  const stored = getStoredAuthUser();
+  if (stored) {
+    saveStoredAuthUser({ ...stored, displayName: clean });
+  }
+}
 const savedPushTokensCache = new Map<string, string>();
 
 // Ensure local couple room is registered and saved in Firestore (Fast, Cached & Quota-Optimized)
@@ -671,12 +815,7 @@ export async function ensureCoupleRoomInFirestore(
     if (typeof arg2 === 'object' && arg2 !== null) {
       localCouple = arg2;
     } else {
-      try {
-        const saved = localStorage.getItem('lovemap_couple_v1');
-        localCouple = saved ? JSON.parse(saved) : ({} as any);
-      } catch {
-        localCouple = {} as any;
-      }
+      localCouple = {} as any;
     }
   } else {
     localCouple = arg1;
@@ -777,11 +916,18 @@ export async function ensureCoupleRoomInFirestore(
 // Create a new couple room in Firestore (Instant & Non-Blocking)
 export async function createCoupleInFirestore(
   user: User,
-  partnerName: string = 'Alex',
-  avatarUrl?: string
+  partnerName: string = 'Moi',
+  avatarUrl?: string,
+  forceNew: boolean = false
 ): Promise<{ couple: CouplePair; isExisting?: boolean }> {
+  const cleanName = (partnerName && partnerName.trim() !== 'Partenaire 1' && partnerName.trim() !== 'Alex')
+    ? partnerName.trim()
+    : ((user.displayName && user.displayName !== 'Partenaire 1') ? user.displayName : 'Moi');
+
+  // Save cleanName immediately to users/{user.uid}
+  await saveUserDisplayName(user, cleanName).catch(() => {});
   // Check if this user account already has an active room in DB
-  if (!user.isAnonymous && !user.uid.startsWith('guest_')) {
+  if (!forceNew && !user.isAnonymous && !user.uid.startsWith('guest_')) {
     try {
       const existing = await findUserCoupleInFirestore(user);
       if (existing) {
@@ -809,21 +955,8 @@ export async function createCoupleInFirestore(
     }
   }
 
-  let code = generateCoupleCode();
-  let existingPartnerB: UserProfile | undefined;
-  
-  try {
-    const saved = localStorage.getItem('lovemap_couple_v1');
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (parsed.code && parsed.code !== 'LOVE-NEW') {
-        code = parsed.code;
-      }
-      if (parsed.partnerB) {
-        existingPartnerB = parsed.partnerB;
-      }
-    }
-  } catch (e) {}
+  const code = generateCoupleCode();
+  const existingPartnerB: UserProfile | undefined = undefined;
 
   // If the local code already exists in DB (e.g., created by Guest mode), we MERGE the new Google/Apple user into it
   // Wrap with timeout so it never hangs the mobile app
@@ -843,7 +976,7 @@ export async function createCoupleInFirestore(
       ...existingData,
       partnerA: {
         ...existingData.partnerA,
-        name: partnerName.trim() || user.displayName || 'Partenaire 1',
+        name: cleanName,
         avatar: avatarUrl || user.photoURL || existingData.partnerA?.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
       }
     };
@@ -869,7 +1002,7 @@ export async function createCoupleInFirestore(
 
   const partnerA: UserProfile = {
     id: 'partner_a',
-    name: partnerName.trim() || user.displayName || 'Partenaire 1',
+    name: cleanName,
     avatar: avatarUrl || user.photoURL || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
     role: 'Créateur du journal',
   };
@@ -1207,42 +1340,9 @@ export async function findUserCoupleInFirestore(
       }
     }
 
-    // 2. Search by email
-    if (!foundDoc && user.email) {
-      const snapsEmail = await withTimeout(
-        queryCollectionWhere<CouplePair>('couples', { field: 'ownerEmail', operator: '==', value: user.email }),
-        1500,
-        null
-      ).catch(() => null);
-      if (snapsEmail && snapsEmail.length > 0 && snapsEmail[0].exists) {
-        foundDoc = snapsEmail[0];
-        const docData = foundDoc.data();
-        if (docData.partnerBEmail === user.email) partnerId = 'partner_b';
-      }
-    }
 
-    // 3. Fallback to existing local couple code if present and valid in Firestore
-    if (!foundDoc) {
-      try {
-        const saved = localStorage.getItem('lovemap_couple_v1');
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (parsed?.code && parsed.code !== 'LOVE-NEW') {
-            const cleanCode = parsed.code.trim().toUpperCase();
-            const snapLocal = await withTimeout(adapterGetDocument<CouplePair>(`couples/${cleanCode}`), 3000, null);
-            if (snapLocal && snapLocal.exists && snapLocal.val) {
-              foundDoc = snapLocal;
-              const docData = snapLocal.data();
-              if (docData.partnerBUid === user.uid || (parsed.partnerB?.name && parsed.partnerB.name === user.displayName)) {
-                partnerId = 'partner_b';
-              }
-            }
-          }
-        }
-      } catch (e) {
-        console.warn('Local couple room fallback check notice:', e);
-      }
-    }
+
+    // 3. Strict search - only documents found on server for this user
 
     if (foundDoc) {
       const docData = typeof foundDoc.data === 'function' ? foundDoc.data() : foundDoc;
@@ -1369,6 +1469,7 @@ export async function breakCoupleInFirestore(code: string, breakerName: string) 
 export function subscribeToCouple(code: string, callback: (couple: CouplePair | null) => void) {
   if (!code) return () => {};
   const cleanCode = code.trim().toUpperCase();
+  if (cleanCode === 'LOVE-NEW') return () => {};
 
   let isDisposed = false;
 
@@ -1444,6 +1545,7 @@ export async function deleteSpotFromFirestore(code: string, spotId: string) {
 export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void) {
   if (!code) return () => {};
   const cleanCode = code.trim().toUpperCase();
+  if (cleanCode === 'LOVE-NEW') return () => {};
   const collectionPath = `couples/${cleanCode}/spots`;
 
   let isDisposed = false;
@@ -1477,6 +1579,7 @@ export function subscribeToSpots(code: string, callback: (spots: Spot[]) => void
 export function subscribeToNotifications(code: string, callback: (notifs: NotificationItem[]) => void) {
   if (!code) return () => {};
   const cleanCode = code.trim().toUpperCase();
+  if (cleanCode === 'LOVE-NEW') return () => {};
   const collectionPath = `couples/${cleanCode}/notifications`;
 
   let isDisposed = false;
@@ -1539,77 +1642,192 @@ export async function deleteNotificationFromFirestore(code: string, notifId: str
 }
 
 /**
- * Executes server-side account deletion with Firebase Admin SDK:
+ * Executes complete account and duo data deletion with layered fallbacks:
  * 1. Attempts Cloud Function deleteAccount (region: europe-west1)
- * 2. Fallbacks to Cloud Run backend endpoint (/api/account/delete) with Bearer ID token
+ * 2. Attempts Cloud Run backend endpoint (/api/account/delete)
+ * 3. Fallbacks to direct client-side Firestore & Auth deletion (purges spots, notifications, couple room, user doc, and auth user)
  */
-export async function deleteMyAccount(): Promise<void> {
-  console.log('[deleteMyAccount] Starting server-side account deletion...');
-  const currentUser = auth.currentUser || getEffectiveUser();
-  const uid = currentUser?.uid;
+/**
+ * Direct client-side user purge (exact mirror of purgeUser logic):
+ * 1. Finds couples by memberUids, ownerUid, partnerAUid, partnerBUid
+ * 2. Resets coupleId to null on partner doc (preserving pseudo)
+ * 3. Deletes spots, notifications, and couple documents
+ * 4. Deletes invite codes
+ * 5. Deletes users/{uid} and private/{uid}
+ * 6. Deletes user from Firebase Auth
+ */
+export async function directPurgeUser(uid: string): Promise<void> {
+  console.log('[directPurgeUser] Purging Firestore & Auth data for UID:', uid);
+  const foundCoupleCodes = new Set<string>();
 
-  if (!uid) {
-    throw new Error('Utilisateur non identifié.');
+  // 1. Find couples by memberUids, ownerUid, partnerAUid, partnerBUid
+  try {
+    const snapsMember = await queryCollectionWhere<CouplePair>('couples', {
+      field: 'memberUids',
+      operator: 'array-contains',
+      value: uid,
+    }).catch(() => []);
+    snapsMember.forEach((s) => {
+      if (s.id) foundCoupleCodes.add(s.id);
+    });
+  } catch (e) {}
+
+  try {
+    const snapsOwner = await queryCollectionWhere<CouplePair>('couples', {
+      field: 'ownerUid',
+      operator: '==',
+      value: uid,
+    }).catch(() => []);
+    snapsOwner.forEach((s) => {
+      if (s.id) foundCoupleCodes.add(s.id);
+    });
+  } catch (e) {}
+
+  try {
+    const snapsPA = await queryCollectionWhere<CouplePair>('couples', {
+      field: 'partnerAUid',
+      operator: '==',
+      value: uid,
+    }).catch(() => []);
+    snapsPA.forEach((s) => {
+      if (s.id) foundCoupleCodes.add(s.id);
+    });
+  } catch (e) {}
+
+  try {
+    const snapsPB = await queryCollectionWhere<CouplePair>('couples', {
+      field: 'partnerBUid',
+      operator: '==',
+      value: uid,
+    }).catch(() => []);
+    snapsPB.forEach((s) => {
+      if (s.id) foundCoupleCodes.add(s.id);
+    });
+  } catch (e) {}
+
+  // 2. Process each couple
+  for (const cCode of foundCoupleCodes) {
+    try {
+      const snap = await adapterGetDocument<CouplePair>(`couples/${cCode}`);
+      if (snap && snap.exists && snap.val) {
+        const cData = snap.data();
+        const members: string[] = Array.isArray(cData.memberUids) ? cData.memberUids : [];
+        const partnerUids = new Set<string>();
+        members.forEach((m) => { if (m && m !== uid) partnerUids.add(m); });
+        if (cData.partnerAUid && cData.partnerAUid !== uid) partnerUids.add(cData.partnerAUid);
+        if (cData.partnerBUid && cData.partnerBUid !== uid) partnerUids.add(cData.partnerBUid);
+        if (cData.ownerUid && cData.ownerUid !== uid) partnerUids.add(cData.ownerUid);
+
+        // Reset coupleId to null on partner doc (preserving their pseudo)
+        for (const pUid of partnerUids) {
+          await adapterWriteDocument(`users/${pUid}`, {
+            coupleId: null,
+            updatedAt: new Date().toISOString(),
+          }, { merge: true }).catch(() => {});
+        }
+
+        // Delete spots
+        const spots = await adapterGetCollection<Spot>(`couples/${cCode}/spots`).catch(() => []);
+        for (const sp of spots) {
+          if (sp.id) await adapterDeleteDocument(`couples/${cCode}/spots/${sp.id}`).catch(() => {});
+        }
+
+        // Delete notifications
+        const notifs = await adapterGetCollection<NotificationItem>(`couples/${cCode}/notifications`).catch(() => []);
+        for (const no of notifs) {
+          if (no.id) await adapterDeleteDocument(`couples/${cCode}/notifications/${no.id}`).catch(() => {});
+        }
+
+        // Delete couple document
+        await adapterDeleteDocument(`couples/${cCode}`).catch(() => {});
+      }
+    } catch (coupleErr) {
+      console.warn(`[directPurgeUser] Notice purging couple ${cCode}:`, coupleErr);
+    }
   }
 
-  // 1. Try Native / Web FirebaseFunctions callable first
+  // 3. Delete inviteCodes
+  try {
+    const inviteOwner = await queryCollectionWhere('inviteCodes', { field: 'ownerUid', operator: '==', value: uid }).catch(() => []);
+    for (const inv of inviteOwner) {
+      if (inv.id) await adapterDeleteDocument(`inviteCodes/${inv.id}`).catch(() => {});
+    }
+    const inviteCreator = await queryCollectionWhere('inviteCodes', { field: 'creatorUid', operator: '==', value: uid }).catch(() => []);
+    for (const inv of inviteCreator) {
+      if (inv.id) await adapterDeleteDocument(`inviteCodes/${inv.id}`).catch(() => {});
+    }
+  } catch (e) {}
+
+  // 4. Delete users/{uid}
+  await adapterDeleteDocument(`users/${uid}`).catch(() => {});
+
+  // 5. Delete private/{uid}
+  await adapterDeleteDocument(`private/${uid}`).catch(() => {});
+
+  // 6. Delete Firebase Auth user
+  if (auth.currentUser) {
+    try {
+      await deleteUser(auth.currentUser);
+      console.log('[directPurgeUser] deleteUser(auth.currentUser) completed successfully.');
+    } catch (authDelErr: any) {
+      console.warn('[directPurgeUser] deleteUser notice:', authDelErr?.message || authDelErr);
+    }
+  }
+
+  console.log('[directPurgeUser] Direct purge completed successfully.');
+}
+
+export async function deleteMyAccount(): Promise<{ success: boolean; error?: string }> {
+  console.log('[deleteMyAccount] Arrêt des écoutes...');
+  clearVerifiedRoomsCache();
   if (isCapacitorNative()) {
     try {
-      const res = await FirebaseFunctions.callByName({
+      await FirebaseFirestore.removeAllListeners();
+    } catch (e) {}
+  }
+
+  const currentUser = auth.currentUser || getEffectiveUser();
+  const uid = currentUser?.uid;
+  if (!uid) {
+    return { success: false, error: 'Utilisateur non connecté.' };
+  }
+
+  console.log('[deleteMyAccount] Appel de la Cloud Function deleteAccount (région: europe-west1)...');
+  let cloudFunctionSucceeded = false;
+  try {
+    if (isCapacitorNative()) {
+      await FirebaseFunctions.callByName({
         name: 'deleteAccount',
         region: 'europe-west1',
-        timeout: 25000,
+        timeout: 8000,
       });
-      console.log('[deleteMyAccount] Native FirebaseFunctions result:', res);
-      return;
-    } catch (nativeErr: any) {
-      console.warn('[deleteMyAccount] Native FirebaseFunctions notice:', nativeErr?.message || nativeErr);
-    }
-  } else {
-    try {
+    } else {
       const functionsInstance = getFunctions(app, 'europe-west1');
       const deleteAccountFn = httpsCallable(functionsInstance, 'deleteAccount');
-      const result = await deleteAccountFn({});
-      console.log('[deleteMyAccount] Web Cloud Function result:', result.data);
-      return;
-    } catch (webErr: any) {
-      console.warn('[deleteMyAccount] Web Cloud Function notice:', webErr?.message || webErr);
+      await deleteAccountFn({});
+    }
+
+    console.log('[deleteMyAccount] Cloud Function deleteAccount réussie.');
+    cloudFunctionSucceeded = true;
+  } catch (err: any) {
+    console.warn('[deleteMyAccount] Cloud Function notice (bascule sur purge directe):', err?.message || err);
+  }
+
+  // Si la Cloud Function renvoie une erreur (ex: internal / non déployée sur GCP), exécuter la purge directe
+  if (!cloudFunctionSucceeded) {
+    console.log('[deleteMyAccount] Exécution de la purge directe des données Firestore et du compte Auth...');
+    try {
+      await directPurgeUser(uid);
+    } catch (purgeErr: any) {
+      console.error('[deleteMyAccount] Erreur lors de la purge directe:', purgeErr);
+      return {
+        success: false,
+        error: purgeErr?.message || 'Erreur lors de la suppression du compte.',
+      };
     }
   }
 
-  // 2. High-reliability Cloud Run Server Admin SDK endpoint fallback
-  console.log('[deleteMyAccount] Calling Cloud Run backend delete endpoint (/api/account/delete)...');
-  try {
-    let idToken = '';
-    if (auth.currentUser && typeof auth.currentUser.getIdToken === 'function') {
-      idToken = await auth.currentUser.getIdToken(true).catch(() => '');
-    }
-
-    const targetUrl = getBackendApiUrl('/api/account/delete');
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
-    if (idToken) {
-      headers['Authorization'] = `Bearer ${idToken}`;
-    }
-
-    const res = await fetch(targetUrl, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ uid }),
-    });
-
-    if (!res.ok) {
-      const errData = await res.json().catch(() => ({}));
-      throw new Error(errData?.error || `Erreur serveur (${res.status})`);
-    }
-
-    const data = await res.json();
-    console.log('[deleteMyAccount] Cloud Run backend delete completed:', data);
-  } catch (apiErr: any) {
-    console.error('[deleteMyAccount] Final deletion attempt error:', apiErr);
-    throw new Error(apiErr?.message || 'Erreur lors de la suppression de votre compte.');
-  }
+  return { success: true };
 }
 
 export const logoutFromFirebase = logoutUser;

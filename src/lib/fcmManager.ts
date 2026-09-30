@@ -125,11 +125,6 @@ async function saveTokenToUserDoc(uid: string, token: string): Promise<void> {
             fcmTokens: arrayUnion(token),
             updatedAt: new Date().toISOString(),
           });
-        } else {
-          await setDoc(userRef, {
-            fcmTokens: [token],
-            updatedAt: new Date().toISOString(),
-          }, { merge: true });
         }
       }
     }

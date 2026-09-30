@@ -383,28 +383,12 @@ export function normalizeCouple(c: Partial<CouplePair> | null | undefined): Coup
 }
 
 export function getStoredCouple(): CouplePair {
-  try {
-    const data = localStorage.getItem(COUPLE_KEY);
-    if (!data) {
-      localStorage.setItem(COUPLE_KEY, JSON.stringify(INITIAL_COUPLE));
-      return INITIAL_COUPLE;
-    }
-    const parsed = JSON.parse(data) as Partial<CouplePair>;
-    const normalized = normalizeCouple(parsed);
-    localStorage.setItem(COUPLE_KEY, JSON.stringify(normalized));
-    return normalized;
-  } catch (err) {
-    return INITIAL_COUPLE;
-  }
+  // Suppression du stockage local : Firestore est la seule source
+  return INITIAL_COUPLE;
 }
 
-export function saveCouple(couple: CouplePair): void {
-  try {
-    const normalized = normalizeCouple(couple);
-    localStorage.setItem(COUPLE_KEY, JSON.stringify(normalized));
-  } catch (err) {
-    console.error('Failed to save couple', err);
-  }
+export function saveCouple(_couple: CouplePair): void {
+  // Suppression du stockage local : Firestore est la seule source
 }
 
 export function getStoredNotifications(): NotificationItem[] {
@@ -440,25 +424,12 @@ export interface StoredAuthUser {
 }
 
 export function getStoredAuthUser(): StoredAuthUser | null {
-  try {
-    const raw = localStorage.getItem(AUTH_USER_KEY);
-    if (!raw) return null;
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
+  // Suppression du stockage local : Firestore est la seule source
+  return null;
 }
 
-export function saveStoredAuthUser(user: StoredAuthUser | null): void {
-  try {
-    if (user) {
-      localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
-    } else {
-      localStorage.removeItem(AUTH_USER_KEY);
-    }
-  } catch (err) {
-    console.error('Failed to save stored auth user', err);
-  }
+export function saveStoredAuthUser(_user: StoredAuthUser | null): void {
+  // Suppression du stockage local : Firestore est la seule source
 }
 
 export function calculateGlobalCriteriaStats(spots: Spot[]): GlobalCriteriaStats[] {
@@ -493,4 +464,27 @@ export function calculateGlobalCriteriaStats(spots: Spot[]): GlobalCriteriaStats
       icon: criteria.icon,
     };
   });
+}
+
+
+export function purgeAllLocalData(): void {
+  try {
+    if (typeof window !== "undefined") {
+      if (window.localStorage) {
+        window.localStorage.removeItem(SPOTS_KEY);
+        window.localStorage.removeItem(COUPLE_KEY);
+        window.localStorage.removeItem(NOTIFS_KEY);
+        window.localStorage.removeItem(APP_MODE_KEY);
+        window.localStorage.removeItem(ONBOARDING_KEY);
+        window.localStorage.removeItem("lovemap_auth_user_v1");
+        window.localStorage.removeItem("lovemap_active_partner_v1");
+        window.localStorage.clear();
+      }
+      if (window.sessionStorage) {
+        window.sessionStorage.clear();
+      }
+    }
+  } catch (e) {
+    console.warn("Notice purging local storage:", e);
+  }
 }

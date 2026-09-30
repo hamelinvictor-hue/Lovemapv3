@@ -1,11 +1,13 @@
+import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { onDocumentCreated, onDocumentUpdated } from 'firebase-functions/v2/firestore';
 import * as auth from 'firebase-functions/v1/auth';
 import * as logger from 'firebase-functions/logger';
 import * as admin from 'firebase-admin';
+import { getApps, initializeApp } from 'firebase-admin/app';
 
 // Initialize Firebase Admin SDK using Application Default Credentials (ADC)
-if (!admin.apps.length) {
-  admin.initializeApp();
+if (!getApps().length) {
+  initializeApp();
 }
 
 const db = admin.firestore();
@@ -404,5 +406,50 @@ export const onAuthUserDeleted = auth.user().onDelete(async (user: auth.UserReco
     logger.info(`[onAuthUserDeleted] Successfully finished safety net cleanup for user ${deletedUid}`);
   } catch (err: any) {
     logger.error(`[onAuthUserDeleted] Error cleaning up data for user ${deletedUid}:`, err);
+  }
+});
+
+/**
+ * Callable Function: deleteAccount
+ * Region: europe-west1
+ * Allows authenticated user to delete their account and associated duo data.
+ */
+export const deleteAccount = onCall({ region: 'europe-west1' }, async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) {
+    throw new HttpsError('unauthenticated', 'Utilisateur non authentifié.');
+  }
+  logger.info(`[deleteAccount] Starting account deletion for UID: ${uid}`);
+
+  try {
+    // 1. Delete all couples where memberUids contains uid
+    const couplesSnap = await db.collection('couples').where('memberUids', 'array-contains', uid).get();
+    for (const coupleDoc of couplesSnap.docs) {
+      const coupleId = coupleDoc.id;
+      const spots = await db.collection(`couples/${coupleId}/spots`).get();
+      const batch1 = db.batch();
+      spots.docs.forEach((d) => batch1.delete(d.ref));
+      await batch1.commit();
+
+      const notifs = await db.collection(`couples/${coupleId}/notifications`).get();
+      const batch2 = db.batch();
+      notifs.docs.forEach((d) => batch2.delete(d.ref));
+      await batch2.commit();
+
+      await coupleDoc.ref.delete();
+      logger.info(`[deleteAccount] Purged couple ${coupleId}`);
+    }
+
+    // 2. Delete user doc & private
+    await db.doc(`users/${uid}`).delete().catch(() => {});
+    await db.doc(`private/${uid}`).delete().catch(() => {});
+
+    // 3. Delete from Firebase Auth
+    await admin.auth().deleteUser(uid);
+    logger.info(`[deleteAccount] Successfully deleted user ${uid}`);
+    return { success: true };
+  } catch (err: any) {
+    logger.error(`[deleteAccount] Error deleting user ${uid}:`, err);
+    throw new HttpsError('internal', err?.message || 'Erreur lors de la suppression');
   }
 });

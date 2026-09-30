@@ -1,30 +1,28 @@
 import React, { useState, useEffect } from 'react';
-import { User } from 'firebase/auth';
+import { User, deleteUser } from 'firebase/auth';
 import {
   auth,
   getEffectiveUser,
   loginWithGoogle,
   loginWithApple,
-  logoutUser,
   findUserCoupleInFirestore,
-  ensureCoupleRoomInFirestore,
-  joinCoupleInFirestore,
+  createCoupleInFirestore,
+  updateCoupleInFirestore,
+  saveUserDisplayName,
+  checkUserAccountExists,
+  registerNewUserAccount,
 } from '../lib/firebase';
+import { saveStoredAuthUser } from '../lib/storage';
 import { CouplePair, PartnerId } from '../types';
 import {
   X,
   Heart,
-  LogOut,
-  ShieldCheck,
-  Sparkles,
-  Check,
   User as UserIcon,
   UserPlus,
   LogIn,
-  KeyRound,
-  Compass,
   Shield,
   AlertCircle,
+  Compass,
 } from 'lucide-react';
 import { triggerHaptic } from '../lib/feedback';
 
@@ -56,10 +54,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Registration profile options
+  // Registration profile option: Prénom uniquement
   const [displayName, setDisplayName] = useState('');
-  const [hasPartnerCode, setHasPartnerCode] = useState(false);
-  const [partnerCode, setPartnerCode] = useState('');
 
   useEffect(() => {
     if (isOpen) {
@@ -82,37 +78,46 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     return () => unsubscribe();
   }, [isOpen]);
 
-  const isRealUser = Boolean(currentUser && !currentUser.isAnonymous);
+  if (!isOpen) return null;
 
-  // If already authenticated with a real account, do not show this popup
-  useEffect(() => {
-    if (isOpen && isRealUser && !loading) {
-      onClose();
-    }
-  }, [isOpen, isRealUser, loading, onClose]);
-
-  if (!isOpen || (isRealUser && !loading)) return null;
-
-  const handleSyncUserCouple = async (u: User, successToast: string) => {
+  const handleSyncUserCouple = async (u: User, successToast: string, preferredName?: string) => {
     try {
+      const cleanName = (preferredName || displayName).trim() || u.displayName || 'Moi';
+
+      // 1. Sauvegarder obligatoirement le pseudo dans users/{u.uid}
+      await saveUserDisplayName(u, cleanName);
+
       setCurrentUser(u);
       onAuthUserChange?.(u);
+
       let existing = null;
       try {
         existing = await findUserCoupleInFirestore(u);
       } catch (e) {
         console.warn('Firestore lookup notice:', e);
       }
+
       if (existing) {
+        const isPartnerA = existing.partnerId === 'partner_a';
+        if (isPartnerA) {
+          existing.couple.partnerA = {
+            ...existing.couple.partnerA,
+            name: cleanName,
+          };
+        } else {
+          existing.couple.partnerB = {
+            ...(existing.couple.partnerB || { id: 'partner_b', role: 'Partenaire 2' }),
+            name: cleanName,
+          };
+        }
+        await updateCoupleInFirestore(existing.couple.code, existing.couple).catch(() => {});
         onCoupleSync(existing.couple, existing.partnerId);
         onToast(`Espace duo (${existing.couple.code}) restauré 💖`);
       } else {
-        try {
-          const synced = await ensureCoupleRoomInFirestore(couple.code, couple, 'partner_a');
-          onCoupleSync(synced, 'partner_a');
-        } catch (e) {
-          onCoupleSync(couple, 'partner_a');
-        }
+        // Créer un espace couple avec le prénom propre de l'utilisateur
+        const defaultAvatar = 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80';
+        const created = await createCoupleInFirestore(u, cleanName, defaultAvatar, true);
+        onCoupleSync(created.couple, 'partner_a');
         onToast(successToast);
       }
     } finally {
@@ -122,7 +127,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   const handleGoogleLogin = async () => {
     triggerHaptic('medium');
-    
+
     if (mode === 'register' && !displayName.trim()) {
       setError('Veuillez renseigner votre prénom pour créer un compte.');
       triggerHaptic('error');
@@ -131,37 +136,47 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
     setLoading(true);
     setError(null);
+
     try {
-      const preferredName = displayName.trim() || 'Utilisateur Google';
+      const preferredName = displayName.trim() || undefined;
       const u = await loginWithGoogle(preferredName);
 
-      // If user is in register mode and provided a partner code to join
-      if (mode === 'register' && hasPartnerCode && partnerCode.trim()) {
-        try {
-          const defaultAvatar = couple?.partnerA?.avatar || 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150';
-          const joined = await joinCoupleInFirestore(
-            u,
-            partnerCode.trim().toUpperCase(),
-            displayName.trim() || u.displayName || 'Partenaire',
-            u.photoURL || defaultAvatar
-          );
-          if (joined && joined.couple) {
-            onCoupleSync(joined.couple, 'partner_b');
-            onToast(`💖 Espace Duo (${joined.couple.code}) rejoint avec succès !`);
-            onClose();
-            return;
-          }
-        } catch (joinErr: any) {
-          console.warn('Join couple error on Google login:', joinErr);
-          setError(joinErr?.message || 'Code Duo introuvable ou déjà complet.');
+      // Si mode connexion : vérifier OBLIGATOIREMENT que le compte existe dans la base
+      if (mode === 'login') {
+        const exists = await checkUserAccountExists(u.uid);
+        if (!exists) {
+          console.warn('[AuthModal] Connexion bloquée : aucun compte existant pour UID:', u.uid);
+          try {
+            await deleteUser(u).catch(() => auth.signOut());
+            saveStoredAuthUser(null);
+            setCurrentUser(null);
+            onAuthUserChange?.(null as any);
+          } catch (e) {}
+          setLoading(false);
+          setError("Ce compte n'existe pas. Veuillez d'abord créer votre compte.");
+          onToast("❌ Ce compte n'existe pas. Veuillez d'abord créer un compte.");
+          triggerHaptic('error');
           return;
         }
+
+        await handleSyncUserCouple(u, `Connecté avec Google !`);
+        return;
       }
 
-      await handleSyncUserCouple(u, `Connecté avec Google (${u.displayName || u.email || 'Compte Google'}) !`);
+      // Si mode création : enregistrer le compte avec son prénom
+      if (mode === 'register') {
+        const cleanName = displayName.trim();
+        const created = await registerNewUserAccount(u, cleanName);
+        setCurrentUser(u);
+        onAuthUserChange?.(u);
+        onCoupleSync(created.couple, 'partner_a');
+        onToast(`Bienvenue ${cleanName} ! Votre espace Duo est prêt 💖`);
+        onClose();
+        return;
+      }
     } catch (err: any) {
       if (err?.code === 'auth/popup-closed-by-user') {
-        setError('Connexion annulée par l\'utilisateur.');
+        setError("Connexion annulée par l'utilisateur.");
       } else {
         setError(err?.message || 'Erreur lors de la connexion Google');
         onToast(err?.message || 'Erreur Google');
@@ -182,51 +197,55 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
     setLoading(true);
     setError(null);
+
     try {
-      const preferredName = displayName.trim() || 'Utilisateur Apple';
+      const preferredName = displayName.trim() || undefined;
       const u = await loginWithApple(preferredName);
 
-      // If user is in register mode and provided a partner code to join
-      if (mode === 'register' && hasPartnerCode && partnerCode.trim()) {
-        try {
-          const defaultAvatar = couple?.partnerA?.avatar || 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150';
-          const joined = await joinCoupleInFirestore(
-            u,
-            partnerCode.trim().toUpperCase(),
-            displayName.trim() || u.displayName || 'Partenaire',
-            u.photoURL || defaultAvatar
-          );
-          if (joined && joined.couple) {
-            onCoupleSync(joined.couple, 'partner_b');
-            onToast(`💖 Espace Duo (${joined.couple.code}) rejoint avec succès !`);
-            onClose();
-            return;
-          }
-        } catch (joinErr: any) {
-          console.warn('Join couple error on Apple login:', joinErr);
-          setError(joinErr?.message || 'Code Duo introuvable ou déjà complet.');
+      // Si mode connexion : vérifier OBLIGATOIREMENT que le compte existe dans la base
+      if (mode === 'login') {
+        const exists = await checkUserAccountExists(u.uid);
+        if (!exists) {
+          console.warn('[AuthModal] Connexion bloquée : aucun compte existant pour UID:', u.uid);
+          try {
+            await deleteUser(u).catch(() => auth.signOut());
+            saveStoredAuthUser(null);
+            setCurrentUser(null);
+            onAuthUserChange?.(null as any);
+          } catch (e) {}
+          setLoading(false);
+          setError("Ce compte n'existe pas. Veuillez d'abord créer votre compte.");
+          onToast("❌ Ce compte n'existe pas. Veuillez d'abord créer un compte.");
+          triggerHaptic('error');
           return;
         }
+
+        await handleSyncUserCouple(u, `Connecté avec Apple !`);
+        return;
       }
 
-      await handleSyncUserCouple(u, `Connecté avec Apple (${u.displayName || u.email || 'Utilisateur Apple'}) !`);
+      // Si mode création : enregistrer le compte avec son prénom
+      if (mode === 'register') {
+        const cleanName = displayName.trim();
+        const created = await registerNewUserAccount(u, cleanName);
+        setCurrentUser(u);
+        onAuthUserChange?.(u);
+        onCoupleSync(created.couple, 'partner_a');
+        onToast(`Bienvenue ${cleanName} ! Votre espace Duo est prêt 💖`);
+        onClose();
+        return;
+      }
     } catch (err: any) {
+      console.error('Apple Login Error Detail:', err);
       if (err?.code === 'auth/popup-closed-by-user') {
-        setError('Connexion annulée par l\'utilisateur.');
+        setError("Connexion annulée par l'utilisateur.");
       } else {
-        setError(err?.message || 'Erreur lors de la connexion Apple');
-        onToast(err?.message || 'Erreur Apple');
+        const fullErr = err?.message ? `Erreur Apple: ${err.message}` : 'Erreur lors de la connexion Apple.';
+        setError(fullErr);
       }
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleLogout = async () => {
-    triggerHaptic('selection');
-    await logoutUser();
-    setCurrentUser(null);
-    onToast('Déconnecté.');
   };
 
   return (
@@ -282,7 +301,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
         <div className="p-5 space-y-4 overflow-y-auto">
           {error && (
-            <div className="p-3 rounded-2xl bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-900/50 text-rose-700 dark:text-rose-300 text-xs font-semibold flex items-start gap-2 animate-shake">
+            <div className="p-3.5 rounded-2xl bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-900/50 text-rose-700 dark:text-rose-300 text-xs font-semibold flex items-start gap-2 animate-shake">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-500" />
               <span>{error}</span>
             </div>
@@ -326,7 +345,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   <LogIn className="w-3.5 h-3.5" />
                   <span>Se connecter</span>
                 </button>
-
                 <button
                   type="button"
                   onClick={() => {
@@ -349,12 +367,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed text-center px-2">
                 {mode === 'login'
                   ? 'Connectez-vous via Google ou Apple pour retrouver votre espace Duo et synchroniser vos lieux secrets en toute sécurité.'
-                  : 'Créez votre compte en 1 clic avec Google ou Apple pour lancer votre carte secrète ou rejoindre votre partenaire.'}
+                  : 'Créez votre compte en 1 clic avec Google ou Apple pour lancer votre carte secrète.'}
               </p>
 
-              {/* Register-specific options (Prénom & Code Duo) */}
+              {/* Register-specific option: Prénom uniquement (aucune case ni code requis) */}
               {mode === 'register' && (
-                <div className="space-y-3 p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200/80 dark:border-slate-700/80 animate-fade-in">
+                <div className="space-y-2 p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200/80 dark:border-slate-700/80 animate-fade-in">
                   <div className="space-y-1">
                     <label className="text-[11px] font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
                       <UserIcon className="w-3.5 h-3.5 text-rose-500" />
@@ -371,32 +389,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       required
                       className="w-full px-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-xs placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-rose-500"
                     />
-                  </div>
-
-                  <div className="pt-1">
-                    <button
-                      type="button"
-                      onClick={() => setHasPartnerCode(!hasPartnerCode)}
-                      className="text-[11px] font-bold text-slate-600 dark:text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 flex items-center gap-1.5 cursor-pointer"
-                    >
-                      <KeyRound className="w-3.5 h-3.5 text-rose-500" />
-                      <span>{hasPartnerCode ? 'Masquer le code partenaire' : "J'ai un code Duo partenaire à rejoindre"}</span>
-                    </button>
-
-                    {hasPartnerCode && (
-                      <div className="mt-2 space-y-1 animate-fade-in">
-                        <label className="text-[10px] font-extrabold text-slate-500 uppercase tracking-wider block">
-                          Code Duo reçu de votre partenaire
-                        </label>
-                        <input
-                          type="text"
-                          value={partnerCode}
-                          onChange={(e) => setPartnerCode(e.target.value.toUpperCase())}
-                          placeholder="Ex: LM-ABCD-1234"
-                          className="w-full px-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono text-xs font-bold uppercase text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-rose-500"
-                        />
-                      </div>
-                    )}
                   </div>
                 </div>
               )}

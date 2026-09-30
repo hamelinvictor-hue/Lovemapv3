@@ -107,7 +107,7 @@ export const INITIAL_COUPLE: CouplePair = {
   code: 'LOVE-NEW',
   partnerA: {
     id: 'partner_a',
-    name: 'Partenaire 1',
+    name: 'Moi',
     avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
     role: 'Partenaire 1',
   },
