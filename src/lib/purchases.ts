@@ -81,7 +81,11 @@ export async function loadCurrentOfferings(appUserId?: string): Promise<Purchase
   if (!isCapacitorNative()) return null;
 
   try {
-    await initializePurchases(appUserId);
+    const configured = await initializePurchases(appUserId);
+    if (!configured || !isPurchasesConfigured) {
+      console.warn('[Purchases] Impossible de charger les offres: SDK non configuré.');
+      return null;
+    }
     const offerings = await Purchases.getOfferings();
     if (offerings.current) {
       console.log('[Purchases] Offres RevenueCat chargées (current):', offerings.current.identifier);
