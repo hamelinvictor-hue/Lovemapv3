@@ -690,7 +690,12 @@ export function clearVerifiedRoomsCache(): void {
 export async function checkUserAccountExists(uid: string): Promise<boolean> {
   if (!uid) return false;
   try {
-    const snap = await adapterGetDocument<{ displayName?: string; coupleId?: string; accountCreated?: boolean }>(`users/${uid}`);
+    const snap = await withTimeout(
+      adapterGetDocument<{ displayName?: string; coupleId?: string; accountCreated?: boolean }>(`users/${uid}`),
+      1500,
+      null
+    ).catch(() => null);
+
     if (snap && snap.exists && snap.val) {
       const data = snap.data();
       const name = (data?.displayName || '').trim();
@@ -699,26 +704,9 @@ export async function checkUserAccountExists(uid: string): Promise<boolean> {
         return true;
       }
     }
-  } catch (e) {}
-
-  try {
-    const coupleSnap = await queryCollectionWhere('couples', {
-      field: 'memberUids',
-      operator: 'array-contains',
-      value: uid,
-    });
-    if (coupleSnap && coupleSnap.length > 0) return true;
-  } catch (e) {}
-
-  try {
-    const coupleOwnerSnap = await queryCollectionWhere('couples', {
-      field: 'ownerUid',
-      operator: '==',
-      value: uid,
-    });
-    if (coupleOwnerSnap && coupleOwnerSnap.length > 0) return true;
-  } catch (e) {}
-
+  } catch (e) {
+    console.warn('[checkUserAccountExists] Notice:', e);
+  }
   return false;
 }
 

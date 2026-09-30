@@ -10,6 +10,7 @@ import {
   updateCoupleInFirestore,
   saveUserDisplayName,
   checkUserAccountExists,
+  withTimeout,
   registerNewUserAccount,
 } from '../lib/firebase';
 import { saveStoredAuthUser } from '../lib/storage';
@@ -147,7 +148,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         if (!exists) {
           console.warn('[AuthModal] Connexion bloquée : aucun compte existant pour UID:', u.uid);
           try {
-            await deleteUser(u).catch(() => auth.signOut());
+            await withTimeout(deleteUser(u), 1500, null).catch(() => {});
+            await auth.signOut().catch(() => {});
             saveStoredAuthUser(null);
             setCurrentUser(null);
             onAuthUserChange?.(null as any);
@@ -208,7 +210,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         if (!exists) {
           console.warn('[AuthModal] Connexion bloquée : aucun compte existant pour UID:', u.uid);
           try {
-            await deleteUser(u).catch(() => auth.signOut());
+            await withTimeout(deleteUser(u), 1500, null).catch(() => {});
+            await auth.signOut().catch(() => {});
             saveStoredAuthUser(null);
             setCurrentUser(null);
             onAuthUserChange?.(null as any);
