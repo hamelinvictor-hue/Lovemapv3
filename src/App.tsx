@@ -115,6 +115,8 @@ export default function App() {
   const [spots, setSpots] = useState<Spot[]>(() => getStoredSpots());
   const [couple, setCouple] = useState<CouplePair>(INITIAL_COUPLE);
   const [isVerifyingSession, setIsVerifyingSession] = useState(true);
+  const [sessionError, setSessionError] = useState<string | null>(null);
+  const [sessionRetryCount, setSessionRetryCount] = useState(0);
   const [notifications, setNotifications] = useState<NotificationItem[]>(() => getStoredNotifications());
   const [activePartnerId, setActivePartnerId] = useState<PartnerId>(() => getActivePartner());
   const [appMode, setAppMode] = useState<AppMode>(() => getStoredAppMode());
@@ -523,97 +525,16 @@ export default function App() {
     }
   };
 
-  // Au démarrage, après la connexion, lis users/{uid} depuis le serveur.
-  // Si coupleId est renseigné, vérifie que le couple existe et que l'uid fait partie de ses membres.
-  // Sinon, affiche l'écran sans duo. Aucune donnée locale ne doit s'afficher avant cette vérification.
+  // Au démarrage : Vérification structurée et robuste de la session utilisateur
   useEffect(() => {
+    console.log('[Session] étape 0: Démarrage de la vérification de session (tentative: ' + sessionRetryCount + ')');
+    setIsVerifyingSession(true);
+    setSessionError(null);
+
     const unsub = auth.onAuthStateChanged(async (user) => {
-      if (user && !user.isAnonymous) {
-        setAuthUser(user);
-        registerFcmToken(user.uid).catch(console.warn);
-
-        try {
-          // 1. Lire users/{uid} depuis le serveur Firestore
-          const userProfile = await fetchUserProfile(user.uid);
-          const userDisplayName = (userProfile?.displayName && userProfile.displayName !== 'Partenaire 1' && userProfile.displayName !== 'Utilisateur Google' && userProfile.displayName !== 'Utilisateur Apple')
-            ? userProfile.displayName
-            : ((user.displayName && user.displayName !== 'Partenaire 1' && user.displayName !== 'Utilisateur Google' && user.displayName !== 'Utilisateur Apple') ? user.displayName : 'Moi');
-
-          // 2. Si coupleId est renseigné, vérifier que le couple existe et que l'uid fait partie de ses membres
-          let verifiedCouple: CouplePair | null = null;
-          let partnerId: PartnerId = 'partner_a';
-
-          const targetCoupleId = userProfile?.coupleId;
-          if (targetCoupleId) {
-            try {
-              const snap = await adapterGetDocument<CouplePair>(`couples/${targetCoupleId}`);
-              if (snap && snap.exists && snap.val) {
-                const cData = snap.data();
-                const members = Array.isArray(cData.memberUids) ? cData.memberUids : [];
-                if (members.includes(user.uid) && cData.status !== 'broken') {
-                  verifiedCouple = cData;
-                  partnerId = cData.partnerBUid === user.uid ? 'partner_b' : 'partner_a';
-                }
-              }
-            } catch (e) {
-              console.warn('[Session] Notice reading couple doc:', e);
-            }
-          }
-
-          // Si pas trouvé par coupleId, vérifier par requête memberUids
-          if (!verifiedCouple) {
-            const result = await findUserCoupleInFirestore(user);
-            if (result && result.couple && result.couple.status !== 'broken') {
-              const members = Array.isArray(result.couple.memberUids) ? result.couple.memberUids : [];
-              if (members.includes(user.uid)) {
-                verifiedCouple = result.couple;
-                partnerId = result.partnerId;
-              }
-            }
-          }
-
-          if (verifiedCouple) {
-            if (partnerId === 'partner_a') {
-              verifiedCouple.partnerA = {
-                ...verifiedCouple.partnerA,
-                name: userDisplayName,
-              };
-            } else {
-              verifiedCouple.partnerB = {
-                avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
-                ...(verifiedCouple.partnerB || { id: 'partner_b', role: 'Partenaire 2' }),
-                name: userDisplayName,
-              };
-            }
-            setCouple(verifiedCouple);
-            setActivePartnerId(partnerId);
-            setActivePartner(partnerId);
-            saveHasCompletedOnboarding(true);
-            setIsOnboardingOpen(false);
-          } else {
-            // Sinon, affiche l'écran sans duo
-            const noDuo: CouplePair = {
-              ...INITIAL_COUPLE,
-              partnerA: {
-                ...INITIAL_COUPLE.partnerA,
-                name: userDisplayName,
-              },
-              partnerB: {
-                ...INITIAL_COUPLE.partnerB,
-                name: 'En attente...',
-              },
-              isCodeUsed: false,
-            };
-            setCouple(noDuo);
-            setActivePartnerId('partner_a');
-          }
-        } catch (err) {
-          console.error('[Session Verification] Error:', err);
-          setCouple(INITIAL_COUPLE);
-        } finally {
-          setIsVerifyingSession(false);
-        }
-      } else {
+      // Étape 1 : Aucun utilisateur connecté
+      if (!user || user.isAnonymous) {
+        console.log("[Session] étape 1: Aucun utilisateur connecté -> Affichage de l'écran de connexion");
         setAuthUser(null);
         setCouple(INITIAL_COUPLE);
         setIsVerifyingSession(false);
@@ -622,11 +543,146 @@ export default function App() {
         setAuthModalMode('login');
         setAuthModalSource('general');
         setIsAuthOpen(true);
+        return;
+      }
+
+      // Étape 2 : Utilisateur connecté -> Vérification de users/{uid}
+      console.log('[Session] étape 2: Utilisateur connecté (' + user.uid + '), vérification du document users/{uid}...');
+      setAuthUser(user);
+      registerFcmToken(user.uid).catch(console.warn);
+
+      try {
+        // Lecture du profil users/{uid} avec timeout strict de 10s
+        const userProfile = await withTimeout(fetchUserProfile(user.uid), 10000, 'TIMEOUT_EXCEEDED' as any);
+
+        if (userProfile === 'TIMEOUT_EXCEEDED') {
+          console.warn('[Session] Timeout dépassé (10s) lors de la lecture du profil users/{uid}');
+          setSessionError('La vérification de votre profil a pris trop de temps. Veuillez vérifier votre connexion.');
+          setIsVerifyingSession(false);
+          return;
+        }
+
+        // Étape 3 : Utilisateur connecté sans document users/{uid} -> Onboarding direct sans déconnexion
+        if (!userProfile) {
+          console.log("[Session] étape 3: Utilisateur connecté sans document users/{uid} -> Affichage de l'onboarding");
+          setCouple(INITIAL_COUPLE);
+          setIsVerifyingSession(false);
+          setIsAuthOpen(false);
+          setIsAuthMandatory(false);
+          setIsOnboardingOpen(true);
+          return;
+        }
+
+        // Étape 4 : Utilisateur connecté avec profil -> Vérification du couple
+        console.log("[Session] étape 4: Profil trouvé pour " + (userProfile.displayName || "Utilisateur") + " -> Vérification de l'espace couple...");
+        const userDisplayName = (userProfile?.displayName && userProfile.displayName !== 'Partenaire 1' && userProfile.displayName !== 'Utilisateur Google' && userProfile.displayName !== 'Utilisateur Apple' && userProfile.displayName !== 'Alex')
+          ? userProfile.displayName
+          : ((user.displayName && user.displayName !== 'Partenaire 1' && user.displayName !== 'Utilisateur Google' && user.displayName !== 'Utilisateur Apple' && user.displayName !== 'Alex') ? user.displayName : 'Moi');
+
+        let verifiedCouple: CouplePair | null = null;
+        let partnerId: PartnerId = 'partner_a';
+        const targetCoupleId = userProfile?.coupleId;
+
+        // Lecture du document couple avec timeout strict de 10s
+        if (targetCoupleId) {
+          try {
+            const snap = await withTimeout(adapterGetDocument<CouplePair>(`couples/${targetCoupleId}`), 10000, 'TIMEOUT_EXCEEDED' as any);
+            if (snap === 'TIMEOUT_EXCEEDED') {
+              console.warn('[Session] Timeout dépassé (10s) lors de la lecture du couple');
+              setSessionError('La récupération de votre espace couple a pris trop de temps.');
+              setIsVerifyingSession(false);
+              return;
+            }
+            if (snap && snap.exists && snap.val) {
+              const cData = snap.data();
+              const members = Array.isArray(cData.memberUids) ? cData.memberUids : [];
+              if (members.includes(user.uid) && cData.status !== 'broken') {
+                verifiedCouple = cData;
+                partnerId = cData.partnerBUid === user.uid ? 'partner_b' : 'partner_a';
+              }
+            }
+          } catch (e) {
+            console.warn('[Session] Notice reading couple doc:', e);
+          }
+        }
+
+        // Si pas trouvé par coupleId, recherche par requête memberUids avec timeout de 10s
+        if (!verifiedCouple) {
+          try {
+            const result = await withTimeout(findUserCoupleInFirestore(user), 10000, 'TIMEOUT_EXCEEDED' as any);
+            if (result === 'TIMEOUT_EXCEEDED') {
+              console.warn('[Session] Timeout dépassé (10s) lors de la recherche du couple');
+              setSessionError('La recherche de votre espace couple a pris trop de temps.');
+              setIsVerifyingSession(false);
+              return;
+            }
+            if (result && result.couple && result.couple.status !== 'broken') {
+              const members = Array.isArray(result.couple.memberUids) ? result.couple.memberUids : [];
+              if (members.includes(user.uid)) {
+                verifiedCouple = result.couple;
+                partnerId = result.partnerId;
+              }
+            }
+          } catch (e) {
+            console.warn('[Session] Notice finding user couple:', e);
+          }
+        }
+
+        // Étape 5 : Application de l'état vérifié
+        if (verifiedCouple) {
+          console.log('[Session] étape 5: Espace couple validé (' + verifiedCouple.code + ')');
+          if (partnerId === 'partner_a') {
+            verifiedCouple.partnerA = {
+              ...verifiedCouple.partnerA,
+              name: userDisplayName,
+            };
+          } else {
+            verifiedCouple.partnerB = {
+              avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
+              ...(verifiedCouple.partnerB || { id: 'partner_b', role: 'Partenaire 2' }),
+              name: userDisplayName,
+            };
+          }
+          setCouple(verifiedCouple);
+          setActivePartnerId(partnerId);
+          setActivePartner(partnerId);
+          saveHasCompletedOnboarding(true);
+          setIsOnboardingOpen(false);
+
+          // Initialisation RevenueCat avec timeout de 10s
+          withTimeout(ensureSubscriberInRevenueCat(verifiedCouple.code), 10000, null).catch(console.warn);
+        } else {
+          console.log('[Session] étape 5: Profil sans duo actif -> Mode personnel');
+          const noDuo: CouplePair = {
+            ...INITIAL_COUPLE,
+            partnerA: {
+              ...INITIAL_COUPLE.partnerA,
+              name: userDisplayName,
+            },
+            partnerB: {
+              ...INITIAL_COUPLE.partnerB,
+              name: 'En attente...',
+            },
+            isCodeUsed: false,
+          };
+          setCouple(noDuo);
+          setActivePartnerId('partner_a');
+          saveHasCompletedOnboarding(true);
+          setIsOnboardingOpen(false);
+        }
+
+        console.log('[Session] étape 6: Session initialisée avec succès');
+        setIsVerifyingSession(false);
+        setSessionError(null);
+      } catch (err: any) {
+        console.error('[Session Verification] Error:', err);
+        setSessionError('Une erreur est survenue lors de la vérification de session : ' + (err?.message || 'Erreur réseau'));
+        setIsVerifyingSession(false);
       }
     });
 
     return () => unsub();
-  }, []);
+  }, [sessionRetryCount]);
 
   // Ensure couple room registration in Firestore & RevenueCat (ONLY once after onboarding is completed)
   useEffect(() => {
@@ -1225,9 +1281,41 @@ export default function App() {
     avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
   };
 
+  if (sessionError) {
+    return (
+      <div className="w-full h-full min-h-screen bg-slate-950 flex flex-col items-center justify-center p-6 text-white text-center select-none animate-fade-in">
+        <div className="w-14 h-14 rounded-2xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-500 mb-4 animate-bounce">
+          <AlertTriangle className="w-7 h-7" />
+        </div>
+        <h2 className="text-lg font-black text-white mb-2">Erreur de connexion</h2>
+        <p className="text-xs text-slate-400 max-w-xs leading-relaxed mb-6">
+          {sessionError}
+        </p>
+        <div className="flex flex-col sm:flex-row gap-3 w-full max-w-xs">
+          <button
+            onClick={() => {
+              setSessionError(null);
+              setIsVerifyingSession(true);
+              setSessionRetryCount((c) => c + 1);
+            }}
+            className="flex-1 py-3 px-4 bg-gradient-to-r from-rose-500 to-amber-500 text-white font-bold text-xs rounded-xl shadow-lg hover:brightness-110 active:scale-95 transition-all cursor-pointer"
+          >
+            Réessayer
+          </button>
+          <button
+            onClick={handleLogout}
+            className="flex-1 py-3 px-4 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs rounded-xl border border-slate-700 active:scale-95 transition-all cursor-pointer"
+          >
+            Se déconnecter
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (isVerifyingSession) {
     return (
-      <div className="w-full h-full min-h-screen bg-slate-950 flex flex-col items-center justify-center text-white">
+      <div className="w-full h-full min-h-screen bg-slate-950 flex flex-col items-center justify-center text-white select-none">
         <div className="w-10 h-10 rounded-full border-2 border-rose-500/20 border-t-rose-500 animate-spin mb-3" />
         <p className="text-xs font-semibold text-slate-400">Vérification de votre session...</p>
       </div>
