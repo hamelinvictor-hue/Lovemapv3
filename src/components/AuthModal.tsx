@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { FirebaseAuthentication } from '@capacitor-firebase/authentication';
+import { isCapacitorNative } from '../lib/nativePermissions';
 import { User, deleteUser } from 'firebase/auth';
 import {
   auth,
@@ -148,6 +150,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         if (!exists) {
           console.warn('[AuthModal] Connexion bloquée : aucun compte existant pour UID:', u.uid);
           try {
+            if (isCapacitorNative()) {
+              await FirebaseAuthentication.signOut().catch(() => {});
+            }
             await withTimeout(deleteUser(u), 1500, null).catch(() => {});
             await auth.signOut().catch(() => {});
             saveStoredAuthUser(null);
@@ -155,8 +160,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             onAuthUserChange?.(null as any);
           } catch (e) {}
           setLoading(false);
-          setError("Ce compte n'existe pas. Veuillez d'abord créer votre compte.");
-          onToast("❌ Ce compte n'existe pas. Veuillez d'abord créer un compte.");
+          setMode('register');
+          setError("Ce compte n'existe pas. Veuillez renseigner votre prénom pour créer votre compte.");
+          onToast("❌ Ce compte n'existe pas. Créez votre compte en 1 clic !");
           triggerHaptic('error');
           return;
         }
@@ -210,6 +216,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         if (!exists) {
           console.warn('[AuthModal] Connexion bloquée : aucun compte existant pour UID:', u.uid);
           try {
+            if (isCapacitorNative()) {
+              await FirebaseAuthentication.signOut().catch(() => {});
+            }
             await withTimeout(deleteUser(u), 1500, null).catch(() => {});
             await auth.signOut().catch(() => {});
             saveStoredAuthUser(null);
@@ -217,8 +226,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             onAuthUserChange?.(null as any);
           } catch (e) {}
           setLoading(false);
-          setError("Ce compte n'existe pas. Veuillez d'abord créer votre compte.");
-          onToast("❌ Ce compte n'existe pas. Veuillez d'abord créer un compte.");
+          setMode('register');
+          setError("Ce compte n'existe pas. Veuillez renseigner votre prénom pour créer votre compte.");
+          onToast("❌ Ce compte n'existe pas. Créez votre compte en 1 clic !");
           triggerHaptic('error');
           return;
         }
@@ -240,11 +250,19 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       }
     } catch (err: any) {
       console.error('Apple Login Error Detail:', err);
-      if (err?.code === 'auth/popup-closed-by-user') {
+      const isCancelled =
+        err?.code === 'auth/popup-closed-by-user' ||
+        err?.code === '1001' ||
+        err?.code === 1001 ||
+        err?.message?.toLowerCase()?.includes('cancel') ||
+        err?.message?.toLowerCase()?.includes('annul');
+
+      if (isCancelled) {
         setError("Connexion annulée par l'utilisateur.");
       } else {
-        const fullErr = err?.message ? `Erreur Apple: ${err.message}` : 'Erreur lors de la connexion Apple.';
+        const fullErr = err?.message || 'Erreur lors de la connexion Apple.';
         setError(fullErr);
+        onToast(fullErr);
       }
     } finally {
       setLoading(false);
