@@ -59,6 +59,7 @@ import {
   ensureGuestUser,
   ensureCoupleRoomInFirestore,
   getEffectiveUser,
+  withTimeout,
   checkUserAccountExists,
 } from './lib/firebase';
 import { deleteUser, type User } from 'firebase/auth';
