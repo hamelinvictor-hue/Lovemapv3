@@ -106,8 +106,13 @@ export interface CoupleMemberProfile {
 
 export interface UserProfile {
   id?: string;
+  uid?: string;
   name: string;
   avatar: string;
+  displayName?: string;
+  photoURL?: string;
+  coupleId?: string | null;
+  accountCreated?: boolean;
   role?: string;
   email?: string | null;
   pushToken?: string | null;

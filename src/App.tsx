@@ -76,6 +76,8 @@ import { initializePurchases, resetPurchasesSession } from './lib/purchases';
 import { triggerHaptic } from './lib/feedback';
 import { INITIAL_SPOTS, INITIAL_NOTIFICATIONS, INITIAL_COUPLE } from './data/initialData';
 import { fullTeardown } from './auth/lifecycle';
+import { useSession, initializeSession, logout, deleteAccount, setProfileCompleted, retrySessionVerification, registerResetAppStateCallback } from './auth/sessionStore';
+import { saveUserProfile } from './lib/firebase';
 import { registerFcmToken } from './lib/fcmManager';
 import { FirebaseFirestore } from '@capacitor-firebase/firestore';
 import { FirebaseAuthentication } from '@capacitor-firebase/authentication';
@@ -114,11 +116,9 @@ import {
 import { Heart, Sparkles, CheckCircle2, Bell, Smartphone, KeyRound, HeartOff, AlertTriangle } from 'lucide-react';
 
 export default function App() {
+  const session = useSession();
   const [spots, setSpots] = useState<Spot[]>(() => getStoredSpots());
   const [couple, setCouple] = useState<CouplePair>(INITIAL_COUPLE);
-  const [isVerifyingSession, setIsVerifyingSession] = useState(true);
-  const [sessionError, setSessionError] = useState<string | null>(null);
-  const [sessionRetryCount, setSessionRetryCount] = useState(0);
   const [notifications, setNotifications] = useState<NotificationItem[]>(() => getStoredNotifications());
   const [activePartnerId, setActivePartnerId] = useState<PartnerId>(() => getActivePartner());
   const [appMode, setAppMode] = useState<AppMode>(() => getStoredAppMode());
@@ -176,14 +176,9 @@ export default function App() {
     showToast(nextTheme === 'dark' ? '🌙 Mode Nuit (Cozy Night) activé' : '☀️ Mode Clair activé');
   };
 
-  // Modals state
-  const [authUser, setAuthUser] = useState<User | null>(null);
+  const authUser = (session.user as any) as User | null;
   const [isOnboardingOpen, setIsOnboardingOpen] = useState<boolean>(() => !getHasCompletedOnboarding());
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
-  const [isAuthOpen, setIsAuthOpen] = useState(false);
-  const [authModalMode, setAuthModalMode] = useState<'login' | 'register'>('login');
-  const [isAuthMandatory, setIsAuthMandatory] = useState(false);
-  const [authModalSource, setAuthModalSource] = useState<'settings' | 'general'>('general');
   const [addCoords, setAddCoords] = useState<{ lat: number; lng: number }>({ lat: 43.2118, lng: 5.5186 });
 
   const [selectedSpot, setSelectedSpot] = useState<Spot | null>(null);
@@ -405,7 +400,6 @@ export default function App() {
       activeTab === 'map' &&
       !isOnboardingOpen &&
       !isAttModalOpen &&
-      !isAuthOpen &&
       !showDuoCodeModal &&
       !getHasSeenLocationPrompt()
     ) {
@@ -414,7 +408,7 @@ export default function App() {
       }, 500);
       return () => clearTimeout(locTimer);
     }
-  }, [activeTab, isOnboardingOpen, isAttModalOpen, isAuthOpen, showDuoCodeModal]);
+  }, [activeTab, isOnboardingOpen, isAttModalOpen, showDuoCodeModal]);
 
   // Monitor 48H countdown: when remaining time hits <= 1 hour (3600s), dispatch urgency system notification!
   useEffect(() => {
@@ -473,8 +467,6 @@ export default function App() {
   const handleCompleteOnboarding = (mode: AppMode, syncedCouple?: CouplePair, partnerId?: PartnerId, authenticatedUser?: User) => {
     saveHasCompletedOnboarding(true);
     setIsOnboardingOpen(false);
-    setIsAuthMandatory(false);
-    setIsAuthOpen(false);
     setAppMode(mode);
     saveAppMode(mode);
     if (syncedCouple) {
@@ -487,7 +479,6 @@ export default function App() {
     }
     const current = authenticatedUser || auth.currentUser || getEffectiveUser();
     if (current && !current.isAnonymous) {
-      setAuthUser(current);
       saveStoredAuthUser({
         uid: current.uid,
         displayName: current.displayName || 'Utilisateur',
@@ -527,187 +518,59 @@ export default function App() {
     }
   };
 
-  // Au démarrage : Vérification native directe et structurée de la session
+  // Au montage : initialisation de la session via sessionStore unique
   useEffect(() => {
-    let isCancelled = false;
-    console.log('[Session] étape 0: Démarrage de la vérification de session (tentative: ' + sessionRetryCount + ')');
-    setIsVerifyingSession(true);
-    setSessionError(null);
+    registerResetAppStateCallback(() => {
+      setCouple(INITIAL_COUPLE);
+      setSpots([]);
+      setNotifications([]);
+      setActivePartnerId('partner_a');
+      setActivePartner('partner_a');
+      setIsSettingsOpen(false);
+      setSelectedSpot(null);
+      setEditingSpot(null);
+      setValidationSpot(null);
+      setQuestionnaireSpot(null);
+    });
 
-    // Minuteur de sécurité global de 10 secondes : garantit de TOUJOURS sortir de l'écran de chargement
-    const safetyTimer = setTimeout(() => {
-      if (!isCancelled) {
-        setIsVerifyingSession((currentLoading) => {
-          if (currentLoading) {
-            console.warn("[Session] Minuteur de sécurité (10s) déclenché : bascule vers l'écran Réessayer / Se déconnecter.");
-            setSessionError('La vérification de votre session a pris trop de temps (10s). Veuillez vérifier votre connexion.');
-            return false;
-          }
-          return false;
-        });
-      }
-    }, 10000);
+    initializeSession();
+  }, []);
 
-    const performVerification = async () => {
-      try {
-        let user: User | null = null;
+  // Lorsque la session est prête : charger l'espace couple et enregistrer le token push
+  useEffect(() => {
+    if (session.state === 'ready' && session.user) {
+      registerFcmToken(session.user.uid).catch(console.warn);
 
-        // Étape 1 : Détection de l'utilisateur via FirebaseAuthentication.getCurrentUser() natif sur iOS
-        if (isCapacitorNative()) {
-          console.log('[Session] étape 1: Vérification native via FirebaseAuthentication.getCurrentUser()...');
-          try {
-            const nativeRes = await withTimeout(FirebaseAuthentication.getCurrentUser(), 5000, null);
-            if (nativeRes && nativeRes.user && !nativeRes.user.isAnonymous) {
-              console.log('[Session] Utilisateur natif détecté UID:', nativeRes.user.uid);
-              // Forcer le rafraîchissement du jeton
-              console.log('[Session] Forçage du rafraîchissement du jeton...');
-              try {
-                const tokenRes = await withTimeout(FirebaseAuthentication.getIdToken({ forceRefresh: true }), 5000, null);
-                if (!tokenRes || !tokenRes.token) {
-                  throw new Error('Jeton invalide ou non rafraîchi');
-                }
-                console.log('[Session] Jeton rafraîchi avec succès.');
-              } catch (tokenErr) {
-                console.warn('[Session] Échec du rafraîchissement du jeton (compte désactivé/supprimé). Déconnexion native...', tokenErr);
-                await FirebaseAuthentication.signOut().catch(() => {});
-                saveStoredAuthUser(null);
-                user = null;
-              }
-
-              if (nativeRes.user) {
-                user = buildSyntheticUser({
-                  uid: nativeRes.user.uid,
-                  displayName: nativeRes.user.displayName || '',
-                  email: nativeRes.user.email || null,
-                  photoURL: nativeRes.user.photoUrl || null,
-                  providerId: nativeRes.user.providerId || 'firebase',
-                  isAnonymous: false,
-                });
-              }
-            } else {
-              console.log('[Session] Aucun utilisateur natif connecté.');
-              user = null;
-            }
-          } catch (nativeErr) {
-            console.warn('[Session] Erreur lors de FirebaseAuthentication.getCurrentUser:', nativeErr);
-            user = null;
-          }
-        } else {
-          // Environnement Web
-          console.log('[Session] étape 1: Vérification Web...');
-          user = auth.currentUser || getEffectiveUser();
-          if (user && user.isAnonymous) user = null;
-        }
-
-        if (isCancelled) return;
-
-        // Étape 1.b : Si aucun utilisateur n'est connecté
-        if (!user) {
-          console.log("[Session] étape 1: Aucun utilisateur connecté -> Affichage de l'écran de connexion");
-          setAuthUser(null);
-          setCouple(INITIAL_COUPLE);
-          setIsVerifyingSession(false);
-          setIsOnboardingOpen(false);
-          setIsAuthMandatory(true);
-          setAuthModalMode('login');
-          setAuthModalSource('general');
-          setIsAuthOpen(true);
-          clearTimeout(safetyTimer);
-          return;
-        }
-
-        // Étape 2 : Utilisateur connecté -> Vérification de users/{uid}
-        console.log('[Session] étape 2: Utilisateur connecté (' + user.uid + '), vérification du document users/{uid}...');
-        setAuthUser(user);
-        registerFcmToken(user.uid).catch(console.warn);
-
-        // Lecture du profil users/{uid} avec timeout strict de 10s
-        const userProfile = await withTimeout(fetchUserProfile(user.uid), 8000, 'TIMEOUT_EXCEEDED' as any);
-
-        if (isCancelled) return;
-
-        if (userProfile === 'TIMEOUT_EXCEEDED') {
-          console.warn('[Session] Timeout dépassé lors de la lecture du profil users/{uid}');
-          setSessionError('La vérification de votre profil a pris trop de temps. Veuillez vérifier votre connexion.');
-          setIsVerifyingSession(false);
-          clearTimeout(safetyTimer);
-          return;
-        }
-
-        // Étape 3 : Utilisateur connecté sans document users/{uid} -> Onboarding direct sans déconnexion
-        if (!userProfile) {
-          console.log("[Session] étape 3: Utilisateur connecté sans document users/{uid} -> Affichage de l'onboarding (pas de déconnexion)");
-          setCouple(INITIAL_COUPLE);
-          setIsVerifyingSession(false);
-          setIsAuthOpen(false);
-          setIsAuthMandatory(false);
-          setIsOnboardingOpen(true);
-          clearTimeout(safetyTimer);
-          return;
-        }
-
-        // Étape 4 : Utilisateur connecté avec profil -> Vérification du couple
-        console.log("[Session] étape 4: Profil trouvé pour " + (userProfile.displayName || "Utilisateur") + " -> Vérification de l'espace couple...");
-        const userDisplayName = (userProfile?.displayName && userProfile.displayName !== 'Partenaire 1' && userProfile.displayName !== 'Utilisateur Google' && userProfile.displayName !== 'Utilisateur Apple' && userProfile.displayName !== 'Alex')
-          ? userProfile.displayName
-          : ((user.displayName && user.displayName !== 'Partenaire 1' && user.displayName !== 'Utilisateur Google' && user.displayName !== 'Utilisateur Apple' && user.displayName !== 'Alex') ? user.displayName : 'Moi');
-
+      const loadUserCouple = async () => {
+        const userDisplayName = session.userProfile?.displayName || session.user?.displayName || 'Moi';
         let verifiedCouple: CouplePair | null = null;
         let partnerId: PartnerId = 'partner_a';
-        const targetCoupleId = userProfile?.coupleId;
 
-        // Lecture du document couple avec timeout
-        if (targetCoupleId) {
+        if (session.userProfile?.coupleId) {
           try {
-            const snap = await withTimeout(adapterGetDocument<CouplePair>(`couples/${targetCoupleId}`), 8000, 'TIMEOUT_EXCEEDED' as any);
-            if (snap === 'TIMEOUT_EXCEEDED') {
-              console.warn('[Session] Timeout dépassé lors de la lecture du couple');
-              setSessionError('La récupération de votre espace couple a pris trop de temps.');
-              setIsVerifyingSession(false);
-              clearTimeout(safetyTimer);
-              return;
-            }
-            if (snap && snap.exists && snap.val) {
-              const cData = snap.data();
-              const members = Array.isArray(cData.memberUids) ? cData.memberUids : [];
-              if (members.includes(user.uid) && cData.status !== 'broken') {
-                verifiedCouple = cData;
-                partnerId = cData.partnerBUid === user.uid ? 'partner_b' : 'partner_a';
-              }
+            const snap = await adapterGetDocument<CouplePair>(`couples/${session.userProfile.coupleId}`);
+            if (snap && snap.exists && snap.val && snap.data()?.status !== 'broken') {
+              verifiedCouple = snap.data();
+              partnerId = verifiedCouple?.partnerBUid === session.user?.uid ? 'partner_b' : 'partner_a';
             }
           } catch (e) {
-            console.warn('[Session] Notice reading couple doc:', e);
+            console.warn('[App] Notice chargement couple par ID:', e);
           }
         }
 
-        // Si pas trouvé par coupleId, recherche par requête memberUids
-        if (!verifiedCouple) {
+        if (!verifiedCouple && session.user) {
           try {
-            const result = await withTimeout(findUserCoupleInFirestore(user), 8000, 'TIMEOUT_EXCEEDED' as any);
-            if (result === 'TIMEOUT_EXCEEDED') {
-              console.warn('[Session] Timeout dépassé lors de la recherche du couple');
-              setSessionError('La recherche de votre espace couple a pris trop de temps.');
-              setIsVerifyingSession(false);
-              clearTimeout(safetyTimer);
-              return;
-            }
-            if (result && result.couple && result.couple.status !== 'broken') {
-              const members = Array.isArray(result.couple.memberUids) ? result.couple.memberUids : [];
-              if (members.includes(user.uid)) {
-                verifiedCouple = result.couple;
-                partnerId = result.partnerId;
-              }
+            const res = await findUserCoupleInFirestore(session.user as any);
+            if (res && res.couple && res.couple.status !== 'broken') {
+              verifiedCouple = res.couple;
+              partnerId = res.partnerId;
             }
           } catch (e) {
-            console.warn('[Session] Notice finding user couple:', e);
+            console.warn('[App] Notice recherche couple:', e);
           }
         }
 
-        if (isCancelled) return;
-
-        // Étape 5 : Application de l'état vérifié
         if (verifiedCouple) {
-          console.log('[Session] étape 5: Espace couple validé (' + verifiedCouple.code + ')');
           if (partnerId === 'partner_a') {
             verifiedCouple.partnerA = {
               ...verifiedCouple.partnerA,
@@ -723,13 +586,9 @@ export default function App() {
           setCouple(verifiedCouple);
           setActivePartnerId(partnerId);
           setActivePartner(partnerId);
-          saveHasCompletedOnboarding(true);
-          setIsOnboardingOpen(false);
-
-          // Initialisation RevenueCat avec timeout
-          withTimeout(ensureSubscriberInRevenueCat(verifiedCouple.code), 8000, null).catch(console.warn);
+          saveCouple(verifiedCouple);
+          ensureSubscriberInRevenueCat(verifiedCouple.code).catch(console.warn);
         } else {
-          console.log('[Session] étape 5: Profil sans duo actif -> Mode personnel');
           const noDuo: CouplePair = {
             ...INITIAL_COUPLE,
             partnerA: {
@@ -744,29 +603,14 @@ export default function App() {
           };
           setCouple(noDuo);
           setActivePartnerId('partner_a');
-          saveHasCompletedOnboarding(true);
-          setIsOnboardingOpen(false);
+          setActivePartner('partner_a');
+          saveCouple(noDuo);
         }
+      };
 
-        console.log('[Session] étape 6: Session initialisée avec succès.');
-        setIsVerifyingSession(false);
-        setSessionError(null);
-        clearTimeout(safetyTimer);
-      } catch (err: any) {
-        console.error('[Session Verification] Error:', err);
-        setSessionError('Une erreur est survenue lors de la vérification de session : ' + (err?.message || 'Erreur réseau'));
-        setIsVerifyingSession(false);
-        clearTimeout(safetyTimer);
-      }
-    };
-
-    performVerification();
-
-    return () => {
-      isCancelled = true;
-      clearTimeout(safetyTimer);
-    };
-  }, [sessionRetryCount]);
+      loadUserCouple();
+    }
+  }, [session.state, session.user?.uid, session.userProfile?.coupleId]);
 
   // Ensure couple room registration in Firestore & RevenueCat (ONLY once after onboarding is completed)
   useEffect(() => {
@@ -869,7 +713,7 @@ export default function App() {
 
   // 1. iOS Native Realtime Synchronization (via useCoupleRealtime hook with generation counter)
   useCoupleRealtime({
-    coupleCode: !isVerifyingSession && couple?.code && couple.code !== 'LOVE-NEW' ? couple.code : undefined,
+    coupleCode: session.state === 'ready' && couple?.code && couple.code !== 'LOVE-NEW' ? couple.code : undefined,
     onCoupleUpdate: handleCoupleRealtimeUpdate,
     onSpotsUpdate: handleSpotsRealtimeUpdate,
     onNotificationsUpdate: handleNotificationsRealtimeUpdate,
@@ -1201,28 +1045,9 @@ export default function App() {
 
   // Logout handler
   const handleLogout = async () => {
-    console.log('[Native Debug] handleLogout triggered');
     setIsSettingsOpen(false);
     showToast('Déconnexion en cours...');
-    setAuthUser(null);
-    setCouple(INITIAL_COUPLE);
-    setIsOnboardingOpen(false);
-    setIsAuthMandatory(true);
-    setAuthModalMode('login');
-    setAuthModalSource('general');
-    setIsAuthOpen(true);
-
-    await fullTeardown({
-      resetState: () => {
-        setAuthUser(null);
-        setCouple(INITIAL_COUPLE);
-        setIsOnboardingOpen(false);
-        setIsAuthMandatory(true);
-        setAuthModalMode('login');
-        setAuthModalSource('general');
-        setIsAuthOpen(true);
-      },
-    });
+    await logout();
   };
 
   // Break Duo handler
@@ -1312,32 +1137,11 @@ export default function App() {
 
   // Delete account handler
   const handleDeleteAccount = async () => {
-    console.log('[Native Debug] handleDeleteAccount triggered');
     setIsSettingsOpen(false);
     showToast('Suppression définitive de votre compte en cours...');
-
-    const res = await deleteMyAccount();
+    const res = await deleteAccount();
     if (res.success) {
       showToast('Votre compte a été définitivement supprimé.');
-      setAuthUser(null);
-      setCouple(INITIAL_COUPLE);
-      setIsOnboardingOpen(false);
-      setIsAuthMandatory(true);
-      setAuthModalMode('login');
-      setAuthModalSource('general');
-      setIsAuthOpen(true);
-
-      await fullTeardown({
-        resetState: () => {
-          setAuthUser(null);
-          setCouple(INITIAL_COUPLE);
-          setIsOnboardingOpen(false);
-          setIsAuthMandatory(true);
-          setAuthModalMode('login');
-          setAuthModalSource('general');
-          setIsAuthOpen(true);
-        },
-      });
     } else {
       showToast(`❌ ${res.error || 'Erreur lors de la suppression de votre compte.'}`);
     }
@@ -1365,7 +1169,18 @@ export default function App() {
     avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
   };
 
-  if (sessionError) {
+  // 1. État CHECKING : Vérification en cours au démarrage
+  if (session.state === 'checking') {
+    return (
+      <div className="w-full h-full min-h-screen bg-slate-950 flex flex-col items-center justify-center text-white select-none">
+        <div className="w-10 h-10 rounded-full border-2 border-rose-500/20 border-t-rose-500 animate-spin mb-3" />
+        <p className="text-xs font-semibold text-slate-400">Vérification de votre session...</p>
+      </div>
+    );
+  }
+
+  // 2. État ERROR : Erreur de connexion avec Réessayer et Se déconnecter
+  if (session.state === 'error') {
     return (
       <div className="w-full h-full min-h-screen bg-slate-950 flex flex-col items-center justify-center p-6 text-white text-center select-none animate-fade-in">
         <div className="w-14 h-14 rounded-2xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-500 mb-4 animate-bounce">
@@ -1373,21 +1188,17 @@ export default function App() {
         </div>
         <h2 className="text-lg font-black text-white mb-2">Erreur de connexion</h2>
         <p className="text-xs text-slate-400 max-w-xs leading-relaxed mb-6">
-          {sessionError}
+          {session.error || 'La vérification de votre session a échoué.'}
         </p>
         <div className="flex flex-col sm:flex-row gap-3 w-full max-w-xs">
           <button
-            onClick={() => {
-              setSessionError(null);
-              setIsVerifyingSession(true);
-              setSessionRetryCount((c) => c + 1);
-            }}
+            onClick={() => retrySessionVerification()}
             className="flex-1 py-3 px-4 bg-gradient-to-r from-rose-500 to-amber-500 text-white font-bold text-xs rounded-xl shadow-lg hover:brightness-110 active:scale-95 transition-all cursor-pointer"
           >
             Réessayer
           </button>
           <button
-            onClick={handleLogout}
+            onClick={() => logout()}
             className="flex-1 py-3 px-4 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs rounded-xl border border-slate-700 active:scale-95 transition-all cursor-pointer"
           >
             Se déconnecter
@@ -1397,11 +1208,63 @@ export default function App() {
     );
   }
 
-  if (isVerifyingSession) {
+  // 3. État SIGNEDOUT : Popup d'authentification
+  if (session.state === 'signedOut') {
     return (
-      <div className="w-full h-full min-h-screen bg-slate-950 flex flex-col items-center justify-center text-white select-none">
-        <div className="w-10 h-10 rounded-full border-2 border-rose-500/20 border-t-rose-500 animate-spin mb-3" />
-        <p className="text-xs font-semibold text-slate-400">Vérification de votre session...</p>
+      <div className="w-full h-full min-h-screen bg-slate-950 flex items-center justify-center p-3 select-none">
+        <AuthModal
+          isOpen={true}
+          canClose={false}
+          initialMode={session.activeTab || 'login'}
+          bannerMessage={session.authMessage}
+          onToast={showToast}
+        />
+      </div>
+    );
+  }
+
+  // 4. État NEEDSPROFILE : Écran d'onboarding / création de profil
+  if (session.state === 'needsProfile') {
+    return (
+      <div className="w-full h-full min-h-screen bg-slate-950 flex items-center justify-center p-3 select-none">
+        <OnboardingModal
+          isOpen={true}
+          authenticatedUser={session.user as any}
+          bannerMessage={session.authMessage}
+          onToast={showToast}
+          onComplete={async (mode, completedCouple, partnerId, authenticatedUser) => {
+            const userToSave = authenticatedUser || session.user;
+            if (!userToSave) return;
+            const profileName = (partnerId === 'partner_b' ? completedCouple?.partnerB?.name : completedCouple?.partnerA?.name) || 'Moi';
+            const profileAvatar = (partnerId === 'partner_b' ? completedCouple?.partnerB?.avatar : completedCouple?.partnerA?.avatar) || '';
+
+            const newProfile: UserProfile = {
+              uid: userToSave.uid,
+              name: profileName,
+              avatar: profileAvatar,
+              displayName: profileName,
+              photoURL: profileAvatar,
+              coupleId: completedCouple?.code,
+              accountCreated: true,
+            };
+            try {
+              await saveUserProfile(newProfile as UserProfile & { uid: string });
+            } catch (err) {
+              console.warn('[App] Notice saveUserProfile:', err);
+            }
+
+            if (completedCouple) {
+              setCouple(completedCouple);
+              saveCouple(completedCouple);
+            }
+            if (partnerId) {
+              setActivePartnerId(partnerId);
+              setActivePartner(partnerId);
+            }
+            saveHasCompletedOnboarding(true);
+            setProfileCompleted(newProfile, completedCouple);
+          }}
+        />
       </div>
     );
   }
@@ -1426,13 +1289,7 @@ export default function App() {
           onOpenNotifications={() => setActiveTab('notifs')}
           onOpenSettings={() => setIsSettingsOpen(true)}
           onOpenDuoTab={() => setActiveTab('couple')}
-          onOpenAuth={() => {
-            if (authUser && !authUser.isAnonymous) return;
-            setIsAuthMandatory(false);
-            setAuthModalSource('general');
-            setAuthModalMode('login');
-            setIsAuthOpen(true);
-          }}
+          onOpenAuth={() => {}}
           isMobileFrame={isMobileFrame}
           onToggleMobileFrame={() => setIsMobileFrame(!isMobileFrame)}
           onLockApp={() => {
@@ -1524,13 +1381,7 @@ export default function App() {
               onUpdateCouple={handleUpdateCouple}
               onSwitchPartner={handleSwitchPartner}
               onOpenSettings={() => setIsSettingsOpen(true)}
-              onOpenAuth={() => {
-                if (authUser && !authUser.isAnonymous) return;
-                setIsAuthMandatory(false);
-                setAuthModalSource('general');
-                setAuthModalMode('login');
-                setIsAuthOpen(true);
-              }}
+              onOpenAuth={() => {}}
               onToast={showToast}
               appMode={appMode}
               onBreakCouple={handleBreakCouple}
@@ -1634,13 +1485,7 @@ export default function App() {
           appMode={appMode}
           authUser={authUser}
           onClose={() => setIsSettingsOpen(false)}
-          onOpenAuth={() => {
-            if (authUser && !authUser.isAnonymous) return;
-            setIsAuthMandatory(false);
-            setAuthModalSource('settings');
-            setAuthModalMode('login');
-            setIsAuthOpen(true);
-          }}
+          onOpenAuth={() => {}}
           onUpdateCouple={(updated) => {
             handleUpdateCouple(updated);
             showToast('Paramètres mis à jour.');
@@ -1677,43 +1522,11 @@ export default function App() {
           isFirstSpotPaywall={isFirstSpotPaywall}
           onOpenLegalPrivacy={() => setIsLegalPrivacyOpen(true)}
         />
-
-        <AuthModal
-          isOpen={isAuthOpen}
-          canClose={!isAuthMandatory}
-          initialMode={authModalMode}
-          onClose={() => {
-            setIsAuthMandatory(false);
-            setIsAuthOpen(false);
-          }}
-          couple={couple}
-          onCoupleSync={(syncedCouple, partnerId) => {
-            setIsAuthMandatory(false);
-            setIsAuthOpen(false);
-            setCouple(syncedCouple);
-            if (partnerId) {
-              setActivePartnerId(partnerId);
-              setActivePartner(partnerId);
-            }
-            showToast(`Duo synchronisé avec le code ${syncedCouple.code} ! 💖`);
-          }}
-          onToast={showToast}
-          onAuthUserChange={setAuthUser}
-          onOpenOnboarding={() => {
-            setIsAuthOpen(false);
-            setIsOnboardingOpen(true);
-          }}
-        />
-
         <OnboardingModal
           isOpen={isOnboardingOpen}
           initialStep={1}
           onClose={() => {
             setIsOnboardingOpen(false);
-            if (!authUser) {
-              setIsAuthMandatory(true);
-              setIsAuthOpen(true);
-            }
           }}
           onComplete={handleCompleteOnboarding}
           onToast={showToast}
@@ -1746,13 +1559,10 @@ export default function App() {
               <button
                 onClick={() => {
                   setBrokenDuoNotice(null);
-                  setIsAuthMandatory(true);
-                  setAuthModalMode('register');
-                  setIsAuthOpen(true);
                 }}
                 className="w-full py-3 px-4 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-xs shadow-lg shadow-rose-600/30 transition-all cursor-pointer active:scale-95"
               >
-                Compris (Créer ou rejoindre un nouveau Duo)
+                Compris (Continuer avec votre compte)
               </button>
             </div>
           </div>

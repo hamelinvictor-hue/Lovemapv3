@@ -43,6 +43,8 @@ import {
 interface OnboardingModalProps {
   isOpen: boolean;
   initialStep?: 1 | 2 | 3 | 4 | 5;
+  authenticatedUser?: User | null;
+  bannerMessage?: string | null;
   onClose?: () => void;
   onComplete: (mode: AppMode, couple?: CouplePair, partnerId?: PartnerId, authenticatedUser?: User) => void;
   onToast: (msg: string) => void;
@@ -114,7 +116,9 @@ const MOCK_MAP_SPOTS: MockSpot[] = [
 
 export const OnboardingModal: React.FC<OnboardingModalProps> = ({
   isOpen,
-  initialStep = 1,
+  initialStep,
+  authenticatedUser,
+  bannerMessage,
   onClose,
   onComplete,
   onToast,
@@ -125,7 +129,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
   // 3: Choix du Mode (Duo synchronisé vs Solo Secret)
   // 4: Configuration du Profil (Nom, Photo, Code Duo)
   // 5: Sauvegarde Cloud & Démarrage
-  const [step, setStep] = useState<1 | 2 | 3 | 4 | 5>(initialStep as any);
+  const [step, setStep] = useState<1 | 2 | 3 | 4 | 5>(initialStep ? initialStep : (authenticatedUser ? 4 : 1));
   const [selectedMode, setSelectedMode] = useState<AppMode>('duo');
   const [userName, setUserName] = useState('');
   const [selectedAvatar, setSelectedAvatar] = useState(PRESET_AVATARS[0]);
@@ -146,7 +150,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
 
   useEffect(() => {
     if (isOpen) {
-      setStep(1);
+      setStep(initialStep ? initialStep : (authenticatedUser ? 4 : 1));
       setSelectedSpotIndex(0);
     }
   }, [isOpen]);
@@ -1136,8 +1140,24 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
                   </div>
                 )}
 
-                {/* Login Buttons */}
+                {/* Direct Confirmation or Login Buttons */}
                 <div className="space-y-2">
+                  {authenticatedUser ? (
+                    <button
+                      type="button"
+                      onClick={() => finalizeOnboarding(authenticatedUser)}
+                      disabled={loading}
+                      className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-rose-500 via-pink-500 to-amber-500 text-white font-black text-sm shadow-lg shadow-rose-500/25 flex items-center justify-center gap-2 transition-all cursor-pointer active:scale-98 disabled:opacity-50"
+                    >
+                      {loading ? (
+                        <div className="w-4 h-4 rounded-full border-2 border-white/40 border-t-white animate-spin" />
+                      ) : (
+                        <Heart className="w-4 h-4 fill-white" />
+                      )}
+                      <span>Enregistrer mon profil et démarrer ✨</span>
+                    </button>
+                  ) : (
+                    <>
                   <button
                     type="button"
                     onClick={handleGoogleLogin}
@@ -1176,6 +1196,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
                     </svg>
                     <span>{loadingProvider === 'apple' ? 'Connexion...' : 'Continuer avec Apple'}</span>
                   </button>
+                  </>)}
 
 
 

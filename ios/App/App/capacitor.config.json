@@ -16,6 +16,7 @@
 		"ClipboardPlugin",
 		"GeolocationPlugin",
 		"LocalNotificationsPlugin",
+		"PreferencesPlugin",
 		"AppReviewPlugin",
 		"AppleSignInPlugin",
 		"GoogleSignInPlugin",

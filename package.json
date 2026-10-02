@@ -21,6 +21,7 @@
     "@capacitor/core": "^8.5.1",
     "@capacitor/geolocation": "^8.2.2",
     "@capacitor/local-notifications": "^8.3.1",
+    "@capacitor/preferences": "^8.0.0",
     "@capawesome/capacitor-app-review": "^8.0.2",
     "@capawesome/capacitor-apple-sign-in": "^0.1.4",
     "@capawesome/capacitor-google-sign-in": "^0.1.4",

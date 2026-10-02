@@ -178,53 +178,6 @@ async function performMobileAuth(providerName: 'google' | 'apple', preferredDisp
         console.log('[Native Debug] Native Apple auth token received. Authenticating with Firebase...');
         let user: User | null = null;
 
-        // Step 1: High-speed direct HTTP REST exchange with Identity Toolkit (fast, bypasses WKWebView JS SDK freezes)
-        try {
-          const postBodyParts = [
-            `id_token=${encodeURIComponent(nativeApple.identityToken)}`,
-            'providerId=apple.com',
-          ];
-          if (nativeApple.rawNonce) {
-            postBodyParts.push(`nonce=${encodeURIComponent(nativeApple.rawNonce)}`);
-          }
-
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 3500);
-
-          const res = await fetch(
-            `https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key=${firebaseConfig.apiKey}`,
-            {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              signal: controller.signal,
-              body: JSON.stringify({
-                postBody: postBodyParts.join('&'),
-                requestUri: 'http://localhost',
-                returnIdpCredential: true,
-                returnSecureToken: true,
-              }),
-            }
-          );
-          clearTimeout(timeoutId);
-
-          const data = await res.json();
-          if (res.ok && data?.localId) {
-            console.log('[Native Debug] Firebase IdentityToolkit Apple REST exchange succeeded! UID:', data.localId);
-            user = buildSyntheticUser({
-              uid: data.localId,
-              displayName: data.displayName || fullName,
-              email: data.email || finalEmail,
-              photoURL: defaultPhoto,
-              providerId: 'apple.com',
-              isAnonymous: false,
-            });
-          } else {
-            console.log('[Native Debug] IdentityToolkit Apple REST notice:', data?.error?.message || data);
-          }
-        } catch (restErr: any) {
-          console.warn('[Native Debug] IdentityToolkit Apple REST notice (non-fatal):', restErr?.message || restErr);
-        }
-
         // Step 2: Try Firebase JS SDK signInWithCredential with safe 3000ms timeout
         if (!user) {
           try {
@@ -762,6 +715,18 @@ export async function fetchUserProfile(uid: string): Promise<{ displayName?: str
     console.warn('[Profile] Notice reading users/' + uid, e);
   }
   return null;
+}
+
+export async function saveUserProfile(profile: Partial<UserProfile> & { uid: string }): Promise<void> {
+  if (!profile || !profile.uid) return;
+  try {
+    await adapterWriteDocument(`users/${profile.uid}`, {
+      ...profile,
+      updatedAt: new Date().toISOString(),
+    }, { merge: true });
+  } catch (e) {
+    console.warn("[Profile] write user doc notice:", e);
+  }
 }
 
 export async function saveUserDisplayName(user: User, newName: string): Promise<void> {
