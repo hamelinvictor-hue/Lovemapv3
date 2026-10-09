@@ -46,6 +46,7 @@ interface OnboardingModalProps {
   authenticatedUser?: User | null;
   bannerMessage?: string | null;
   onClose?: () => void;
+  onOpenLogin?: () => void;
   onComplete: (mode: AppMode, couple?: CouplePair, partnerId?: PartnerId, authenticatedUser?: User) => void;
   onToast: (msg: string) => void;
 }
@@ -120,6 +121,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
   authenticatedUser,
   bannerMessage,
   onClose,
+  onOpenLogin,
   onComplete,
   onToast,
 }) => {
@@ -399,15 +401,26 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
               ))}
             </div>
 
-            {step < 4 && (
-              <button
-                type="button"
-                onClick={() => setStep(4)}
-                className="ml-2 text-[11px] font-bold text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition-colors"
-              >
-                Passer
-              </button>
-            )}
+            <div className="flex items-center gap-2">
+              {onOpenLogin && (
+                <button
+                  type="button"
+                  onClick={onOpenLogin}
+                  className="px-2.5 py-1 rounded-xl bg-rose-50 dark:bg-rose-950/60 hover:bg-rose-100 dark:hover:bg-rose-900/60 text-rose-600 dark:text-rose-400 font-extrabold text-[11px] transition-colors cursor-pointer border border-rose-200 dark:border-rose-900/50"
+                >
+                  Se connecter
+                </button>
+              )}
+              {step < 4 && (
+                <button
+                  type="button"
+                  onClick={() => setStep(4)}
+                  className="text-[11px] font-bold text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition-colors"
+                >
+                  Passer
+                </button>
+              )}
+            </div>
           </div>
         </div>
 
@@ -677,6 +690,18 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
                   <span>Suivant : Système de Notation (2/5)</span>
                   <ArrowRight className="w-4 h-4" />
                 </button>
+
+                {onOpenLogin && (
+                  <div className="text-center pt-0.5">
+                    <button
+                      type="button"
+                      onClick={onOpenLogin}
+                      className="text-xs font-semibold text-slate-500 hover:text-rose-600 dark:text-slate-400 dark:hover:text-rose-400 transition-colors cursor-pointer"
+                    >
+                      Déjà un compte ? <span className="underline font-black text-rose-600 dark:text-rose-400">Se connecter directement</span>
+                    </button>
+                  </div>
+                )}
               </motion.div>
             )}
 
@@ -1198,7 +1223,17 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
                   </button>
                   </>)}
 
-
+                  {onOpenLogin && (
+                    <div className="text-center pt-1 border-t border-slate-200 dark:border-slate-800">
+                      <button
+                        type="button"
+                        onClick={onOpenLogin}
+                        className="text-xs font-semibold text-slate-500 hover:text-rose-600 dark:text-slate-400 dark:hover:text-rose-400 transition-colors cursor-pointer"
+                      >
+                        Déjà un compte LoveMap ? <span className="underline font-black text-rose-600 dark:text-rose-400">Se connecter directement</span>
+                      </button>
+                    </div>
+                  )}
 
                   <div className="flex items-center justify-center gap-1 text-[10px] text-slate-400 font-medium pt-0.5">
                     <Shield className="w-3 h-3 text-emerald-500" />

@@ -1748,18 +1748,9 @@ export async function deleteMyAccount(): Promise<{ success: boolean; error?: str
   console.log('[deleteMyAccount] Appel de la Cloud Function deleteAccount (région: europe-west1)...');
   let cloudFunctionSucceeded = false;
   try {
-    if (isCapacitorNative()) {
-      await FirebaseFunctions.callByName({
-        name: 'deleteAccount',
-        region: 'europe-west1',
-        timeout: 8000,
-      });
-    } else {
-      const functionsInstance = getFunctions(app, 'europe-west1');
-      const deleteAccountFn = httpsCallable(functionsInstance, 'deleteAccount');
-      await deleteAccountFn({});
-    }
-
+    const functionsInstance = getFunctions(app, 'europe-west1');
+    const deleteAccountFn = httpsCallable(functionsInstance, 'deleteAccount');
+    await withTimeout(deleteAccountFn({}), 8000, null);
     console.log('[deleteMyAccount] Cloud Function deleteAccount réussie.');
     cloudFunctionSucceeded = true;
   } catch (err: any) {

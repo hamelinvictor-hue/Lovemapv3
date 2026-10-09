@@ -1,5 +1,17 @@
 import React, { useState, useEffect } from 'react';
-import { signIn } from '../auth/sessionStore';
+import { User, updateProfile } from 'firebase/auth';
+import {
+  auth,
+  getEffectiveUser,
+  loginWithGoogle,
+  loginWithApple,
+  findUserCoupleInFirestore,
+  createCoupleInFirestore,
+  updateCoupleInFirestore,
+  saveUserDisplayName,
+} from '../lib/firebase';
+import { saveStoredAuthUser } from '../lib/storage';
+import { CouplePair, PartnerId } from '../types';
 import {
   X,
   Heart,
@@ -13,55 +25,172 @@ import { triggerHaptic } from '../lib/feedback';
 interface AuthModalProps {
   isOpen: boolean;
   onClose?: () => void;
+  couple?: CouplePair;
+  onCoupleSync?: (couple: CouplePair, partnerId?: PartnerId) => void;
   onToast: (msg: string) => void;
   initialMode?: 'login' | 'register';
-  bannerMessage?: string | null;
   canClose?: boolean;
+  onOpenOnboarding?: () => void;
+  onAuthUserChange?: (user: User) => void;
+  bannerMessage?: string | null;
 }
 
 export const AuthModal: React.FC<AuthModalProps> = ({
   isOpen,
   onClose,
+  couple,
+  onCoupleSync,
   onToast,
   initialMode = 'login',
-  bannerMessage = null,
-  canClose = false,
+  canClose = true,
+  onAuthUserChange,
+  bannerMessage,
 }) => {
   const [mode, setMode] = useState<'login' | 'register'>(initialMode);
   const [loading, setLoading] = useState(false);
-  const [localError, setLocalError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [displayName, setDisplayName] = useState('');
 
   useEffect(() => {
-    if (initialMode) {
+    if (isOpen) {
       setMode(initialMode);
+      setError(null);
     }
-  }, [initialMode]);
-
-  useEffect(() => {
-    if (bannerMessage) {
-      setLocalError(null);
-    }
-  }, [bannerMessage]);
+  }, [isOpen, initialMode]);
 
   if (!isOpen) return null;
 
-  const handleProviderAuth = async (provider: 'google' | 'apple') => {
-    triggerHaptic('medium');
-    setLoading(true);
-    setLocalError(null);
+  const handleSyncUserCouple = async (u: User, successToast: string, preferredName?: string) => {
     try {
-      const intent = mode === 'register' ? 'create' : 'login';
-      await signIn(provider, intent);
+      const cleanName = (preferredName || displayName).trim() || u.displayName || 'Moi';
+
+      // 1. Sauvegarder le pseudo dans users/{u.uid}
+      await saveUserDisplayName(u, cleanName).catch(() => {});
+      onAuthUserChange?.(u);
+
+      let existing = null;
+      try {
+        existing = await findUserCoupleInFirestore(u);
+      } catch (e) {
+        console.warn('Firestore lookup notice:', e);
+      }
+
+      if (existing) {
+        const isPartnerA = existing.partnerId === 'partner_a';
+        if (isPartnerA) {
+          existing.couple.partnerA = {
+            ...existing.couple.partnerA,
+            name: cleanName,
+          };
+        } else {
+          existing.couple.partnerB = {
+            ...(existing.couple.partnerB || { id: 'partner_b', role: 'Partenaire 2' }),
+            name: cleanName,
+          };
+        }
+        await updateCoupleInFirestore(existing.couple.code, existing.couple).catch(() => {});
+        onCoupleSync?.(existing.couple, existing.partnerId);
+        onToast(`Espace duo (${existing.couple.code}) restauré 💖`);
+      } else {
+        // Créer un espace couple avec le prénom de l'utilisateur
+        const defaultAvatar =
+          'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80';
+        const created = await createCoupleInFirestore(u, cleanName, defaultAvatar, true);
+        onCoupleSync?.(created.couple, 'partner_a');
+        onToast(successToast);
+      }
+    } finally {
+      onClose?.();
+    }
+  };
+
+  const handleGoogleLogin = async () => {
+    triggerHaptic('medium');
+    if (mode === 'register' && !displayName.trim()) {
+      setError('Veuillez renseigner votre prénom pour créer un compte.');
+      triggerHaptic('error');
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const user = await loginWithGoogle(displayName.trim());
+      if (user) {
+        if (mode === 'register' && displayName.trim()) {
+          try {
+            await updateProfile(user, { displayName: displayName.trim() });
+          } catch (e) {}
+        }
+        await handleSyncUserCouple(
+          user,
+          `Compte créé avec Google (${displayName.trim() || user.displayName || 'Google'}) ! 💖`,
+          displayName.trim()
+        );
+      }
     } catch (err: any) {
-      const msg = err?.message || 'Erreur lors de la connexion';
-      setLocalError(msg);
-      onToast(msg);
+      console.warn('Google sign-in error:', err);
+      const isCancel =
+        err?.message?.toLowerCase().includes('cancel') ||
+        err?.message?.toLowerCase().includes('annul') ||
+        err?.code === '1001' ||
+        err?.code === 'auth/popup-closed-by-user';
+
+      if (isCancel) {
+        setError(null);
+      } else {
+        setError(err?.message || 'Erreur lors de la connexion Google.');
+        triggerHaptic('error');
+      }
     } finally {
       setLoading(false);
     }
   };
 
-  const activeMessage = bannerMessage || localError;
+  const handleAppleLogin = async () => {
+    triggerHaptic('medium');
+    if (mode === 'register' && !displayName.trim()) {
+      setError('Veuillez renseigner votre prénom pour créer un compte.');
+      triggerHaptic('error');
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const user = await loginWithApple(displayName.trim());
+      if (user) {
+        if (mode === 'register' && displayName.trim()) {
+          try {
+            await updateProfile(user, { displayName: displayName.trim() });
+          } catch (e) {}
+        }
+        await handleSyncUserCouple(
+          user,
+          `Compte créé avec Apple (${displayName.trim() || user.displayName || 'Apple'}) ! 💖`,
+          displayName.trim()
+        );
+      }
+    } catch (err: any) {
+      console.warn('Apple sign-in error:', err);
+      const isCancel =
+        err?.message?.toLowerCase().includes('cancel') ||
+        err?.message?.toLowerCase().includes('annul') ||
+        err?.code === '1001' ||
+        err?.code === 'auth/popup-closed-by-user';
+
+      if (isCancel) {
+        setError(null);
+      } else {
+        setError(err?.message || 'Erreur lors de la connexion Apple.');
+        triggerHaptic('error');
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-md animate-fade-in select-none">
@@ -96,12 +225,21 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             )}
           </div>
 
-          {/* Banner message (Error / Existing account warning / Notification) */}
-          {activeMessage && (
+          {/* Banner Error */}
+          {error && (
             <div className="p-3.5 rounded-2xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900/50 flex items-start gap-2.5 text-xs text-rose-700 dark:text-rose-300 font-semibold animate-shake">
               <AlertCircle className="w-4 h-4 shrink-0 text-rose-500 mt-0.5" />
               <div className="flex-1 leading-relaxed">
-                <span>{activeMessage}</span>
+                <span>{error}</span>
+              </div>
+            </div>
+          )}
+
+          {bannerMessage && (
+            <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-start gap-2.5 text-xs text-amber-600 dark:text-amber-300 font-semibold animate-fade-in">
+              <AlertCircle className="w-4 h-4 shrink-0 text-amber-500 mt-0.5" />
+              <div className="flex-1 leading-relaxed">
+                <span>{bannerMessage}</span>
               </div>
             </div>
           )}
@@ -113,7 +251,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               onClick={() => {
                 triggerHaptic('light');
                 setMode('login');
-                setLocalError(null);
+                setError(null);
               }}
               className={`py-2 px-3 rounded-xl flex items-center justify-center gap-1.5 transition-all duration-150 cursor-pointer ${
                 mode === 'login'
@@ -129,7 +267,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               onClick={() => {
                 triggerHaptic('light');
                 setMode('register');
-                setLocalError(null);
+                setError(null);
               }}
               className={`py-2 px-3 rounded-xl flex items-center justify-center gap-1.5 transition-all duration-150 cursor-pointer ${
                 mode === 'register'
@@ -142,6 +280,22 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             </button>
           </div>
 
+          {/* Register Mode Display Name input */}
+          {mode === 'register' && (
+            <div className="space-y-1.5 animate-fade-in">
+              <label className="text-[11px] font-bold text-slate-600 dark:text-slate-300 block">
+                Votre prénom <span className="text-rose-500">*</span>
+              </label>
+              <input
+                type="text"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                placeholder="Ex: Camille"
+                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white text-xs placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-rose-500"
+              />
+            </div>
+          )}
+
           {/* Subtext description */}
           <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed text-center px-1">
             {mode === 'login'
@@ -153,7 +307,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           <div className="space-y-2.5 pt-1">
             <button
               type="button"
-              onClick={() => handleProviderAuth('google')}
+              onClick={handleGoogleLogin}
               disabled={loading}
               className="w-full py-3.5 px-4 rounded-2xl bg-white dark:bg-slate-800 border-2 border-slate-200/90 dark:border-slate-700 hover:border-rose-400 dark:hover:border-rose-600 text-slate-800 dark:text-white font-extrabold text-xs shadow-xs flex items-center justify-center gap-2.5 transition-all cursor-pointer hover:scale-[1.01] active:scale-95 disabled:opacity-50"
             >
@@ -186,7 +340,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
             <button
               type="button"
-              onClick={() => handleProviderAuth('apple')}
+              onClick={handleAppleLogin}
               disabled={loading}
               className="w-full py-3.5 px-4 rounded-2xl bg-slate-900 hover:bg-black text-white font-extrabold text-xs shadow-md flex items-center justify-center gap-2.5 transition-all cursor-pointer hover:scale-[1.01] active:scale-95 disabled:opacity-50"
             >
@@ -219,7 +373,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   onClick={() => {
                     triggerHaptic('light');
                     setMode('register');
-                    setLocalError(null);
+                    setError(null);
                   }}
                   className="font-bold text-rose-600 dark:text-rose-400 hover:underline cursor-pointer"
                 >
@@ -234,7 +388,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   onClick={() => {
                     triggerHaptic('light');
                     setMode('login');
-                    setLocalError(null);
+                    setError(null);
                   }}
                   className="font-bold text-rose-600 dark:text-rose-400 hover:underline cursor-pointer"
                 >

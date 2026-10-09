@@ -5,9 +5,10 @@ import { signOut } from 'firebase/auth';
 import { clearFirestorePersistence } from '../data/firestoreAdapter';
 import { unregisterFcmTokenOnSignOut } from '../lib/fcmManager';
 
+import { triggerNativeSignOut } from '../lib/nativePermissions';
+
 // Dynamic registration of Capacitor plugins to ensure safe compilation across web and native
 const Preferences = registerPlugin<any>('Preferences');
-const FirebaseAuthentication = registerPlugin<any>('FirebaseAuthentication');
 
 /**
  * Options to reset React root state during full teardown
@@ -22,7 +23,7 @@ export interface ResetStateCallbacks {
  * Order of execution (MANDATORY):
  * 1. FirebaseFirestore.removeAllListeners() -> Terminate all active realtime watchers
  * 2. unregisterFcmTokenOnSignOut() -> Delete FCM token and remove from users/{uid}.fcmTokens BEFORE signOut
- * 3. FirebaseAuthentication.signOut() -> Sign out from native Firebase & Web Auth
+ * 3. triggerNativeSignOut() + signOut(auth) -> Sign out from native Google/Apple & Firebase Auth
  * 4. FirebaseFirestore.clearPersistence() -> Wipe local cache (MUST happen after listeners are removed)
  * 5. Purge localStorage and Preferences -> Flush local device key-value storage
  * 6. Reset React root state -> Clean in-memory state
@@ -49,15 +50,13 @@ export async function fullTeardown(callbacks?: ResetStateCallbacks, currentUid?:
     console.warn('  ⚠️ [2/6] Notice on unregisterFcmTokenOnSignOut:', err?.message || err);
   }
 
-  // 3. FirebaseAuthentication.signOut() (Native + Web SDK fallback)
+  // 3. triggerNativeSignOut() + signOut(auth) (Native + Web SDK)
   try {
-    if (Capacitor.isNativePlatform() && FirebaseAuthentication && typeof FirebaseAuthentication.signOut === 'function') {
-      await FirebaseAuthentication.signOut();
-    }
+    await triggerNativeSignOut().catch(() => {});
     await signOut(auth);
-    console.log('  ✅ [3/6] FirebaseAuthentication.signOut() completed');
+    console.log('  ✅ [3/6] Firebase and Native sign out completed');
   } catch (err: any) {
-    console.warn('  ⚠️ [3/6] Notice on FirebaseAuthentication.signOut:', err?.message || err);
+    console.warn('  ⚠️ [3/6] Notice on sign out:', err?.message || err);
   }
 
   // 4. FirebaseFirestore.clearPersistence() (Must be after listeners are removed)

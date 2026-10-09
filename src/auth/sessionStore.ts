@@ -66,6 +66,43 @@ function transitionTo(newState: SessionState, reason: string, updates: Partial<S
   notifySubscribers();
 }
 
+/**
+ * Détecte si une erreur correspond à un plugin natif non implémenté (UNIMPLEMENTED)
+ */
+export function isUnimplemented(err: any): boolean {
+  if (!err) return false;
+  const msg = String(err?.message || err).toUpperCase();
+  const code = String(err?.code || '').toUpperCase();
+  return (
+    code === 'UNIMPLEMENTED' ||
+    msg.includes('UNIMPLEMENTED') ||
+    msg.includes('NOT IMPLEMENTED')
+  );
+}
+
+/**
+ * Exécute une promesse avec un délai maximal (timeout)
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, opName: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      const err: any = new Error(`Délai dépassé (${ms}ms) lors de ${opName}`);
+      err.code = 'TIMEOUT';
+      reject(err);
+    }, ms);
+
+    promise
+      .then((val) => {
+        clearTimeout(timer);
+        resolve(val);
+      })
+      .catch((err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+  });
+}
+
 // Callback enregistré par App.tsx pour réinitialiser les états locaux en mémoire
 let resetAppStateCallback: (() => void) | null = null;
 export function registerResetAppStateCallback(cb: () => void) {
@@ -123,21 +160,46 @@ function ensureAuthStateListener() {
         }
       }
     }).catch((e) => {
-      console.warn('[Session] Notice enregistrement écouteur authStateChange:', e);
+      if (isUnimplemented(e)) {
+        console.warn('[Session] plugin natif absent : FirebaseAuthentication');
+        if (currentSession.state === 'checking') {
+          transitionTo('signedOut', 'plugin natif absent : FirebaseAuthentication', {
+            user: null,
+            userProfile: null,
+          });
+        }
+      } else {
+        console.warn('[Session] Notice enregistrement écouteur authStateChange:', e?.message || e);
+      }
     });
   } catch (e) {
-    console.warn('[Session] Notice configuration listener:', e);
+    if (isUnimplemented(e)) {
+      console.warn('[Session] plugin natif absent : FirebaseAuthentication');
+      if (currentSession.state === 'checking') {
+        transitionTo('signedOut', 'plugin natif absent : FirebaseAuthentication', {
+          user: null,
+          userProfile: null,
+        });
+      }
+    } else {
+      console.warn('[Session] Notice configuration listener:', e);
+    }
   }
 }
 
 /**
  * Lit le document users/{uid} directement depuis le serveur Firestore
+ * Chaque lecture dispose de son propre délai maximal (4s).
  */
 export async function readUserProfileFromServer(uid: string): Promise<UserProfile | null> {
   if (!uid) return null;
   try {
     if (Capacitor.isNativePlatform()) {
-      const res = await FirebaseFirestore.getDocument<UserProfile>({ reference: `users/${uid}` });
+      const res = await withTimeout(
+        FirebaseFirestore.getDocument<UserProfile>({ reference: `users/${uid}` }),
+        4000,
+        `FirebaseFirestore.getDocument(users/${uid})`
+      );
       const snap = res?.snapshot;
       if (snap && snap.data && typeof snap.data === 'object' && Object.keys(snap.data).length > 0) {
         return snap.data as UserProfile;
@@ -147,13 +209,21 @@ export async function readUserProfileFromServer(uid: string): Promise<UserProfil
       const db = getFirestoreDb();
       if (db) {
         try {
-          const snap = await getDocFromServer(doc(db, `users/${uid}`));
+          const snap = await withTimeout(
+            getDocFromServer(doc(db, `users/${uid}`)),
+            4000,
+            `getDocFromServer(users/${uid})`
+          );
           if (snap.exists()) {
             return snap.data() as UserProfile;
           }
           return null;
         } catch {
-          const snap = await getDoc(doc(db, `users/${uid}`));
+          const snap = await withTimeout(
+            getDoc(doc(db, `users/${uid}`)),
+            3000,
+            `getDoc(users/${uid})`
+          );
           if (snap.exists()) {
             return snap.data() as UserProfile;
           }
@@ -167,7 +237,11 @@ export async function readUserProfileFromServer(uid: string): Promise<UserProfil
       return null;
     }
   } catch (err: any) {
-    console.warn(`[Session] Lecture users/${uid} notice:`, err?.message || err);
+    if (isUnimplemented(err)) {
+      console.warn('[Session] plugin natif absent : FirebaseFirestore');
+    } else {
+      console.warn(`[Session] Lecture users/${uid} erreur: code=${err?.code || 'N/A'}, message=${err?.message || err}`);
+    }
     return null;
   }
 }
@@ -175,6 +249,7 @@ export async function readUserProfileFromServer(uid: string): Promise<UserProfil
 /**
  * Démarrage de la session
  * Séquence bornée à 10 secondes maximum
+ * Chaque appel natif possède son propre délai maximal et journalise son résultat détaillé.
  */
 export async function initializeSession(): Promise<void> {
   ensureAuthStateListener();
@@ -186,62 +261,153 @@ export async function initializeSession(): Promise<void> {
 
   const timeoutPromise = new Promise<never>((_, reject) => {
     setTimeout(() => {
-      reject(new Error('Délai dépassé (10 secondes) lors de la vérification de la session.'));
+      const err: any = new Error('Délai dépassé (10 secondes) lors de la vérification de la session.');
+      err.code = 'GLOBAL_TIMEOUT';
+      reject(err);
     }, 10000);
   });
 
   const sessionFlowPromise = (async () => {
     // Étape 1 : Vérification du marqueur installId dans Preferences
     console.log('[Session] étape 1 : Vérification du marqueur installId');
-    const installIdRes = await Preferences.get({ key: 'installId' }).catch(() => ({ value: null }));
-    if (!installIdRes?.value) {
-      console.log('[Session] Marqueur installId absent. Déconnexion préventive...');
-      try {
-        await FirebaseAuthentication.signOut().catch(() => {});
-      } catch (e) {}
-      try {
-        if (auth) await signOut(auth).catch(() => {});
-      } catch (e) {}
-      const newInstallId =
-        typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `inst_${Date.now()}`;
-      await Preferences.set({ key: 'installId', value: newInstallId }).catch(() => {});
+    let installIdVal: string | null = null;
+    try {
+      const res = await withTimeout(
+        Preferences.get({ key: 'installId' }),
+        2000,
+        'Preferences.get(installId)'
+      );
+      installIdVal = res?.value || null;
+      console.log(`[Session] Marqueur installId: ${installIdVal ? 'présent' : 'absent'}`);
+    } catch (e: any) {
+      if (isUnimplemented(e)) {
+        console.warn('[Session] plugin natif absent : Preferences');
+      } else {
+        console.warn(`[Session] Preferences.get(installId) erreur: code=${e?.code || 'N/A'}, message=${e?.message || e}`);
+      }
     }
 
-    // Étape 2 : Lecture de getCurrentUser()
+    if (!installIdVal) {
+      console.log('[Session] Marqueur installId absent. Déconnexion préventive...');
+
+      // Tente FirebaseAuthentication.signOut() avec un délai maximal de 3 secondes dans un try/catch
+      try {
+        await withTimeout(FirebaseAuthentication.signOut(), 3000, 'FirebaseAuthentication.signOut');
+        console.log('[Session] FirebaseAuthentication.signOut() préventif terminé avec succès.');
+      } catch (signOutErr: any) {
+        if (isUnimplemented(signOutErr)) {
+          console.warn('[Session] plugin natif absent : FirebaseAuthentication');
+        } else {
+          console.warn(`[Session] FirebaseAuthentication.signOut() préventif erreur: code=${signOutErr?.code || 'N/A'}, message=${signOutErr?.message || signOutErr}`);
+        }
+      }
+
+      // Déconnexion préventive Web Firebase si présente
+      try {
+        if (auth) {
+          await withTimeout(signOut(auth), 2000, 'signOut(webAuth)');
+        }
+      } catch (webSignOutErr: any) {
+        console.warn(`[Session] signOut(webAuth) préventif erreur: code=${webSignOutErr?.code || 'N/A'}, message=${webSignOutErr?.message || webSignOutErr}`);
+      }
+
+      // Écris TOUJOURS le marqueur installId, que la déconnexion ait réussi ou non
+      try {
+        const newInstallId =
+          typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `inst_${Date.now()}`;
+        await withTimeout(Preferences.set({ key: 'installId', value: newInstallId }), 2000, 'Preferences.set(installId)');
+        console.log('[Session] Marqueur installId enregistré avec succès:', newInstallId);
+      } catch (prefSetErr: any) {
+        if (isUnimplemented(prefSetErr)) {
+          console.warn('[Session] plugin natif absent : Preferences');
+        } else {
+          console.warn(`[Session] Preferences.set(installId) erreur: code=${prefSetErr?.code || 'N/A'}, message=${prefSetErr?.message || prefSetErr}`);
+        }
+      }
+    }
+
+    // Étape 2 : Lecture de getCurrentUser() avec délai maximal de 3s
     console.log('[Session] étape 2 : Lecture de getCurrentUser()');
     let currentUser: any = null;
     try {
-      const res = await FirebaseAuthentication.getCurrentUser();
+      const res = await withTimeout(
+        FirebaseAuthentication.getCurrentUser(),
+        3000,
+        'FirebaseAuthentication.getCurrentUser'
+      );
       currentUser = res?.user || null;
-    } catch (e) {
+      console.log(`[Session] getCurrentUser résultat: ${currentUser?.uid ? `uid=${currentUser.uid}` : 'aucun utilisateur connecté'}`);
+    } catch (getCurrentUserErr: any) {
+      if (isUnimplemented(getCurrentUserErr)) {
+        console.warn('[Session] plugin natif absent : FirebaseAuthentication');
+        transitionTo('signedOut', 'plugin natif absent : FirebaseAuthentication', {
+          user: null,
+          userProfile: null,
+        });
+        return;
+      }
+      console.warn(`[Session] getCurrentUser erreur: code=${getCurrentUserErr?.code || 'N/A'}, message=${getCurrentUserErr?.message || getCurrentUserErr}`);
       currentUser = (auth?.currentUser as any) || null;
     }
 
     // Étape 3 : Sans utilisateur, passe en signedOut
     if (!currentUser || !currentUser.uid) {
+      console.log('[Session] étape 3 : Aucun utilisateur actif, passage en signedOut');
       transitionTo('signedOut', 'aucun utilisateur connecté');
       return;
     }
 
-    // Étape 4 : Avec utilisateur, force getIdToken({ forceRefresh: true })
+    // Étape 4 : Avec utilisateur, force getIdToken({ forceRefresh: true }) avec délai maximal de 4s
     console.log('[Session] étape 3 : Rafraîchissement forcé du jeton getIdToken');
     try {
-      await FirebaseAuthentication.getIdToken({ forceRefresh: true });
-    } catch (tokenErr) {
-      console.warn('[Session] Échec rafraîchissement jeton, déconnexion en cours:', tokenErr);
+      await withTimeout(
+        FirebaseAuthentication.getIdToken({ forceRefresh: true }),
+        4000,
+        'FirebaseAuthentication.getIdToken'
+      );
+      console.log('[Session] getIdToken résultat: jeton rafraîchi avec succès');
+    } catch (tokenErr: any) {
+      if (isUnimplemented(tokenErr)) {
+        console.warn('[Session] plugin natif absent : FirebaseAuthentication');
+        transitionTo('signedOut', 'plugin natif absent : FirebaseAuthentication', {
+          user: null,
+          userProfile: null,
+        });
+        return;
+      }
+      console.warn(`[Session] getIdToken erreur: code=${tokenErr?.code || 'N/A'}, message=${tokenErr?.message || tokenErr}`);
       try {
-        await FirebaseAuthentication.signOut().catch(() => {});
+        await withTimeout(FirebaseAuthentication.signOut(), 3000, 'FirebaseAuthentication.signOut').catch(() => {});
       } catch (e) {}
       try {
-        if (auth) await signOut(auth).catch(() => {});
+        if (auth) await withTimeout(signOut(auth), 2000, 'signOut(webAuth)').catch(() => {});
       } catch (e) {}
       transitionTo('signedOut', 'échec du rafraîchissement du jeton de sécurité');
       return;
     }
 
-    // Étape 5 : Lecture de users/{uid} depuis le serveur
-    console.log('[Session] étape 4 : Lecture de users/{uid} depuis le serveur');
-    const profile = await readUserProfileFromServer(currentUser.uid);
+    // Étape 5 : Lecture de users/{uid} depuis le serveur avec délai maximal de 4s
+    console.log(`[Session] étape 4 : Lecture de users/${currentUser.uid} depuis le serveur`);
+    let profile: UserProfile | null = null;
+    try {
+      profile = await withTimeout(
+        readUserProfileFromServer(currentUser.uid),
+        4000,
+        `readUserProfileFromServer(${currentUser.uid})`
+      );
+      console.log(`[Session] Lecture users/${currentUser.uid} résultat: ${profile ? 'profil trouvé' : 'aucun profil'}`);
+    } catch (readErr: any) {
+      if (isUnimplemented(readErr)) {
+        console.warn('[Session] plugin natif absent : FirebaseFirestore');
+        transitionTo('signedOut', 'plugin natif absent : FirebaseFirestore', {
+          user: null,
+          userProfile: null,
+        });
+        return;
+      }
+      console.warn(`[Session] Lecture users/${currentUser.uid} erreur: code=${readErr?.code || 'N/A'}, message=${readErr?.message || readErr}`);
+    }
+
     if (profile && (profile.displayName || profile.accountCreated)) {
       transitionTo('ready', 'profil utilisateur trouvé sur le serveur', {
         user: currentUser,
@@ -258,9 +424,20 @@ export async function initializeSession(): Promise<void> {
   try {
     await Promise.race([sessionFlowPromise, timeoutPromise]);
   } catch (err: any) {
-    console.error('[Session] Erreur globale lors de la vérification:', err);
-    transitionTo('error', `échec de la vérification (${err?.message || 'délai dépassé'})`, {
-      error: err?.message || 'La vérification de votre session a échoué (délai dépassé).',
+    if (isUnimplemented(err)) {
+      console.warn('[Session] plugin natif absent : FirebaseAuthentication');
+      transitionTo('signedOut', 'plugin natif absent : FirebaseAuthentication', {
+        user: null,
+        userProfile: null,
+      });
+      return;
+    }
+
+    const errCode = err?.code || 'INCONNU';
+    const errMessage = err?.message || String(err);
+    console.error(`[Session] Erreur lors de la vérification: code=${errCode}, message=${errMessage}`);
+    transitionTo('error', `échec de la vérification (${errMessage})`, {
+      error: `La vérification de votre session a échoué: ${errMessage}`,
     });
   }
 }
@@ -292,7 +469,11 @@ export async function signIn(provider: 'google' | 'apple', intent: 'create' | 'l
     }
 
     if (!authUser || !authUser.uid) {
-      const cur = await FirebaseAuthentication.getCurrentUser().catch(() => null);
+      const cur = await withTimeout(
+        FirebaseAuthentication.getCurrentUser(),
+        3000,
+        'FirebaseAuthentication.getCurrentUser'
+      ).catch(() => null);
       authUser = cur?.user || null;
     }
 
@@ -311,10 +492,10 @@ export async function signIn(provider: 'google' | 'apple', intent: 'create' | 'l
     if (memorizedIntent === 'create' && profileExists) {
       console.log(`[Session] Compte existant détecté pour intent create (${providerLabel})`);
       try {
-        await FirebaseAuthentication.signOut().catch(() => {});
+        await withTimeout(FirebaseAuthentication.signOut(), 3000, 'FirebaseAuthentication.signOut').catch(() => {});
       } catch (e) {}
       try {
-        if (auth) await signOut(auth).catch(() => {});
+        if (auth) await withTimeout(signOut(auth), 2000, 'signOut(webAuth)').catch(() => {});
       } catch (e) {}
 
       transitionTo('signedOut', `compte existant lors d'une tentative de création (${providerLabel})`, {
@@ -362,6 +543,17 @@ export async function signIn(provider: 'google' | 'apple', intent: 'create' | 'l
       return;
     }
   } catch (err: any) {
+    if (isUnimplemented(err)) {
+      console.warn(`[Session] plugin natif absent : FirebaseAuthentication (${providerLabel})`);
+      transitionTo('signedOut', 'plugin natif absent : FirebaseAuthentication', {
+        user: null,
+        userProfile: null,
+        error: `Le plugin d'authentification ${providerLabel} n'est pas encore disponible sur ce build.`,
+        authMessage: null,
+      });
+      return;
+    }
+
     const isCancel =
       err?.message?.toLowerCase().includes('cancel') ||
       err?.message?.toLowerCase().includes('annul') ||
@@ -383,11 +575,13 @@ export async function signIn(provider: 'google' | 'apple', intent: 'create' | 'l
       return;
     }
 
-    console.error(`[Session] Erreur lors de signIn (${providerLabel}):`, err);
-    transitionTo('signedOut', `erreur lors de la connexion (${err?.message || 'Erreur inconnue'})`, {
+    const errCode = err?.code || 'INCONNU';
+    const errMessage = err?.message || 'Erreur lors de la connexion';
+    console.error(`[Session] Erreur lors de signIn (${providerLabel}): code=${errCode}, message=${errMessage}`);
+    transitionTo('signedOut', `erreur lors de la connexion (${errMessage})`, {
       user: null,
       userProfile: null,
-      error: err?.message || 'Erreur lors de la connexion',
+      error: errMessage,
       authMessage: null,
     });
   } finally {
@@ -402,7 +596,7 @@ export async function signIn(provider: 'google' | 'apple', intent: 'create' | 'l
 
 /**
  * Déconnexion complète ordonnée
- * Règle : Chaque étape est dans son propre try/catch. Pas de rechargement de page.
+ * Règle : Chaque étape est dans son propre try/catch avec délai maximal. Pas de rechargement de page.
  */
 export async function logout(): Promise<void> {
   console.log('[Session] Déconnexion demandée...');
@@ -411,43 +605,57 @@ export async function logout(): Promise<void> {
   try {
     clearVerifiedRoomsCache();
     if (Capacitor.isNativePlatform()) {
-      await FirebaseFirestore.removeAllListeners();
+      await withTimeout(FirebaseFirestore.removeAllListeners(), 3000, 'FirebaseFirestore.removeAllListeners');
     }
   } catch (e: any) {
-    console.warn('[Session] Notice arrêt écoutes:', e?.message || e);
+    if (isUnimplemented(e)) {
+      console.warn('[Session] plugin natif absent : FirebaseFirestore');
+    } else {
+      console.warn(`[Session] Notice arrêt écoutes: code=${e?.code || 'N/A'}, message=${e?.message || e}`);
+    }
   }
 
   // 2. Désinscrit les notifications
   try {
     const uid = currentSession.user?.uid || auth?.currentUser?.uid || null;
-    await unregisterFcmTokenOnSignOut(uid);
+    await withTimeout(unregisterFcmTokenOnSignOut(uid), 3000, 'unregisterFcmTokenOnSignOut');
   } catch (e: any) {
-    console.warn('[Session] Notice désinscription notifications:', e?.message || e);
+    console.warn(`[Session] Notice désinscription notifications: code=${e?.code || 'N/A'}, message=${e?.message || e}`);
   }
 
-  // 3. Appelle FirebaseAuthentication.signOut() puis le signOut du SDK JavaScript s'il est initialisé
+  // 3. Appelle FirebaseAuthentication.signOut() avec délai maximal de 3s puis le signOut du SDK JavaScript s'il est initialisé
   try {
-    await FirebaseAuthentication.signOut();
+    await withTimeout(FirebaseAuthentication.signOut(), 3000, 'FirebaseAuthentication.signOut');
+    console.log('[Session] FirebaseAuthentication.signOut() réussi');
   } catch (e: any) {
-    console.warn('[Session] Notice FirebaseAuthentication.signOut:', e?.message || e);
+    if (isUnimplemented(e)) {
+      console.warn('[Session] plugin natif absent : FirebaseAuthentication');
+    } else {
+      console.warn(`[Session] FirebaseAuthentication.signOut erreur: code=${e?.code || 'N/A'}, message=${e?.message || e}`);
+    }
   }
+
   try {
     if (auth) {
-      await signOut(auth);
+      await withTimeout(signOut(auth), 2000, 'signOut(webAuth)');
     }
   } catch (e: any) {
-    console.warn('[Session] Notice auth signOut:', e?.message || e);
+    console.warn(`[Session] auth signOut erreur: code=${e?.code || 'N/A'}, message=${e?.message || e}`);
   }
 
   // 4. Purge le cache Firestore
   try {
     if (Capacitor.isNativePlatform()) {
-      await FirebaseFirestore.clearPersistence();
+      await withTimeout(FirebaseFirestore.clearPersistence(), 3000, 'FirebaseFirestore.clearPersistence');
     } else {
       await clearFirestorePersistence();
     }
   } catch (e: any) {
-    console.warn('[Session] Notice purge cache Firestore:', e?.message || e);
+    if (isUnimplemented(e)) {
+      console.warn('[Session] plugin natif absent : FirebaseFirestore');
+    } else {
+      console.warn(`[Session] Notice purge cache Firestore: code=${e?.code || 'N/A'}, message=${e?.message || e}`);
+    }
   }
 
   // 5. Purge le localStorage et les Preferences (sauf installId)
@@ -460,7 +668,7 @@ export async function logout(): Promise<void> {
     }
     let currentInstallId: string | null = null;
     try {
-      const res = await Preferences.get({ key: 'installId' });
+      const res = await withTimeout(Preferences.get({ key: 'installId' }), 2000, 'Preferences.get(installId)');
       currentInstallId = res?.value || null;
     } catch (e) {}
 
@@ -470,7 +678,7 @@ export async function logout(): Promise<void> {
       await Preferences.set({ key: 'installId', value: currentInstallId }).catch(() => {});
     }
   } catch (e: any) {
-    console.warn('[Session] Notice purge stockage local:', e?.message || e);
+    console.warn(`[Session] Notice purge stockage local: code=${e?.code || 'N/A'}, message=${e?.message || e}`);
   }
 
   // 6. Réinitialise tous les états de l'application
@@ -505,28 +713,39 @@ export async function deleteAccount(): Promise<{ success: boolean; error?: strin
   try {
     clearVerifiedRoomsCache();
     if (Capacitor.isNativePlatform()) {
-      await FirebaseFirestore.removeAllListeners();
+      await withTimeout(FirebaseFirestore.removeAllListeners(), 3000, 'FirebaseFirestore.removeAllListeners');
     }
   } catch (e: any) {
-    console.warn('[Session] Notice arrêt écoutes:', e?.message || e);
+    if (isUnimplemented(e)) {
+      console.warn('[Session] plugin natif absent : FirebaseFirestore');
+    } else {
+      console.warn(`[Session] Notice arrêt écoutes: code=${e?.code || 'N/A'}, message=${e?.message || e}`);
+    }
   }
 
-  // 2. Appelle la Cloud Function deleteAccount par callByName en région europe-west1
+  // 2. Appelle la Cloud Function deleteAccount par callByName en région europe-west1 avec timeout 10s
   try {
     console.log('[Session] Appel de la Cloud Function deleteAccount (region: europe-west1)...');
-    await FirebaseFunctions.callByName({
-      name: 'deleteAccount',
-      region: 'europe-west1',
-    });
+    await withTimeout(
+      FirebaseFunctions.callByName({
+        name: 'deleteAccount',
+        region: 'europe-west1',
+      }),
+      10000,
+      'FirebaseFunctions.callByName(deleteAccount)'
+    );
     console.log('[Session] Cloud Function deleteAccount a réussi.');
 
     // Lance logout() seulement en cas de succès
     await logout();
     return { success: true };
   } catch (err: any) {
-    console.error('[Session] Échec de la Cloud Function deleteAccount:', err);
+    if (isUnimplemented(err)) {
+      console.warn('[Session] plugin natif absent : FirebaseFunctions');
+    }
+    const errCode = err?.code || 'INCONNU';
     const errorMsg = err?.message || 'Erreur lors de la suppression de votre compte.';
-    // En cas d'échec, affiche le message d'erreur renvoyé par la fonction et reste en ready.
+    console.error(`[Session] Échec de la Cloud Function deleteAccount: code=${errCode}, message=${errorMsg}`);
     return { success: false, error: errorMsg };
   }
 }

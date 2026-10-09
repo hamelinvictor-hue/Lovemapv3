@@ -3,61 +3,36 @@ import { Capacitor } from '@capacitor/core';
 import { isCapacitorNative } from './nativePermissions';
 import { subscribeViaRevenueCat, revokeViaRevenueCat } from './revenuecatClient';
 
-// Public Apple & Google API keys from RevenueCat (Starts with 'appl_...' / 'goog_...')
-// Strictly public keys - secret keys (sk_...) must never be used in client code
-export const REVENUECAT_APPLE_API_KEY =
-  (import.meta.env.VITE_REVENUECAT_APPLE_KEY as string) || 'appl_nlGwMiSRkeGRFTGCscEaFkQBide';
-
-export const REVENUECAT_GOOGLE_API_KEY =
-  (import.meta.env.VITE_REVENUECAT_GOOGLE_KEY as string) || 'goog_placeholder_key';
+// Clés publiques RevenueCat écrites en dur dans le code
+export const REVENUECAT_APPLE_API_KEY = 'appl_nlGwMiSRkeGRFTGCscEaFkQBide';
+export const REVENUECAT_GOOGLE_API_KEY = 'goog_placeholder_key';
 
 let isPurchasesConfigured = false;
 let currentConfiguredUserId: string | null = null;
 
 /**
- * Resolves the public platform API key for RevenueCat SDK
+ * Configure RevenueCat une seule fois avec la clé publique appl_ écrite dans le code
  */
-export function getPlatformPublicKey(): string {
-  const platform = Capacitor.getPlatform();
-  let key = platform === 'android' ? REVENUECAT_GOOGLE_API_KEY : REVENUECAT_APPLE_API_KEY;
-
-  // Security guard: ensure no secret key is ever passed to the client SDK
-  if (key && (key.startsWith('sk_') || key.startsWith('test_'))) {
-    console.error('[Purchases] ERROR: Clé secrète détectée côté client. RevenueCat refuse les clés secrètes dans l\'app native.');
-    return '';
-  }
-  return key;
-}
-
-/**
- * Initializes RevenueCat SDK on native devices (iOS / Android)
- */
-export async function initializePurchases(appUserId?: string): Promise<boolean> {
+export async function configurePurchases(appUserId?: string): Promise<boolean> {
   if (!isCapacitorNative()) {
-    console.log('[Purchases] Web environment: using simulated / API bridge');
+    console.log('[Purchases] Environnement Web : passage sans SDK natif');
     return true;
   }
 
-  try {
-    const key = getPlatformPublicKey();
-    if (!key || key.includes('placeholder')) {
-      console.warn(
-        `[Purchases] Clé publique RevenueCat non configurée pour la plateforme ${Capacitor.getPlatform()}. Pensez à l'ajouter dans vos variables d'environnement.`
-      );
-      return false;
-    }
+  const platform = Capacitor.getPlatform();
+  const apiKey = platform === 'android' ? REVENUECAT_GOOGLE_API_KEY : REVENUECAT_APPLE_API_KEY;
 
+  try {
     if (!isPurchasesConfigured) {
       await Purchases.setLogLevel({ level: LOG_LEVEL.DEBUG });
       await Purchases.configure({
-        apiKey: key,
+        apiKey,
         appUserID: appUserId || undefined,
       });
       isPurchasesConfigured = true;
       currentConfiguredUserId = appUserId || null;
-      console.log(`[Purchases] RevenueCat configuré avec succès (${Capacitor.getPlatform()}) pour:`, appUserId || 'Anonyme');
+      console.log(`[Purchases] RevenueCat configuré avec succès (${platform}) pour:`, appUserId || 'Anonyme');
     } else if (appUserId && appUserId !== currentConfiguredUserId) {
-      // Switch user if user logged in
       try {
         await Purchases.logIn({ appUserID: appUserId });
         currentConfiguredUserId = appUserId;
@@ -69,10 +44,13 @@ export async function initializePurchases(appUserId?: string): Promise<boolean> 
 
     return true;
   } catch (err) {
-    console.warn('[Purchases] Erreur d\'initialisation RevenueCat:', err);
+    console.warn('[Purchases] Erreur de configuration RevenueCat:', err);
     return false;
   }
 }
+
+// Alias de rétrocompatibilité pour toute référence existante
+export { configurePurchases as initializePurchases };
 
 /**
  * Loads current offerings from RevenueCat (containing $rc_monthly, $rc_annual with 7-day trial)
@@ -81,7 +59,7 @@ export async function loadCurrentOfferings(appUserId?: string): Promise<Purchase
   if (!isCapacitorNative()) return null;
 
   try {
-    const configured = await initializePurchases(appUserId);
+    const configured = await configurePurchases(appUserId);
     if (!configured || !isPurchasesConfigured) {
       console.warn('[Purchases] Impossible de charger les offres: SDK non configuré.');
       return null;
@@ -120,7 +98,7 @@ export async function purchaseSubscriptionPlan(params: {
 
   if (isCapacitorNative()) {
     try {
-      await initializePurchases(appUserId);
+      await configurePurchases(appUserId);
 
       // Find the matching package in the offering
       let targetPackage: PurchasesPackage | undefined = undefined;
@@ -165,14 +143,12 @@ export async function purchaseSubscriptionPlan(params: {
           console.log('[Purchases] Achat réussi ! Entitlement "premium" actif (Essai:', isTrial, ')');
           return { success: true, isTrial };
         } else {
-          // Sometimes in Sandbox, entitlement takes a couple seconds to refresh
           return { success: true, isTrial: Boolean(trialDays && trialDays > 0) };
         }
       } else {
         console.warn(
           '[Purchases] Aucun package StoreKit trouvé. Vérifiez dans RevenueCat que vos Products sont bien rattachés au Package dans l\'Offering "default".'
         );
-        // On native device without loaded packages, do NOT crash or make invalid web calls
         return { success: true, isTrial: Boolean(trialDays && trialDays > 0) };
       }
     } catch (err: any) {
@@ -202,7 +178,7 @@ export async function restorePurchasesFromStore(
 ): Promise<{ success: boolean; isPremium: boolean; error?: string }> {
   if (isCapacitorNative()) {
     try {
-      await initializePurchases(appUserId);
+      await configurePurchases(appUserId);
       const { customerInfo } = await Purchases.restorePurchases();
       const isPremium = typeof customerInfo.entitlements.active['premium'] !== 'undefined';
       return { success: true, isPremium };
@@ -212,7 +188,6 @@ export async function restorePurchasesFromStore(
     }
   }
 
-  // Simulated restore on web
   return { success: true, isPremium: true };
 }
 
@@ -222,7 +197,7 @@ export async function restorePurchasesFromStore(
 export async function checkActiveSubscription(appUserId?: string): Promise<boolean> {
   if (isCapacitorNative()) {
     try {
-      await initializePurchases(appUserId);
+      await configurePurchases(appUserId);
       const { customerInfo } = await Purchases.getCustomerInfo();
       return typeof customerInfo.entitlements.active['premium'] !== 'undefined';
     } catch (err) {

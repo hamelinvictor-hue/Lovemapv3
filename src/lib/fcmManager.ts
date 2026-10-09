@@ -1,18 +1,14 @@
-import { Capacitor, registerPlugin } from '@capacitor/core';
+import { Capacitor, type PluginListenerHandle } from '@capacitor/core';
+import { FirebaseMessaging } from '@capacitor-firebase/messaging';
 import { FirebaseFirestore } from '@capacitor-firebase/firestore';
-import type { PluginListenerHandle } from '@capacitor/core';
 import {
   doc,
   updateDoc,
   arrayUnion,
   arrayRemove,
   getDoc,
-  setDoc,
 } from 'firebase/firestore';
 import { getFirestoreDb } from './firebase';
-
-// Dynamic import / plugin registration to ensure robust compatibility
-const FirebaseMessaging = registerPlugin<any>('FirebaseMessaging');
 
 let tokenListenerHandle: PluginListenerHandle | null = null;
 let currentActiveUid: string | null = null;

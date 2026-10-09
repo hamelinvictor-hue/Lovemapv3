@@ -6,14 +6,11 @@ import { App } from '@capacitor/app';
 import { AppTrackingTransparency } from 'capacitor-app-tracking-transparency';
 import { FirebaseMessaging } from '@capacitor-firebase/messaging';
 
+import { AppleSignIn, SignInScope } from '@capawesome/capacitor-apple-sign-in';
+
 // Register plugins dynamically via @capacitor/core so Vite build succeeds everywhere
 const Geolocation = registerPlugin<any>('Geolocation');
-export const AppleSignIn = registerPlugin<any>('AppleSignIn');
-
-export enum SignInScope {
-  Email = 'EMAIL',
-  FullName = 'FULL_NAME',
-}
+export { AppleSignIn };
 
 /**
  * Bridge for Capacitor Native iOS / Android plugins with clean dynamic fallback

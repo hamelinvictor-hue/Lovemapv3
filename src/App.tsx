@@ -72,7 +72,7 @@ import {
   getTrialOfferRemainingSeconds,
 } from './lib/subscription';
 import { ensureSubscriberInRevenueCat } from './lib/revenuecatClient';
-import { initializePurchases, resetPurchasesSession } from './lib/purchases';
+import { configurePurchases, resetPurchasesSession } from './lib/purchases';
 import { triggerHaptic } from './lib/feedback';
 import { INITIAL_SPOTS, INITIAL_NOTIFICATIONS, INITIAL_COUPLE } from './data/initialData';
 import { fullTeardown } from './auth/lifecycle';
@@ -340,11 +340,15 @@ export default function App() {
     }
   }, []);
 
-  // Initialize RevenueCat SDK early for native iOS with Firebase User UID
+  // Configuration unique de RevenueCat avec la clé appl_ une seule fois après le passage en ready
+  const purchasesConfiguredRef = useRef<boolean>(false);
   useEffect(() => {
-    const currentUid = authUser?.uid || auth.currentUser?.uid || undefined;
-    initializePurchases(currentUid);
-  }, [authUser?.uid]);
+    if (session.state === 'ready' && !purchasesConfiguredRef.current) {
+      purchasesConfiguredRef.current = true;
+      const currentUid = session.user?.uid || authUser?.uid || auth.currentUser?.uid || undefined;
+      configurePurchases(currentUid);
+    }
+  }, [session.state, session.user?.uid, authUser?.uid]);
 
   // Setup Native iOS Notification click handlers, APNs push registration & app resume sync
   useEffect(() => {
@@ -1232,6 +1236,7 @@ export default function App() {
           authenticatedUser={session.user as any}
           bannerMessage={session.authMessage}
           onToast={showToast}
+          onOpenLogin={() => logout()}
           onComplete={async (mode, completedCouple, partnerId, authenticatedUser) => {
             const userToSave = authenticatedUser || session.user;
             if (!userToSave) return;
